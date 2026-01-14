@@ -26,6 +26,39 @@ export interface TerminalInfo {
   createdAt: number
 }
 
+export interface ScriptInfo {
+  name: string
+  command: string
+}
+
+export interface ProjectScripts {
+  hasPackageJson: boolean
+  scripts: ScriptInfo[]
+  packageManager?: string
+  projectName?: string
+  error?: string
+}
+
+export interface GitInfo {
+  isGitRepo: boolean
+  branch?: string
+  hasChanges?: boolean
+  error?: string
+}
+
+export interface GitBranchList {
+  success: boolean
+  currentBranch?: string
+  localBranches?: string[]
+  remoteBranches?: string[]
+  error?: string
+}
+
+export interface GitResult {
+  success: boolean
+  error?: string
+}
+
 const electronAPI = {
   pty: {
     create: (options: PtyOptions): Promise<TerminalInfo> =>
@@ -59,6 +92,34 @@ const electronAPI = {
       ipcRenderer.invoke('system:get-shells'),
     getInfo: (): Promise<SystemInfo> =>
       ipcRenderer.invoke('system:get-info'),
+  },
+  dialog: {
+    openDirectory: (): Promise<string | null> =>
+      ipcRenderer.invoke('dialog:open-directory'),
+  },
+  project: {
+    getScripts: (projectPath: string): Promise<ProjectScripts> =>
+      ipcRenderer.invoke('project:get-scripts', projectPath),
+  },
+  git: {
+    getInfo: (projectPath: string): Promise<GitInfo> =>
+      ipcRenderer.invoke('git:get-info', projectPath),
+    listBranches: (projectPath: string): Promise<GitBranchList> =>
+      ipcRenderer.invoke('git:list-branches', projectPath),
+    checkout: (projectPath: string, branch: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:checkout', projectPath, branch),
+    fetch: (projectPath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:fetch', projectPath),
+  },
+  store: {
+    get: (key: string): Promise<unknown> =>
+      ipcRenderer.invoke('store:get', key),
+    set: (key: string, value: unknown): Promise<void> =>
+      ipcRenderer.invoke('store:set', key, value),
+    delete: (key: string): Promise<void> =>
+      ipcRenderer.invoke('store:delete', key),
+    clear: (): Promise<void> =>
+      ipcRenderer.invoke('store:clear'),
   },
 }
 

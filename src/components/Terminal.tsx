@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { useGridStore } from '../stores/grid-store'
+import { useTerminalStore } from '../stores/terminal-store'
 import '@xterm/xterm/css/xterm.css'
 
 interface TerminalProps {
@@ -8,6 +10,12 @@ interface TerminalProps {
 }
 
 export function Terminal({ sessionId }: TerminalProps) {
+  const { focusedGridTerminalId, isInGrid } = useGridStore()
+  const { activeSessionId } = useTerminalStore()
+  const inGrid = isInGrid(sessionId)
+  const isFocused = inGrid
+    ? focusedGridTerminalId === sessionId
+    : activeSessionId === sessionId
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -115,14 +123,16 @@ export function Terminal({ sessionId }: TerminalProps) {
     }
   }, [sessionId, handleResize])
 
-  // Re-fit and focus when session becomes active
+  // Re-fit and focus when this terminal becomes focused
   useEffect(() => {
-    const timer = setTimeout(() => {
-      handleResize()
-      terminalRef.current?.focus()
-    }, 50)
-    return () => clearTimeout(timer)
-  }, [sessionId, handleResize])
+    if (isFocused) {
+      const timer = setTimeout(() => {
+        handleResize()
+        terminalRef.current?.focus()
+      }, 50)
+      return () => clearTimeout(timer)
+    }
+  }, [isFocused, handleResize])
 
   return (
     <div

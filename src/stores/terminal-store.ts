@@ -1,10 +1,20 @@
 import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
+import { electronStorage } from '../lib/electron-storage'
+import { useGridStore } from './grid-store'
 
-export interface TerminalSession {
+// Config that gets persisted (no runtime state like pid)
+export interface SavedTerminalConfig {
   id: string
-  pid: number
+  projectId: string
   shell: string
+  shellName: string // Friendly name like "bash"
   cwd: string
+}
+
+// Full runtime session (includes pid, status, etc.)
+export interface TerminalSession extends SavedTerminalConfig {
+  pid: number
   title: string
   createdAt: number
   isActive: boolean
@@ -13,61 +23,140 @@ export interface TerminalSession {
 }
 
 interface TerminalStore {
+  // Persisted configs (survive restart)
+  savedConfigs: SavedTerminalConfig[]
+
+  // Runtime sessions (cleared on restart)
   sessions: TerminalSession[]
   activeSessionId: string | null
 
-  // Actions
+  // Flag to track if we've restored sessions
+  hasRestored: boolean
+
+  // Actions for saved configs
+  saveConfig: (config: SavedTerminalConfig) => void
+  removeSavedConfig: (id: string) => void
+  getSavedConfigs: () => SavedTerminalConfig[]
+  markRestored: () => void
+
+  // Actions for runtime sessions
   addSession: (session: Omit<TerminalSession, 'isActive' | 'status'>) => void
   removeSession: (id: string) => void
+  removeSessionsByProject: (projectId: string) => void
   setActiveSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
   markSessionExited: (id: string, exitCode: number) => void
+
+  // Selectors
+  getSessionsByProject: (projectId: string) => TerminalSession[]
 }
 
-export const useTerminalStore = create<TerminalStore>((set) => ({
-  sessions: [],
-  activeSessionId: null,
+export const useTerminalStore = create<TerminalStore>()(
+  persist(
+    (set, get) => ({
+      savedConfigs: [],
+      sessions: [],
+      activeSessionId: null,
+      hasRestored: false,
 
-  addSession: (session) =>
-    set((state) => {
-      const newSession: TerminalSession = {
-        ...session,
-        isActive: true,
-        status: 'running',
-      }
-      return {
-        sessions: [...state.sessions, newSession],
-        activeSessionId: session.id,
-      }
+      // Saved config actions
+      saveConfig: (config) =>
+        set((state) => ({
+          savedConfigs: [...state.savedConfigs.filter(c => c.id !== config.id), config],
+        })),
+
+      removeSavedConfig: (id) =>
+        set((state) => ({
+          savedConfigs: state.savedConfigs.filter((c) => c.id !== id),
+        })),
+
+      getSavedConfigs: () => get().savedConfigs,
+
+      markRestored: () => set({ hasRestored: true }),
+
+      // Runtime session actions
+      addSession: (session) =>
+        set((state) => {
+          const newSession: TerminalSession = {
+            ...session,
+            isActive: true,
+            status: 'running',
+          }
+          return {
+            sessions: [...state.sessions, newSession],
+            activeSessionId: session.id,
+          }
+        }),
+
+      removeSession: (id) => {
+        // Also remove from grid if present
+        useGridStore.getState().removeFromGrid(id)
+        return set((state) => {
+          const filtered = state.sessions.filter((s) => s.id !== id)
+          const newActiveId =
+            state.activeSessionId === id
+              ? filtered[filtered.length - 1]?.id ?? null
+              : state.activeSessionId
+          return {
+            sessions: filtered,
+            activeSessionId: newActiveId,
+            savedConfigs: state.savedConfigs.filter((c) => c.id !== id),
+          }
+        })
+      },
+
+      removeSessionsByProject: (projectId) => {
+        // Remove all project sessions from grid
+        const state = get()
+        const projectSessionIds = state.sessions
+          .filter((s) => s.projectId === projectId)
+          .map((s) => s.id)
+        projectSessionIds.forEach((id) => {
+          useGridStore.getState().removeFromGrid(id)
+        })
+
+        return set((state) => {
+          const filtered = state.sessions.filter((s) => s.projectId !== projectId)
+          const currentActive = state.sessions.find((s) => s.id === state.activeSessionId)
+          const newActiveId =
+            currentActive?.projectId === projectId
+              ? filtered[filtered.length - 1]?.id ?? null
+              : state.activeSessionId
+          return {
+            sessions: filtered,
+            activeSessionId: newActiveId,
+            savedConfigs: state.savedConfigs.filter((c) => c.projectId !== projectId),
+          }
+        })
+      },
+
+      setActiveSession: (id) =>
+        set({ activeSessionId: id }),
+
+      updateSessionTitle: (id, title) =>
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, title } : s
+          ),
+        })),
+
+      markSessionExited: (id, exitCode) =>
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, status: 'exited', exitCode } : s
+          ),
+        })),
+
+      getSessionsByProject: (projectId) =>
+        get().sessions.filter((s) => s.projectId === projectId),
     }),
-
-  removeSession: (id) =>
-    set((state) => {
-      const filtered = state.sessions.filter((s) => s.id !== id)
-      const newActiveId =
-        state.activeSessionId === id
-          ? filtered[filtered.length - 1]?.id ?? null
-          : state.activeSessionId
-      return {
-        sessions: filtered,
-        activeSessionId: newActiveId,
-      }
-    }),
-
-  setActiveSession: (id) =>
-    set({ activeSessionId: id }),
-
-  updateSessionTitle: (id, title) =>
-    set((state) => ({
-      sessions: state.sessions.map((s) =>
-        s.id === id ? { ...s, title } : s
-      ),
-    })),
-
-  markSessionExited: (id, exitCode) =>
-    set((state) => ({
-      sessions: state.sessions.map((s) =>
-        s.id === id ? { ...s, status: 'exited', exitCode } : s
-      ),
-    })),
-}))
+    {
+      name: 'agent-sessions-terminals',
+      storage: createJSONStorage(() => electronStorage),
+      // Only persist savedConfigs, not runtime sessions
+      partialize: (state) => ({
+        savedConfigs: state.savedConfigs,
+      }),
+    }
+  )
+)

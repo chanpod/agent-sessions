@@ -24,6 +24,39 @@ export interface TerminalInfo {
   createdAt: number
 }
 
+export interface ScriptInfo {
+  name: string
+  command: string
+}
+
+export interface ProjectScripts {
+  hasPackageJson: boolean
+  scripts: ScriptInfo[]
+  packageManager?: string
+  projectName?: string
+  error?: string
+}
+
+export interface GitInfo {
+  isGitRepo: boolean
+  branch?: string
+  hasChanges?: boolean
+  error?: string
+}
+
+export interface GitBranchList {
+  success: boolean
+  currentBranch?: string
+  localBranches?: string[]
+  remoteBranches?: string[]
+  error?: string
+}
+
+export interface GitResult {
+  success: boolean
+  error?: string
+}
+
 export interface ElectronAPI {
   pty: {
     create: (options: PtyOptions) => Promise<TerminalInfo>
@@ -38,6 +71,24 @@ export interface ElectronAPI {
   system: {
     getShells: () => Promise<ShellInfo[]>
     getInfo: () => Promise<SystemInfo>
+  }
+  dialog: {
+    openDirectory: () => Promise<string | null>
+  }
+  project: {
+    getScripts: (projectPath: string) => Promise<ProjectScripts>
+  }
+  git: {
+    getInfo: (projectPath: string) => Promise<GitInfo>
+    listBranches: (projectPath: string) => Promise<GitBranchList>
+    checkout: (projectPath: string, branch: string) => Promise<GitResult>
+    fetch: (projectPath: string) => Promise<GitResult>
+  }
+  store: {
+    get: (key: string) => Promise<unknown>
+    set: (key: string, value: unknown) => Promise<void>
+    delete: (key: string) => Promise<void>
+    clear: () => Promise<void>
   }
 }
 
