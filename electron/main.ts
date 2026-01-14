@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import { exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
@@ -17,11 +18,70 @@ const store = new Store({
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
+// Configure auto-updater
+autoUpdater.autoDownload = true
+autoUpdater.autoInstallOnAppQuit = true
+
+function setupAutoUpdater() {
+  if (isDev) {
+    // Skip auto-updates in development
+    return
+  }
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('Checking for updates...')
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('Update available:', info.version)
+    mainWindow?.webContents.send('update:available', info)
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('App is up to date')
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    console.log(`Download progress: ${progress.percent.toFixed(1)}%`)
+    mainWindow?.webContents.send('update:progress', progress)
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('Update downloaded:', info.version)
+    mainWindow?.webContents.send('update:downloaded', info)
+
+    // Optionally show a dialog to prompt restart
+    dialog.showMessageBox(mainWindow!, {
+      type: 'info',
+      title: 'Update Ready',
+      message: `Version ${info.version} has been downloaded.`,
+      detail: 'The update will be installed when you restart the app.',
+      buttons: ['Restart Now', 'Later'],
+      defaultId: 0,
+    }).then((result) => {
+      if (result.response === 0) {
+        autoUpdater.quitAndInstall()
+      }
+    })
+  })
+
+  autoUpdater.on('error', (err) => {
+    console.error('Auto-updater error:', err)
+  })
+
+  // Check for updates
+  autoUpdater.checkForUpdatesAndNotify()
+}
+
 let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
 
-// Git watchers for detecting branch changes
-const gitWatchers = new Map<string, fs.FSWatcher>()
+// Git watchers for detecting branch and file changes
+interface GitWatcherSet {
+  watchers: fs.FSWatcher[]
+  debounceTimer: NodeJS.Timeout | null
+}
+const gitWatchers = new Map<string, GitWatcherSet>()
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -54,8 +114,13 @@ function createWindow() {
     ptyManager?.dispose()
     ptyManager = null
     // Clean up all git watchers
-    for (const watcher of gitWatchers.values()) {
-      watcher.close()
+    for (const watcherSet of gitWatchers.values()) {
+      if (watcherSet.debounceTimer) {
+        clearTimeout(watcherSet.debounceTimer)
+      }
+      for (const watcher of watcherSet.watchers) {
+        watcher.close()
+      }
     }
     gitWatchers.clear()
   })
@@ -671,7 +736,10 @@ ipcMain.handle('system:open-in-editor', async (_event, projectPath: string) => {
   }
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createWindow()
+  setupAutoUpdater()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
