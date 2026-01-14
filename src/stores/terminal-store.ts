@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
-import { useGridStore } from './grid-store'
+import { removeTerminalFromAllGrids } from './grid-store'
 
 // Config that gets persisted (no runtime state like pid)
 export interface SavedTerminalConfig {
@@ -20,6 +20,7 @@ export interface TerminalSession extends SavedTerminalConfig {
   isActive: boolean
   status: 'running' | 'exited'
   exitCode?: number
+  lastActivityTime: number
 }
 
 interface TerminalStore {
@@ -40,12 +41,13 @@ interface TerminalStore {
   markRestored: () => void
 
   // Actions for runtime sessions
-  addSession: (session: Omit<TerminalSession, 'isActive' | 'status'>) => void
+  addSession: (session: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime'>) => void
   removeSession: (id: string) => void
   removeSessionsByProject: (projectId: string) => void
   setActiveSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
   markSessionExited: (id: string, exitCode: number) => void
+  updateSessionActivity: (id: string) => void
 
   // Selectors
   getSessionsByProject: (projectId: string) => TerminalSession[]
@@ -81,6 +83,7 @@ export const useTerminalStore = create<TerminalStore>()(
             ...session,
             isActive: true,
             status: 'running',
+            lastActivityTime: Date.now(),
           }
           return {
             sessions: [...state.sessions, newSession],
@@ -89,8 +92,8 @@ export const useTerminalStore = create<TerminalStore>()(
         }),
 
       removeSession: (id) => {
-        // Also remove from grid if present
-        useGridStore.getState().removeFromGrid(id)
+        // Also remove from any grid
+        removeTerminalFromAllGrids(id)
         return set((state) => {
           const filtered = state.sessions.filter((s) => s.id !== id)
           const newActiveId =
@@ -106,13 +109,13 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       removeSessionsByProject: (projectId) => {
-        // Remove all project sessions from grid
+        // Remove all project sessions from grids
         const state = get()
         const projectSessionIds = state.sessions
           .filter((s) => s.projectId === projectId)
           .map((s) => s.id)
         projectSessionIds.forEach((id) => {
-          useGridStore.getState().removeFromGrid(id)
+          removeTerminalFromAllGrids(id)
         })
 
         return set((state) => {
@@ -146,6 +149,16 @@ export const useTerminalStore = create<TerminalStore>()(
             s.id === id ? { ...s, status: 'exited', exitCode } : s
           ),
         })),
+
+      updateSessionActivity: (id) => {
+        const now = Date.now()
+        console.log('[DEBUG] updateSessionActivity called:', { id, timestamp: now })
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, lastActivityTime: now } : s
+          ),
+        }))
+      },
 
       getSessionsByProject: (projectId) =>
         get().sessions.filter((s) => s.projectId === projectId),

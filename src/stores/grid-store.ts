@@ -4,91 +4,183 @@ import { electronStorage } from '../lib/electron-storage'
 
 export type LayoutMode = 'auto' | '1x1' | '2x1' | '2x2' | '3x2'
 
-interface GridStore {
-  // Terminals currently displayed in the grid (ordered)
-  gridTerminalIds: string[]
-
-  // Which terminal in the grid is focused (receives keyboard input)
-  focusedGridTerminalId: string | null
-
-  // Layout mode preference
+export interface GridInstance {
+  id: string
+  terminalIds: string[]
   layoutMode: LayoutMode
+  focusedTerminalId: string | null
+}
+
+interface GridStore {
+  // All grid instances
+  grids: GridInstance[]
+
+  // Which grid is currently active/visible in the main view
+  activeGridId: string | null
 
   // Actions
-  addToGrid: (terminalId: string) => void
-  removeFromGrid: (terminalId: string) => void
-  reorderGrid: (fromIndex: number, toIndex: number) => void
-  setFocusedTerminal: (terminalId: string | null) => void
-  setLayoutMode: (mode: LayoutMode) => void
-  clearGrid: () => void
+  createGrid: (terminalId?: string) => string
+  deleteGrid: (gridId: string) => void
+  addTerminalToGrid: (gridId: string, terminalId: string) => void
+  removeTerminalFromGrid: (gridId: string, terminalId: string) => void
+  moveTerminal: (terminalId: string, fromGridId: string, toGridId: string) => void
+  reorderInGrid: (gridId: string, fromIndex: number, toIndex: number) => void
+  setGridLayoutMode: (gridId: string, mode: LayoutMode) => void
+  setFocusedTerminal: (gridId: string, terminalId: string | null) => void
+  setActiveGrid: (gridId: string | null) => void
 
   // Selectors
-  isInGrid: (terminalId: string) => boolean
+  getGridForTerminal: (terminalId: string) => GridInstance | undefined
+  getGrid: (gridId: string) => GridInstance | undefined
 }
 
 export const useGridStore = create<GridStore>()(
   persist(
     (set, get) => ({
-      gridTerminalIds: [],
-      focusedGridTerminalId: null,
-      layoutMode: 'auto',
+      grids: [],
+      activeGridId: null,
 
-      addToGrid: (terminalId) =>
+      createGrid: (terminalId?: string) => {
+        const newId = crypto.randomUUID()
+        set((state) => ({
+          grids: [
+            ...state.grids,
+            {
+              id: newId,
+              terminalIds: terminalId ? [terminalId] : [],
+              layoutMode: 'auto',
+              focusedTerminalId: terminalId || null,
+            },
+          ],
+          activeGridId: newId,
+        }))
+        return newId
+      },
+
+      deleteGrid: (gridId) =>
         set((state) => {
-          // Don't add if already in grid
-          if (state.gridTerminalIds.includes(terminalId)) {
-            return { focusedGridTerminalId: terminalId }
-          }
+          const filtered = state.grids.filter((g) => g.id !== gridId)
+          const newActiveId =
+            state.activeGridId === gridId
+              ? filtered[filtered.length - 1]?.id ?? null
+              : state.activeGridId
           return {
-            gridTerminalIds: [...state.gridTerminalIds, terminalId],
-            focusedGridTerminalId: terminalId,
+            grids: filtered,
+            activeGridId: newActiveId,
           }
         }),
 
-      removeFromGrid: (terminalId) =>
+      addTerminalToGrid: (gridId, terminalId) =>
+        set((state) => ({
+          grids: state.grids.map((g) => {
+            if (g.id !== gridId) return g
+            // Don't add if already in this grid
+            if (g.terminalIds.includes(terminalId)) {
+              return { ...g, focusedTerminalId: terminalId }
+            }
+            return {
+              ...g,
+              terminalIds: [...g.terminalIds, terminalId],
+              focusedTerminalId: terminalId,
+            }
+          }),
+          activeGridId: gridId,
+        })),
+
+      removeTerminalFromGrid: (gridId, terminalId) =>
         set((state) => {
-          const filtered = state.gridTerminalIds.filter((id) => id !== terminalId)
-          // If removing the focused terminal, focus the last one or null
-          const newFocused =
-            state.focusedGridTerminalId === terminalId
-              ? filtered[filtered.length - 1] ?? null
-              : state.focusedGridTerminalId
+          const grid = state.grids.find((g) => g.id === gridId)
+          if (!grid) return state
+
+          const newTerminalIds = grid.terminalIds.filter((id) => id !== terminalId)
+
+          // If grid becomes empty, delete it
+          if (newTerminalIds.length === 0) {
+            const filtered = state.grids.filter((g) => g.id !== gridId)
+            return {
+              grids: filtered,
+              activeGridId:
+                state.activeGridId === gridId
+                  ? filtered[filtered.length - 1]?.id ?? null
+                  : state.activeGridId,
+            }
+          }
+
+          // Update the grid
           return {
-            gridTerminalIds: filtered,
-            focusedGridTerminalId: newFocused,
+            grids: state.grids.map((g) => {
+              if (g.id !== gridId) return g
+              const newFocused =
+                g.focusedTerminalId === terminalId
+                  ? newTerminalIds[newTerminalIds.length - 1] ?? null
+                  : g.focusedTerminalId
+              return {
+                ...g,
+                terminalIds: newTerminalIds,
+                focusedTerminalId: newFocused,
+              }
+            }),
           }
         }),
 
-      reorderGrid: (fromIndex, toIndex) =>
-        set((state) => {
-          const newIds = [...state.gridTerminalIds]
-          const [removed] = newIds.splice(fromIndex, 1)
-          if (removed !== undefined) {
-            newIds.splice(toIndex, 0, removed)
-          }
-          return { gridTerminalIds: newIds }
-        }),
+      moveTerminal: (terminalId, fromGridId, toGridId) => {
+        // Remove from source grid
+        get().removeTerminalFromGrid(fromGridId, terminalId)
+        // Add to destination grid
+        get().addTerminalToGrid(toGridId, terminalId)
+      },
 
-      setFocusedTerminal: (terminalId) =>
-        set({ focusedGridTerminalId: terminalId }),
+      reorderInGrid: (gridId, fromIndex, toIndex) =>
+        set((state) => ({
+          grids: state.grids.map((g) => {
+            if (g.id !== gridId) return g
+            const newIds = [...g.terminalIds]
+            const [removed] = newIds.splice(fromIndex, 1)
+            if (removed !== undefined) {
+              newIds.splice(toIndex, 0, removed)
+            }
+            return { ...g, terminalIds: newIds }
+          }),
+        })),
 
-      setLayoutMode: (mode) =>
-        set({ layoutMode: mode }),
+      setGridLayoutMode: (gridId, mode) =>
+        set((state) => ({
+          grids: state.grids.map((g) =>
+            g.id === gridId ? { ...g, layoutMode: mode } : g
+          ),
+        })),
 
-      clearGrid: () =>
-        set({ gridTerminalIds: [], focusedGridTerminalId: null }),
+      setFocusedTerminal: (gridId, terminalId) =>
+        set((state) => ({
+          grids: state.grids.map((g) =>
+            g.id === gridId ? { ...g, focusedTerminalId: terminalId } : g
+          ),
+        })),
 
-      isInGrid: (terminalId) => get().gridTerminalIds.includes(terminalId),
+      setActiveGrid: (gridId) =>
+        set({ activeGridId: gridId }),
+
+      getGridForTerminal: (terminalId) =>
+        get().grids.find((g) => g.terminalIds.includes(terminalId)),
+
+      getGrid: (gridId) =>
+        get().grids.find((g) => g.id === gridId),
     }),
     {
       name: 'agent-sessions-grid',
       storage: createJSONStorage(() => electronStorage),
-      // Persist all grid state
-      partialize: (state) => ({
-        gridTerminalIds: state.gridTerminalIds,
-        layoutMode: state.layoutMode,
-        // Don't persist focusedGridTerminalId - reset on app start
-      }),
+      // Don't persist grids - they are recreated when terminals are restored
+      // This avoids orphaned grids when terminal IDs change on restart
+      partialize: () => ({}),
     }
   )
 )
+
+// Helper to clean up grids when a terminal is closed
+export function removeTerminalFromAllGrids(terminalId: string): void {
+  const state = useGridStore.getState()
+  const grid = state.getGridForTerminal(terminalId)
+  if (grid) {
+    state.removeTerminalFromGrid(grid.id, terminalId)
+  }
+}

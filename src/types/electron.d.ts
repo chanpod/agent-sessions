@@ -83,6 +83,9 @@ export interface ElectronAPI {
     listBranches: (projectPath: string) => Promise<GitBranchList>
     checkout: (projectPath: string, branch: string) => Promise<GitResult>
     fetch: (projectPath: string) => Promise<GitResult>
+    watch: (projectPath: string) => Promise<GitResult>
+    unwatch: (projectPath: string) => Promise<GitResult>
+    onChanged: (callback: (projectPath: string) => void) => () => void
   }
   store: {
     get: (key: string) => Promise<unknown>

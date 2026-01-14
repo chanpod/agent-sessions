@@ -16,6 +16,7 @@ import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
+import { disposeTerminal } from './lib/terminal-registry'
 
 function App() {
   const [isElectron, setIsElectron] = useState(false)
@@ -26,6 +27,7 @@ function App() {
     removeSession,
     updateSessionTitle,
     markSessionExited,
+    updateSessionActivity,
     saveConfig,
     removeSavedConfig,
     sessions,
@@ -38,7 +40,18 @@ function App() {
     updateServerStatus,
     saveConfig: saveServerConfig,
   } = useServerStore()
-  const { addToGrid, gridTerminalIds, reorderGrid } = useGridStore()
+  const {
+    grids,
+    activeGridId,
+    createGrid,
+    addTerminalToGrid,
+    moveTerminal,
+    reorderInGrid,
+    setFocusedTerminal,
+    setActiveGrid,
+    getGridForTerminal,
+  } = useGridStore()
+  const { setActiveProject } = useProjectStore()
 
   // Configure drag sensors with a distance threshold
   // This prevents clicks from being interpreted as drags
@@ -88,6 +101,13 @@ function App() {
             createdAt: Date.now(),
           })
 
+          // Check if terminal already has a grid (from persisted state)
+          // If not, create one
+          const existingGrid = useGridStore.getState().getGridForTerminal(info.id)
+          if (!existingGrid) {
+            createGrid(info.id)
+          }
+
           // Remove old config before saving with new session ID
           removeSavedConfig(config.id)
           saveConfig({
@@ -102,14 +122,15 @@ function App() {
         }
       }
     })()
-  }, [isElectron, addSession, saveConfig, removeSavedConfig])
+  }, [isElectron, addSession, saveConfig, removeSavedConfig, createGrid])
 
   useEffect(() => {
     if (!isElectron || !window.electron) return
 
     // Set up PTY event listeners
-    const unsubData = window.electron.pty.onData(() => {
-      // Data is handled by individual Terminal components
+    const unsubData = window.electron.pty.onData((id) => {
+      // Update activity timestamp when terminal receives data
+      updateSessionActivity(id)
     })
 
     const unsubExit = window.electron.pty.onExit((id, code) => {
@@ -125,7 +146,43 @@ function App() {
       unsubExit()
       unsubTitle()
     }
-  }, [isElectron, markSessionExited, updateSessionTitle])
+  }, [isElectron, markSessionExited, updateSessionTitle, updateSessionActivity])
+
+  // Keyboard shortcuts: Ctrl+N for project switch, Alt+N for terminal focus
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const num = parseInt(e.key, 10)
+      if (isNaN(num) || num < 1 || num > 9) return
+
+      // Ctrl+N: Switch to project N
+      if (e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault()
+        const projectIndex = num - 1
+        const project = projects[projectIndex]
+        if (project) {
+          setActiveProject(project.id)
+        }
+        return
+      }
+
+      // Alt+N: Focus terminal N in active grid
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        const activeGrid = grids.find((g) => g.id === activeGridId)
+        if (activeGrid) {
+          const terminalIndex = num - 1
+          const terminalId = activeGrid.terminalIds[terminalIndex]
+          if (terminalId) {
+            setFocusedTerminal(activeGrid.id, terminalId)
+          }
+        }
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [projects, grids, activeGridId, setActiveProject, setFocusedTerminal])
 
   const handleCreateTerminal = async (projectId: string, shell: { name: string; path: string }) => {
     if (!window.electron) return
@@ -158,11 +215,16 @@ function App() {
       title: shell.name,
       createdAt: info.createdAt,
     })
+
+    // Create a new grid for this terminal
+    createGrid(info.id)
   }
 
   const handleCloseTerminal = async (id: string) => {
     if (!window.electron) return
 
+    // Dispose the xterm instance from registry
+    disposeTerminal(id)
     await window.electron.pty.kill(id)
     removeSession(id)
   }
@@ -201,6 +263,9 @@ function App() {
       createdAt: Date.now(),
     })
 
+    // Create a grid for the server terminal
+    createGrid(info.id)
+
     // Add server to store
     addServer({
       id: serverId,
@@ -229,6 +294,42 @@ function App() {
     const server = servers.find((s) => s.id === serverId)
 
     if (server) {
+      // Send Ctrl+C to gracefully stop the process, but keep terminal open for logs
+      await window.electron.pty.write(server.terminalId, '\x03')
+      updateServerStatus(serverId, 'stopped')
+    }
+  }
+
+  const handleRestartServer = async (serverId: string) => {
+    if (!window.electron) return
+
+    const { servers } = useServerStore.getState()
+    const server = servers.find((s) => s.id === serverId)
+
+    if (server) {
+      const { command } = server
+
+      // Send Ctrl+C to stop current process
+      await window.electron.pty.write(server.terminalId, '\x03')
+
+      // Small delay for process to terminate
+      await new Promise((resolve) => setTimeout(resolve, 300))
+
+      // Run the command again in the same terminal
+      await window.electron.pty.write(server.terminalId, command + '\n')
+      updateServerStatus(serverId, 'running')
+    }
+  }
+
+  const handleDeleteServer = async (serverId: string) => {
+    if (!window.electron) return
+
+    const { servers } = useServerStore.getState()
+    const server = servers.find((s) => s.id === serverId)
+
+    if (server) {
+      // Dispose the xterm instance from registry
+      disposeTerminal(server.terminalId)
       // Kill the associated terminal
       await window.electron.pty.kill(server.terminalId)
       // Remove the terminal session
@@ -258,31 +359,58 @@ function App() {
 
     if (!over) return
 
-    const activeId = active.id as string
+    const draggedId = active.id as string
     const overId = over.id as string
+    const overData = over.data.current
 
-    const activeInGrid = gridTerminalIds.includes(activeId)
-    const overInGrid = gridTerminalIds.includes(overId)
+    // Get the grid the dragged terminal is currently in
+    const sourceGrid = getGridForTerminal(draggedId)
 
-    // Check if dropping on the grid drop zone
-    if (overId === 'terminal-grid-drop-zone') {
-      // Add terminal to grid (if not already there)
-      addToGrid(activeId)
+    // Handle dropping on the empty terminal area
+    if (overId === 'empty-terminal-area-drop-zone') {
+      // If terminal is already in a grid, just make that grid active
+      if (sourceGrid) {
+        setActiveGrid(sourceGrid.id)
+      } else {
+        // Create new grid for this terminal
+        createGrid(draggedId)
+      }
       return
     }
 
-    // Dragging from sidebar onto an existing grid terminal - add to grid
-    if (!activeInGrid && overInGrid) {
-      addToGrid(activeId)
+    // Handle dropping on a grid drop zone
+    if (overId.startsWith('grid-drop-zone-')) {
+      const targetGridId = overData?.gridId as string
+      if (!targetGridId) return
+
+      if (sourceGrid && sourceGrid.id !== targetGridId) {
+        // Move from one grid to another
+        moveTerminal(draggedId, sourceGrid.id, targetGridId)
+      } else if (!sourceGrid) {
+        // Terminal not in any grid, add to target grid
+        addTerminalToGrid(targetGridId, draggedId)
+      }
+      // If already in target grid, do nothing
       return
     }
 
-    // Reordering within the grid
-    if (activeInGrid && overInGrid && activeId !== overId) {
-      const oldIndex = gridTerminalIds.indexOf(activeId)
-      const newIndex = gridTerminalIds.indexOf(overId)
-      if (oldIndex !== newIndex) {
-        reorderGrid(oldIndex, newIndex)
+    // Handle dropping on another terminal (either in same grid or different grid)
+    const targetGrid = getGridForTerminal(overId)
+
+    if (targetGrid) {
+      if (sourceGrid && sourceGrid.id === targetGrid.id) {
+        // Reordering within the same grid
+        const fromIndex = sourceGrid.terminalIds.indexOf(draggedId)
+        const toIndex = sourceGrid.terminalIds.indexOf(overId)
+        if (fromIndex !== toIndex && fromIndex !== -1 && toIndex !== -1) {
+          reorderInGrid(sourceGrid.id, fromIndex, toIndex)
+        }
+      } else if (sourceGrid) {
+        // Moving from one grid to another by dropping on a terminal
+        moveTerminal(draggedId, sourceGrid.id, targetGrid.id)
+      } else {
+        // Terminal not in any grid, add to target's grid
+        addTerminalToGrid(targetGrid.id, draggedId)
       }
     }
   }
@@ -316,6 +444,8 @@ function App() {
           onCloseTerminal={handleCloseTerminal}
           onStartServer={handleStartServer}
           onStopServer={handleStopServer}
+          onRestartServer={handleRestartServer}
+          onDeleteServer={handleDeleteServer}
         />
         <TerminalArea />
       </div>

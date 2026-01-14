@@ -2,20 +2,29 @@ import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useGridStore, LayoutMode } from '../stores/grid-store'
-import { GridTerminal } from './GridTerminal'
+import { GridTerminalCell } from './GridTerminalCell'
 import { cn } from '../lib/utils'
 import { Grid2X2, Grid3X3, LayoutGrid, Square } from 'lucide-react'
 
-export function TerminalGrid() {
+interface TerminalGridViewProps {
+  gridId: string
+  showHeader?: boolean
+}
+
+export function TerminalGridView({ gridId, showHeader = true }: TerminalGridViewProps) {
   const { sessions } = useTerminalStore()
-  const { gridTerminalIds, layoutMode, setLayoutMode } = useGridStore()
+  const { grids, setGridLayoutMode } = useGridStore()
+
+  const grid = grids.find((g) => g.id === gridId)
+  if (!grid) return null
 
   const { isOver, setNodeRef } = useDroppable({
-    id: 'terminal-grid-drop-zone',
+    id: `grid-drop-zone-${gridId}`,
+    data: { gridId },
   })
 
   // Get the actual sessions for terminals in the grid
-  const gridSessions = gridTerminalIds
+  const gridSessions = grid.terminalIds
     .map((id) => sessions.find((s) => s.id === id))
     .filter((s): s is NonNullable<typeof s> => s !== undefined)
 
@@ -23,19 +32,24 @@ export function TerminalGrid() {
   const count = Math.min(gridSessions.length, 6)
 
   // Determine layout attribute - only apply manual layout if not auto
-  const dataLayout = layoutMode !== 'auto' ? layoutMode : undefined
+  const dataLayout = grid.layoutMode !== 'auto' ? grid.layoutMode : undefined
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Grid header with layout controls */}
-      <div className="h-10 flex items-center px-4 border-b border-zinc-800 bg-zinc-900/30">
-        <span className="text-sm text-zinc-400">
-          Terminal Grid ({gridSessions.length})
-        </span>
-        <div className="ml-auto flex items-center gap-1">
-          <LayoutSelector currentMode={layoutMode} onSelect={setLayoutMode} />
+      {showHeader && gridSessions.length > 1 && (
+        <div className="h-10 flex items-center px-4 border-b border-zinc-800 bg-zinc-900/30">
+          <span className="text-sm text-zinc-400">
+            Terminal Grid ({gridSessions.length})
+          </span>
+          <div className="ml-auto flex items-center gap-1">
+            <LayoutSelector
+              currentMode={grid.layoutMode}
+              onSelect={(mode) => setGridLayoutMode(gridId, mode)}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Grid area */}
       <div
@@ -55,9 +69,9 @@ export function TerminalGrid() {
             </div>
           </div>
         ) : (
-          <SortableContext items={gridTerminalIds} strategy={rectSortingStrategy}>
+          <SortableContext items={grid.terminalIds} strategy={rectSortingStrategy}>
             {gridSessions.map((session) => (
-              <GridTerminal key={session.id} session={session} />
+              <GridTerminalCell key={session.id} session={session} gridId={gridId} />
             ))}
           </SortableContext>
         )}

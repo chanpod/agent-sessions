@@ -1,10 +1,11 @@
-import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical } from 'lucide-react'
+import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil } from 'lucide-react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { useGridStore } from '../stores/grid-store'
+import { ActivityIndicator } from './ActivityIndicator'
 import { cn } from '../lib/utils'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 
 interface ShellInfo {
@@ -24,6 +25,8 @@ interface ProjectItemProps {
   onCloseTerminal: (id: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
+  onRestartServer: (serverId: string) => void
+  onDeleteServer: (serverId: string) => void
 }
 
 export function ProjectItem({
@@ -33,6 +36,8 @@ export function ProjectItem({
   onCloseTerminal,
   onStartServer,
   onStopServer,
+  onRestartServer,
+  onDeleteServer,
 }: ProjectItemProps) {
   const { toggleProjectExpanded, activeProjectId, setActiveProject } = useProjectStore()
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
@@ -62,18 +67,37 @@ export function ProjectItem({
   const hasFocusedTerminal = activeSessionId &&
     sessions.some(s => s.id === activeSessionId && s.projectId === project.id)
 
-  // Fetch git info on mount
+  // Fetch git info and watch for changes
   useEffect(() => {
-    if (window.electron) {
-      window.electron.git.getInfo(project.path).then((result) => {
-        if (result.isGitRepo) {
-          setGitBranch(result.branch || null)
-          setGitHasChanges(result.hasChanges || false)
-        } else {
-          setGitBranch(null)
-          setGitHasChanges(false)
-        }
-      })
+    if (!window.electron) return
+
+    const fetchGitInfo = async () => {
+      const result = await window.electron!.git.getInfo(project.path)
+      if (result.isGitRepo) {
+        setGitBranch(result.branch || null)
+        setGitHasChanges(result.hasChanges || false)
+      } else {
+        setGitBranch(null)
+        setGitHasChanges(false)
+      }
+    }
+
+    // Initial fetch
+    fetchGitInfo()
+
+    // Start watching for git changes
+    window.electron.git.watch(project.path)
+
+    // Listen for changes from file watcher
+    const unsubscribe = window.electron.git.onChanged((changedPath) => {
+      if (changedPath === project.path) {
+        fetchGitInfo()
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      window.electron?.git.unwatch(project.path)
     }
   }, [project.path])
 
@@ -468,6 +492,8 @@ export function ProjectItem({
                     isActive={activeSessionId === server.terminalId}
                     onSelect={() => setActiveSession(server.terminalId)}
                     onStop={() => onStopServer(server.id)}
+                    onRestart={() => onRestartServer(server.id)}
+                    onDelete={() => onDeleteServer(server.id)}
                   />
                 ))}
               </ul>
@@ -497,17 +523,54 @@ interface TerminalItemProps {
   isActive: boolean
   onSelect: () => void
   onClose: () => void
+  dragHandleProps?: Record<string, unknown>
 }
 
-function TerminalItem({ session, isActive, onSelect, onClose }: TerminalItemProps) {
-  const { isInGrid, setFocusedTerminal } = useGridStore()
-  const inGrid = isInGrid(session.id)
+function TerminalItem({ session, isActive, onSelect, onClose, dragHandleProps }: TerminalItemProps) {
+  const { setFocusedTerminal, setActiveGrid } = useGridStore()
+  const grid = useGridStore((state) => state.grids.find((g) => g.terminalIds.includes(session.id)))
+  const { updateSessionTitle } = useTerminalStore()
+
+  const [isEditing, setIsEditing] = useState(false)
+  const [editValue, setEditValue] = useState(session.title)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
 
   const handleSelect = () => {
+    console.log('handleSelect', session.id)
+    if (isEditing) return
     onSelect()
-    // If terminal is in grid, also focus it in the grid
-    if (inGrid) {
-      setFocusedTerminal(session.id)
+    // If terminal is in a grid, make that grid active and focus the terminal
+    if (grid) {
+      setActiveGrid(grid.id)
+      setFocusedTerminal(grid.id, session.id)
+    }
+  }
+
+  const handleStartEdit = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditValue(session.title)
+    setIsEditing(true)
+  }
+
+  const handleSaveEdit = () => {
+    if (editValue.trim()) {
+      updateSessionTitle(session.id, editValue.trim())
+    }
+    setIsEditing(false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveEdit()
+    } else if (e.key === 'Escape') {
+      setIsEditing(false)
     }
   }
 
@@ -517,31 +580,76 @@ function TerminalItem({ session, isActive, onSelect, onClose }: TerminalItemProp
         role="button"
         tabIndex={0}
         onClick={handleSelect}
-        onKeyDown={(e) => e.key === 'Enter' && handleSelect()}
+        onKeyDown={(e) => !isEditing && e.key === 'Enter' && handleSelect()}
         className={cn(
-          'w-full flex items-center gap-2 px-2 py-1 text-xs rounded transition-colors cursor-grab active:cursor-grabbing group',
+          'w-full flex items-center gap-2 px-2 py-1 text-xs rounded transition-colors group',
           isActive
             ? 'ring-2 ring-green-500 bg-green-500/10 text-green-400'
             : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300'
         )}
       >
-        <GripVertical className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-50" />
+        <div
+          className="cursor-grab active:cursor-grabbing touch-none"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          {...dragHandleProps}
+        >
+          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-30 group-hover:opacity-70 pointer-events-none" />
+        </div>
+        <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
         <Terminal className={cn('w-3 h-3 flex-shrink-0', isActive && 'text-green-400')} />
-        <span className="truncate flex-1 text-left">{session.title}</span>
-        {isActive && (
+
+        {/* Terminal name - editable */}
+        {isEditing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={handleSaveEdit}
+            onKeyDown={handleKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="flex-1 min-w-0 bg-zinc-800 text-zinc-200 px-1 rounded border border-zinc-600 outline-none focus:border-green-500 text-xs"
+          />
+        ) : (
+          <span
+            className="truncate flex-1 text-left"
+            onDoubleClick={handleStartEdit}
+            title="Double-click to rename"
+          >
+            {session.title}
+          </span>
+        )}
+
+        {isActive && !isEditing && (
           <span className="text-[10px] text-green-400 font-medium">focused</span>
         )}
-        {inGrid && !isActive && (
-          <span className="text-[10px] text-blue-400">in grid</span>
+        {grid && grid.terminalIds.length > 1 && !isActive && !isEditing && (
+          <span className="text-[10px] text-blue-400">+{grid.terminalIds.length - 1}</span>
         )}
-        {session.status === 'exited' && (
+        {session.status === 'exited' && !isEditing && (
           <span className="text-[10px] text-zinc-600">exited</span>
         )}
+
+        {/* Edit button */}
+        {!isEditing && (
+          <button
+            onClick={handleStartEdit}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-zinc-700 rounded text-zinc-500 hover:text-zinc-300"
+            title="Rename"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+        )}
+
         <button
           onClick={(e) => {
             e.stopPropagation()
             onClose()
           }}
+          onPointerDown={(e) => e.stopPropagation()}
           className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-zinc-700 rounded"
         >
           <X className="w-3 h-3" />
@@ -556,9 +664,14 @@ interface ServerItemProps {
   isActive: boolean
   onSelect: () => void
   onStop: () => void
+  onRestart: () => void
+  onDelete: () => void
 }
 
-function ServerItem({ server, isActive, onSelect, onStop }: ServerItemProps) {
+function ServerItem({ server, isActive, onSelect, onStop, onRestart, onDelete }: ServerItemProps) {
+  const { setFocusedTerminal, setActiveGrid } = useGridStore()
+  const grid = useGridStore((state) => state.grids.find((g) => g.terminalIds.includes(server.terminalId)))
+
   const statusColors = {
     starting: 'text-yellow-500',
     running: 'text-green-500',
@@ -566,13 +679,22 @@ function ServerItem({ server, isActive, onSelect, onStop }: ServerItemProps) {
     error: 'text-red-500',
   }
 
+  const handleClick = () => {
+    onSelect()
+    // Also focus in grid and make it active
+    if (grid) {
+      setActiveGrid(grid.id)
+      setFocusedTerminal(grid.id, server.terminalId)
+    }
+  }
+
   return (
     <li>
       <div
         role="button"
         tabIndex={0}
-        onClick={onSelect}
-        onKeyDown={(e) => e.key === 'Enter' && onSelect()}
+        onClick={handleClick}
+        onKeyDown={(e) => e.key === 'Enter' && handleClick()}
         className={cn(
           'w-full flex items-center gap-2 px-2 py-1 text-xs rounded transition-colors cursor-pointer group',
           isActive
@@ -583,18 +705,47 @@ function ServerItem({ server, isActive, onSelect, onStop }: ServerItemProps) {
         <Server className={cn('w-3 h-3 flex-shrink-0', statusColors[server.status])} />
         <span className="truncate flex-1 text-left">{server.name}</span>
         <span className="text-[10px] text-zinc-600">{server.status}</span>
-        {server.status === 'running' && (
+
+        {/* Action buttons - always visible on hover */}
+        <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
+          {/* Restart button */}
           <button
             onClick={(e) => {
               e.stopPropagation()
-              onStop()
+              onRestart()
             }}
-            className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-zinc-700 rounded text-red-400 hover:text-red-300"
-            title="Stop server"
+            className="p-0.5 hover:bg-zinc-700 rounded text-blue-400 hover:text-blue-300"
+            title="Restart server"
           >
-            <Square className="w-3 h-3" />
+            <RefreshCw className="w-3 h-3" />
           </button>
-        )}
+
+          {/* Stop button - only when running */}
+          {server.status === 'running' && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onStop()
+              }}
+              className="p-0.5 hover:bg-zinc-700 rounded text-yellow-400 hover:text-yellow-300"
+              title="Stop server (keep logs)"
+            >
+              <Square className="w-3 h-3" />
+            </button>
+          )}
+
+          {/* Delete button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            className="p-0.5 hover:bg-zinc-700 rounded text-red-400 hover:text-red-300"
+            title="Delete server (close terminal)"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
       </div>
     </li>
   )

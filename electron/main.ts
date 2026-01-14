@@ -19,6 +19,9 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
 
+// Git watchers for detecting branch changes
+const gitWatchers = new Map<string, fs.FSWatcher>()
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -49,6 +52,11 @@ function createWindow() {
     mainWindow = null
     ptyManager?.dispose()
     ptyManager = null
+    // Clean up all git watchers
+    for (const watcher of gitWatchers.values()) {
+      watcher.close()
+    }
+    gitWatchers.clear()
   })
 }
 
@@ -389,6 +397,46 @@ ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
     const errorMsg = err instanceof Error ? err.message : String(err)
     return { success: false, error: errorMsg }
   }
+})
+
+// Watch a project's git directory for branch changes
+ipcMain.handle('git:watch', async (_event, projectPath: string) => {
+  // Don't double-watch
+  if (gitWatchers.has(projectPath)) {
+    return { success: true }
+  }
+
+  const gitDir = path.join(projectPath, '.git')
+  const headPath = path.join(gitDir, 'HEAD')
+
+  if (!fs.existsSync(headPath)) {
+    return { success: false, error: 'Not a git repository' }
+  }
+
+  try {
+    const watcher = fs.watch(headPath, { persistent: false }, (eventType) => {
+      if (eventType === 'change' && mainWindow) {
+        // Notify renderer that git state changed
+        mainWindow.webContents.send('git:changed', projectPath)
+      }
+    })
+
+    gitWatchers.set(projectPath, watcher)
+    return { success: true }
+  } catch (err) {
+    console.error('Failed to watch git:', err)
+    return { success: false, error: String(err) }
+  }
+})
+
+// Stop watching a project's git directory
+ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
+  const watcher = gitWatchers.get(projectPath)
+  if (watcher) {
+    watcher.close()
+    gitWatchers.delete(projectPath)
+  }
+  return { success: true }
 })
 
 // Storage IPC handlers (for Zustand persistence)

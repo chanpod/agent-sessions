@@ -14,13 +14,15 @@ interface SidebarProps {
   onCloseTerminal: (id: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
+  onRestartServer: (serverId: string) => void
+  onDeleteServer: (serverId: string) => void
 }
 
 const MIN_WIDTH = 180
 const MAX_WIDTH = 500
 const DEFAULT_WIDTH = 256
 
-export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onStopServer }: SidebarProps) {
+export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
   const { projects } = useProjectStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [showNewProject, setShowNewProject] = useState(false)
@@ -122,6 +124,8 @@ export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onSt
                   onCloseTerminal={onCloseTerminal}
                   onStartServer={onStartServer}
                   onStopServer={onStopServer}
+                  onRestartServer={onRestartServer}
+                  onDeleteServer={onDeleteServer}
                 />
               ))}
             </div>

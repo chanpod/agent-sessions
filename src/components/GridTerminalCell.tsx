@@ -1,29 +1,33 @@
-import { X, Pencil, Check } from 'lucide-react'
+import { X, Pencil, Check, Maximize2 } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useProjectStore } from '../stores/project-store'
 import { useGridStore } from '../stores/grid-store'
 import { Terminal } from './Terminal'
+import { ActivityIndicator } from './ActivityIndicator'
 import { cn } from '../lib/utils'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-interface GridTerminalProps {
+interface GridTerminalCellProps {
   session: TerminalSession
+  gridId: string
 }
 
-export function GridTerminal({ session }: GridTerminalProps) {
-  const { focusedGridTerminalId, setFocusedTerminal, removeFromGrid } = useGridStore()
+export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
+  const { grids, setFocusedTerminal, removeTerminalFromGrid, createGrid } = useGridStore()
   const { updateSessionTitle, setActiveSession } = useTerminalStore()
   const { projects } = useProjectStore()
-  const isFocused = focusedGridTerminalId === session.id
+
+  const grid = grids.find((g) => g.id === gridId)
+  const isFocused = grid?.focusedTerminalId === session.id
 
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(session.title)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Get project name
-  const project = projects.find(p => p.id === session.projectId)
+  const project = projects.find((p) => p.id === session.projectId)
   const projectName = project?.name || 'Unknown'
 
   // Focus input when editing starts
@@ -63,7 +67,10 @@ export function GridTerminal({ session }: GridTerminalProps) {
     transition,
     isDragging,
     isOver,
-  } = useSortable({ id: session.id })
+  } = useSortable({
+    id: session.id,
+    data: { gridId, terminalTitle: session.title },
+  })
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -74,13 +81,26 @@ export function GridTerminal({ session }: GridTerminalProps) {
   const showDropIndicator = isOver && !isDragging
 
   const handleFocus = () => {
-    setFocusedTerminal(session.id)
+    setFocusedTerminal(gridId, session.id)
     setActiveSession(session.id)
+  }
+
+  const handleEject = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    // Remove from current grid and create new grid for this terminal
+    removeTerminalFromGrid(gridId, session.id)
+    createGrid(session.id)
   }
 
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation()
-    removeFromGrid(session.id)
+    removeTerminalFromGrid(gridId, session.id)
+    // If this was the only terminal in the grid, create a new grid for it
+    // (so it doesn't disappear entirely)
+    const gridState = useGridStore.getState()
+    if (!gridState.getGridForTerminal(session.id)) {
+      createGrid(session.id)
+    }
   }
 
   return (
@@ -162,10 +182,17 @@ export function GridTerminal({ session }: GridTerminalProps) {
               <Check className="w-3 h-3" />
             </button>
           )}
-          {session.status === 'running' ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500" title="Running" />
-          ) : (
-            <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" title="Exited" />
+          <ActivityIndicator sessionId={session.id} className="w-1.5 h-1.5" />
+          {/* Eject button - only show if grid has multiple terminals */}
+          {grid && grid.terminalIds.length > 1 && (
+            <button
+              onClick={handleEject}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 opacity-0 group-hover:opacity-100"
+              title="Pop out to own view"
+            >
+              <Maximize2 className="w-3 h-3" />
+            </button>
           )}
           <button
             onClick={handleRemove}
@@ -180,7 +207,7 @@ export function GridTerminal({ session }: GridTerminalProps) {
 
       {/* Terminal */}
       <div className="flex-1 min-h-0">
-        <Terminal sessionId={session.id} />
+        <Terminal sessionId={session.id} gridId={gridId} />
       </div>
     </div>
   )

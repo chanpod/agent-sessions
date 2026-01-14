@@ -110,6 +110,15 @@ const electronAPI = {
       ipcRenderer.invoke('git:checkout', projectPath, branch),
     fetch: (projectPath: string): Promise<GitResult> =>
       ipcRenderer.invoke('git:fetch', projectPath),
+    watch: (projectPath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:watch', projectPath),
+    unwatch: (projectPath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:unwatch', projectPath),
+    onChanged: (callback: (projectPath: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
+      ipcRenderer.on('git:changed', handler)
+      return () => ipcRenderer.removeListener('git:changed', handler)
+    },
   },
   store: {
     get: (key: string): Promise<unknown> =>
