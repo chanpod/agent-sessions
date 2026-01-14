@@ -59,6 +59,51 @@ export interface GitResult {
   error?: string
 }
 
+export interface ChangedFile {
+  path: string
+  status: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed' | 'copied'
+  staged: boolean
+}
+
+export interface ChangedFilesResult {
+  success: boolean
+  files?: ChangedFile[]
+  error?: string
+}
+
+export interface GitFileContentResult {
+  success: boolean
+  content?: string
+  error?: string
+  isNew?: boolean
+}
+
+export interface FileReadResult {
+  success: boolean
+  content?: string
+  size?: number
+  modified?: string
+  error?: string
+}
+
+export interface FileWriteResult {
+  success: boolean
+  error?: string
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+  isFile: boolean
+}
+
+export interface DirListResult {
+  success: boolean
+  items?: DirEntry[]
+  error?: string
+}
+
 const electronAPI = {
   pty: {
     create: (options: PtyOptions): Promise<TerminalInfo> =>
@@ -92,6 +137,8 @@ const electronAPI = {
       ipcRenderer.invoke('system:get-shells'),
     getInfo: (): Promise<SystemInfo> =>
       ipcRenderer.invoke('system:get-info'),
+    openInEditor: (projectPath: string): Promise<{ success: boolean; editor?: string; error?: string }> =>
+      ipcRenderer.invoke('system:open-in-editor', projectPath),
   },
   dialog: {
     openDirectory: (): Promise<string | null> =>
@@ -114,6 +161,10 @@ const electronAPI = {
       ipcRenderer.invoke('git:watch', projectPath),
     unwatch: (projectPath: string): Promise<GitResult> =>
       ipcRenderer.invoke('git:unwatch', projectPath),
+    getChangedFiles: (projectPath: string): Promise<ChangedFilesResult> =>
+      ipcRenderer.invoke('git:get-changed-files', projectPath),
+    getFileContent: (projectPath: string, filePath: string): Promise<GitFileContentResult> =>
+      ipcRenderer.invoke('git:get-file-content', projectPath, filePath),
     onChanged: (callback: (projectPath: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)
@@ -129,6 +180,14 @@ const electronAPI = {
       ipcRenderer.invoke('store:delete', key),
     clear: (): Promise<void> =>
       ipcRenderer.invoke('store:clear'),
+  },
+  fs: {
+    readFile: (filePath: string): Promise<FileReadResult> =>
+      ipcRenderer.invoke('fs:readFile', filePath),
+    writeFile: (filePath: string, content: string): Promise<FileWriteResult> =>
+      ipcRenderer.invoke('fs:writeFile', filePath, content),
+    listDir: (dirPath: string): Promise<DirListResult> =>
+      ipcRenderer.invoke('fs:listDir', dirPath),
   },
 }
 

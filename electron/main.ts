@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { execSync } from 'child_process'
@@ -439,6 +440,184 @@ ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
   return { success: true }
 })
 
+// Get list of changed files with their status
+ipcMain.handle('git:get-changed-files', async (_event, projectPath: string) => {
+  try {
+    const gitDir = path.join(projectPath, '.git')
+    if (!fs.existsSync(gitDir)) {
+      return { success: false, error: 'Not a git repository' }
+    }
+
+    const status = execSync('git status --porcelain', {
+      cwd: projectPath,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    interface ChangedFile {
+      path: string
+      status: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed' | 'copied'
+      staged: boolean
+    }
+
+    const files: ChangedFile[] = []
+
+    status.split('\n').forEach((line) => {
+      if (!line.trim()) return
+
+      const stagedCode = line[0]
+      const unstagedCode = line[1]
+      let filePath = line.slice(3)
+
+      // Handle renamed files (format: "R  old -> new")
+      if (filePath.includes(' -> ')) {
+        filePath = filePath.split(' -> ')[1]
+      }
+
+      // Determine status based on codes
+      const getStatus = (code: string): ChangedFile['status'] => {
+        switch (code) {
+          case 'M':
+            return 'modified'
+          case 'A':
+            return 'added'
+          case 'D':
+            return 'deleted'
+          case 'R':
+            return 'renamed'
+          case 'C':
+            return 'copied'
+          case '?':
+            return 'untracked'
+          default:
+            return 'modified'
+        }
+      }
+
+      // Determine if file has staged changes
+      const isStaged = stagedCode !== ' ' && stagedCode !== '?'
+
+      // Use staged status if available, otherwise use unstaged
+      const statusCode = stagedCode !== ' ' && stagedCode !== '?' ? stagedCode : unstagedCode
+      const fileStatus = statusCode === '?' ? 'untracked' : getStatus(statusCode)
+
+      files.push({
+        path: filePath,
+        status: fileStatus,
+        staged: isStaged,
+      })
+    })
+
+    return { success: true, files }
+  } catch (err) {
+    console.error('Failed to get changed files:', err)
+    return { success: false, error: String(err) }
+  }
+})
+
+// Get file content from git HEAD (for diff view)
+ipcMain.handle(
+  'git:get-file-content',
+  async (_event, projectPath: string, filePath: string) => {
+    try {
+      const gitDir = path.join(projectPath, '.git')
+      if (!fs.existsSync(gitDir)) {
+        return { success: false, error: 'Not a git repository' }
+      }
+
+      // Get the file content from HEAD
+      const content = execSync(`git show HEAD:${filePath}`, {
+        cwd: projectPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+
+      return { success: true, content }
+    } catch (err) {
+      // File might be new (untracked) and not in HEAD
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      if (errorMsg.includes('does not exist') || errorMsg.includes('fatal:')) {
+        return { success: false, error: 'File not in git history', isNew: true }
+      }
+      console.error('Failed to get git file content:', err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
+
+// File system IPC handlers
+ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: 'File not found' }
+    }
+
+    const stats = fs.statSync(filePath)
+    if (stats.isDirectory()) {
+      return { success: false, error: 'Path is a directory' }
+    }
+
+    // Limit file size to 5MB for safety
+    if (stats.size > 5 * 1024 * 1024) {
+      return { success: false, error: 'File too large (max 5MB)' }
+    }
+
+    const content = fs.readFileSync(filePath, 'utf-8')
+    return {
+      success: true,
+      content,
+      size: stats.size,
+      modified: stats.mtime.toISOString(),
+    }
+  } catch (err) {
+    console.error('Failed to read file:', err)
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string) => {
+  try {
+    fs.writeFileSync(filePath, content, 'utf-8')
+    return { success: true }
+  } catch (err) {
+    console.error('Failed to write file:', err)
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
+  try {
+    if (!fs.existsSync(dirPath)) {
+      return { success: false, error: 'Directory not found' }
+    }
+
+    const stats = fs.statSync(dirPath)
+    if (!stats.isDirectory()) {
+      return { success: false, error: 'Path is not a directory' }
+    }
+
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    const items = entries.map((entry) => ({
+      name: entry.name,
+      path: path.join(dirPath, entry.name),
+      isDirectory: entry.isDirectory(),
+      isFile: entry.isFile(),
+    }))
+
+    // Sort: directories first, then files, alphabetically
+    items.sort((a, b) => {
+      if (a.isDirectory && !b.isDirectory) return -1
+      if (!a.isDirectory && b.isDirectory) return 1
+      return a.name.localeCompare(b.name)
+    })
+
+    return { success: true, items }
+  } catch (err) {
+    console.error('Failed to list directory:', err)
+    return { success: false, error: String(err) }
+  }
+})
+
 // Storage IPC handlers (for Zustand persistence)
 ipcMain.handle('store:get', async (_event, key: string) => {
   const value = store.get(key)
@@ -459,6 +638,37 @@ ipcMain.handle('store:delete', async (_event, key: string) => {
 ipcMain.handle('store:clear', async () => {
   console.log('[Store] Clear all')
   store.clear()
+})
+
+// Open a path in the default code editor
+ipcMain.handle('system:open-in-editor', async (_event, projectPath: string) => {
+  try {
+    // Try VS Code first (most common for developers)
+    const editors = process.platform === 'win32'
+      ? ['code', 'code-insiders', 'cursor']
+      : ['code', 'code-insiders', 'cursor', 'subl', 'atom']
+
+    for (const editor of editors) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          exec(`${editor} "${projectPath}"`, (error) => {
+            if (error) reject(error)
+            else resolve()
+          })
+        })
+        return { success: true, editor }
+      } catch {
+        // Try next editor
+      }
+    }
+
+    // Fall back to system default (open folder in file manager)
+    await shell.openPath(projectPath)
+    return { success: true, editor: 'system-default' }
+  } catch (err) {
+    console.error('Failed to open in editor:', err)
+    return { success: false, error: String(err) }
+  }
 })
 
 app.whenReady().then(createWindow)

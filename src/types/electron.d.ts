@@ -57,6 +57,51 @@ export interface GitResult {
   error?: string
 }
 
+export interface ChangedFile {
+  path: string
+  status: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed' | 'copied'
+  staged: boolean
+}
+
+export interface ChangedFilesResult {
+  success: boolean
+  files?: ChangedFile[]
+  error?: string
+}
+
+export interface GitFileContentResult {
+  success: boolean
+  content?: string
+  error?: string
+  isNew?: boolean
+}
+
+export interface FileReadResult {
+  success: boolean
+  content?: string
+  size?: number
+  modified?: string
+  error?: string
+}
+
+export interface FileWriteResult {
+  success: boolean
+  error?: string
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+  isFile: boolean
+}
+
+export interface DirListResult {
+  success: boolean
+  items?: DirEntry[]
+  error?: string
+}
+
 export interface ElectronAPI {
   pty: {
     create: (options: PtyOptions) => Promise<TerminalInfo>
@@ -71,6 +116,7 @@ export interface ElectronAPI {
   system: {
     getShells: () => Promise<ShellInfo[]>
     getInfo: () => Promise<SystemInfo>
+    openInEditor: (projectPath: string) => Promise<{ success: boolean; editor?: string; error?: string }>
   }
   dialog: {
     openDirectory: () => Promise<string | null>
@@ -85,6 +131,8 @@ export interface ElectronAPI {
     fetch: (projectPath: string) => Promise<GitResult>
     watch: (projectPath: string) => Promise<GitResult>
     unwatch: (projectPath: string) => Promise<GitResult>
+    getChangedFiles: (projectPath: string) => Promise<ChangedFilesResult>
+    getFileContent: (projectPath: string, filePath: string) => Promise<GitFileContentResult>
     onChanged: (callback: (projectPath: string) => void) => () => void
   }
   store: {
@@ -92,6 +140,11 @@ export interface ElectronAPI {
     set: (key: string, value: unknown) => Promise<void>
     delete: (key: string) => Promise<void>
     clear: () => Promise<void>
+  }
+  fs: {
+    readFile: (filePath: string) => Promise<FileReadResult>
+    writeFile: (filePath: string, content: string) => Promise<FileWriteResult>
+    listDir: (dirPath: string) => Promise<DirListResult>
   }
 }
 

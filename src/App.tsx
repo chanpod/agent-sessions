@@ -24,6 +24,7 @@ function App() {
   const [activeDragTitle, setActiveDragTitle] = useState<string>('')
   const {
     addSession,
+    addSessionsBatch,
     removeSession,
     updateSessionTitle,
     markSessionExited,
@@ -81,8 +82,12 @@ function App() {
 
     console.log(`Restoring ${configs.length} terminals...`)
 
-    // Process all configs
+    // Process all configs and batch the additions
     ;(async () => {
+      const sessionsToAdd: Parameters<typeof addSession>[0][] = []
+      const configUpdates: { oldId: string; newConfig: Parameters<typeof saveConfig>[0] }[] = []
+      const gridsToCreate: string[] = []
+
       for (const config of configs) {
         try {
           const info = await window.electron!.pty.create({
@@ -90,7 +95,7 @@ function App() {
             cwd: config.cwd,
           })
 
-          addSession({
+          sessionsToAdd.push({
             id: info.id,
             projectId: config.projectId,
             pid: info.pid,
@@ -102,27 +107,43 @@ function App() {
           })
 
           // Check if terminal already has a grid (from persisted state)
-          // If not, create one
           const existingGrid = useGridStore.getState().getGridForTerminal(info.id)
           if (!existingGrid) {
-            createGrid(info.id)
+            gridsToCreate.push(info.id)
           }
 
-          // Remove old config before saving with new session ID
-          removeSavedConfig(config.id)
-          saveConfig({
-            id: info.id,
-            projectId: config.projectId,
-            shell: config.shell,
-            shellName: config.shellName,
-            cwd: config.cwd,
+          configUpdates.push({
+            oldId: config.id,
+            newConfig: {
+              id: info.id,
+              projectId: config.projectId,
+              shell: config.shell,
+              shellName: config.shellName,
+              cwd: config.cwd,
+            },
           })
         } catch (err) {
           console.error(`Failed to restore terminal ${config.shellName}:`, err)
         }
       }
+
+      // Batch add all sessions at once
+      if (sessionsToAdd.length > 0) {
+        addSessionsBatch(sessionsToAdd)
+      }
+
+      // Create grids for terminals that need them
+      for (const terminalId of gridsToCreate) {
+        createGrid(terminalId)
+      }
+
+      // Update configs
+      for (const { oldId, newConfig } of configUpdates) {
+        removeSavedConfig(oldId)
+        saveConfig(newConfig)
+      }
     })()
-  }, [isElectron, addSession, saveConfig, removeSavedConfig, createGrid])
+  }, [isElectron, addSessionsBatch, saveConfig, removeSavedConfig, createGrid])
 
   useEffect(() => {
     if (!isElectron || !window.electron) return

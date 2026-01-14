@@ -42,6 +42,7 @@ interface TerminalStore {
 
   // Actions for runtime sessions
   addSession: (session: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime'>) => void
+  addSessionsBatch: (sessions: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime'>[]) => void
   removeSession: (id: string) => void
   removeSessionsByProject: (projectId: string) => void
   setActiveSession: (id: string | null) => void
@@ -88,6 +89,20 @@ export const useTerminalStore = create<TerminalStore>()(
           return {
             sessions: [...state.sessions, newSession],
             activeSessionId: session.id,
+          }
+        }),
+
+      addSessionsBatch: (sessions) =>
+        set((state) => {
+          const newSessions = sessions.map((session) => ({
+            ...session,
+            isActive: true,
+            status: 'running' as const,
+            lastActivityTime: Date.now(),
+          }))
+          return {
+            sessions: [...state.sessions, ...newSessions],
+            activeSessionId: newSessions[newSessions.length - 1]?.id ?? state.activeSessionId,
           }
         }),
 

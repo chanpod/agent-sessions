@@ -1,12 +1,15 @@
-import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil } from 'lucide-react'
+import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil, FileCode, FileText, FilePlus, FileMinus, FileQuestion, FileSymlink, ExternalLink } from 'lucide-react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { useGridStore } from '../stores/grid-store'
 import { ActivityIndicator } from './ActivityIndicator'
+import { FileBrowser } from './FileBrowser'
 import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
+import type { ChangedFile } from '../types/electron'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
+import { useFileViewerStore } from '../stores/file-viewer-store'
 
 interface ShellInfo {
   name: string
@@ -42,6 +45,7 @@ export function ProjectItem({
   const { toggleProjectExpanded, activeProjectId, setActiveProject } = useProjectStore()
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { servers } = useServerStore()
+  const { openFile } = useFileViewerStore()
 
   const [showShellMenu, setShowShellMenu] = useState(false)
   const [showServerMenu, setShowServerMenu] = useState(false)
@@ -57,6 +61,9 @@ export function ProjectItem({
   const [remoteBranches, setRemoteBranches] = useState<string[]>([])
   const [isFetching, setIsFetching] = useState(false)
   const [isCheckingOut, setIsCheckingOut] = useState(false)
+  const [showFileBrowser, setShowFileBrowser] = useState(false)
+  const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([])
+  const [showChangedFilesMenu, setShowChangedFilesMenu] = useState(false)
 
   // Filter out server terminals from regular terminal list (they have shell: '')
   const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
@@ -76,9 +83,19 @@ export function ProjectItem({
       if (result.isGitRepo) {
         setGitBranch(result.branch || null)
         setGitHasChanges(result.hasChanges || false)
+        // Fetch changed files if there are changes
+        if (result.hasChanges) {
+          const filesResult = await window.electron!.git.getChangedFiles(project.path)
+          if (filesResult.success && filesResult.files) {
+            setChangedFiles(filesResult.files)
+          }
+        } else {
+          setChangedFiles([])
+        }
       } else {
         setGitBranch(null)
         setGitHasChanges(false)
+        setChangedFiles([])
       }
     }
 
@@ -196,6 +213,45 @@ export function ProjectItem({
     } finally {
       setIsCheckingOut(false)
     }
+  }
+
+  const handleChangedFilesClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setShowChangedFilesMenu(!showChangedFilesMenu)
+    setShowBranchMenu(false)
+    setShowShellMenu(false)
+    setShowServerMenu(false)
+  }
+
+  const handleOpenInEditor = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.electron) return
+    await window.electron.system.openInEditor(project.path)
+  }
+
+  const handleOpenChangedFile = async (filePath: string) => {
+    if (!window.electron) return
+
+    // Construct full path (handle both / and \ separators)
+    const separator = project.path.includes('\\') ? '\\' : '/'
+    const fullPath = `${project.path}${separator}${filePath}`.replace(/\/\//g, '/').replace(/\\\\/g, '\\')
+    const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
+
+    // Read file content
+    const result = await window.electron.fs.readFile(fullPath)
+    if (result.success && result.content !== undefined) {
+      openFile(fullPath, fileName, result.content, project.path)
+      setShowChangedFilesMenu(false)
+    }
+  }
+
+  // Group changed files by status
+  const groupedFiles = {
+    modified: changedFiles.filter((f) => f.status === 'modified'),
+    added: changedFiles.filter((f) => f.status === 'added'),
+    deleted: changedFiles.filter((f) => f.status === 'deleted'),
+    untracked: changedFiles.filter((f) => f.status === 'untracked'),
+    renamed: changedFiles.filter((f) => f.status === 'renamed'),
   }
 
   return (
@@ -322,7 +378,144 @@ export function ProjectItem({
             )}
           </div>
         )}
+        {/* Changed Files Badge */}
+        {gitHasChanges && changedFiles.length > 0 && (
+          <div className="relative">
+            <button
+              onClick={handleChangedFilesClick}
+              className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full transition-colors bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+            >
+              <FileText className="w-3 h-3" />
+              <span>{changedFiles.length} {changedFiles.length === 1 ? 'file' : 'files'}</span>
+            </button>
+
+            {showChangedFilesMenu && (
+              <div className="absolute left-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[250px] max-h-[400px] overflow-y-auto">
+                {/* Modified files */}
+                {groupedFiles.modified.length > 0 && (
+                  <>
+                    <div className="px-3 py-1 text-[10px] text-amber-400 uppercase flex items-center gap-1">
+                      <FileText className="w-3 h-3" />
+                      Modified ({groupedFiles.modified.length})
+                    </div>
+                    {groupedFiles.modified.map((file) => (
+                      <button
+                        key={file.path}
+                        onClick={() => handleOpenChangedFile(file.path)}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 text-left"
+                      >
+                        <FileText className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
+                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {/* Added files */}
+                {groupedFiles.added.length > 0 && (
+                  <>
+                    {groupedFiles.modified.length > 0 && <div className="border-t border-zinc-700 my-1" />}
+                    <div className="px-3 py-1 text-[10px] text-green-400 uppercase flex items-center gap-1">
+                      <FilePlus className="w-3 h-3" />
+                      Added ({groupedFiles.added.length})
+                    </div>
+                    {groupedFiles.added.map((file) => (
+                      <button
+                        key={file.path}
+                        onClick={() => handleOpenChangedFile(file.path)}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 text-left"
+                      >
+                        <FilePlus className="w-3 h-3 text-green-400 flex-shrink-0" />
+                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
+                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {/* Deleted files */}
+                {groupedFiles.deleted.length > 0 && (
+                  <>
+                    {(groupedFiles.modified.length > 0 || groupedFiles.added.length > 0) && <div className="border-t border-zinc-700 my-1" />}
+                    <div className="px-3 py-1 text-[10px] text-red-400 uppercase flex items-center gap-1">
+                      <FileMinus className="w-3 h-3" />
+                      Deleted ({groupedFiles.deleted.length})
+                    </div>
+                    {groupedFiles.deleted.map((file) => (
+                      <div
+                        key={file.path}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500"
+                        title="File deleted"
+                      >
+                        <FileMinus className="w-3 h-3 text-red-400 flex-shrink-0" />
+                        <span className="truncate flex-1 line-through" title={file.path}>{file.path}</span>
+                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                {/* Renamed files */}
+                {groupedFiles.renamed.length > 0 && (
+                  <>
+                    {(groupedFiles.modified.length > 0 || groupedFiles.added.length > 0 || groupedFiles.deleted.length > 0) && <div className="border-t border-zinc-700 my-1" />}
+                    <div className="px-3 py-1 text-[10px] text-blue-400 uppercase flex items-center gap-1">
+                      <FileSymlink className="w-3 h-3" />
+                      Renamed ({groupedFiles.renamed.length})
+                    </div>
+                    {groupedFiles.renamed.map((file) => (
+                      <button
+                        key={file.path}
+                        onClick={() => handleOpenChangedFile(file.path)}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 text-left"
+                      >
+                        <FileSymlink className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
+                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {/* Untracked files */}
+                {groupedFiles.untracked.length > 0 && (
+                  <>
+                    {(groupedFiles.modified.length > 0 || groupedFiles.added.length > 0 || groupedFiles.deleted.length > 0 || groupedFiles.renamed.length > 0) && <div className="border-t border-zinc-700 my-1" />}
+                    <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase flex items-center gap-1">
+                      <FileQuestion className="w-3 h-3" />
+                      Untracked ({groupedFiles.untracked.length})
+                    </div>
+                    {groupedFiles.untracked.map((file) => (
+                      <button
+                        key={file.path}
+                        onClick={() => handleOpenChangedFile(file.path)}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-700 text-left"
+                      >
+                        <FileQuestion className="w-3 h-3 text-zinc-500 flex-shrink-0" />
+                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {changedFiles.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-zinc-500">
+                    No changes
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <span className="flex-1" />
+        <button
+          onClick={handleOpenInEditor}
+          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+          title="Open in editor"
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+        </button>
         <span className="text-xs text-zinc-600 opacity-0 group-hover:opacity-100">
           {projectSessions.length + projectServers.length}
         </span>
@@ -500,6 +693,33 @@ export function ProjectItem({
             )}
           </div>
 
+          {/* Files Section */}
+          <div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowFileBrowser(!showFileBrowser)
+              }}
+              className="w-full flex items-center justify-between px-2 py-1 hover:bg-zinc-800/30 rounded"
+            >
+              <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                <ChevronRight
+                  className={cn(
+                    'w-3 h-3 transition-transform',
+                    showFileBrowser && 'rotate-90'
+                  )}
+                />
+                Files
+              </span>
+              <FileCode className="w-3.5 h-3.5 text-zinc-600" />
+            </button>
+            {showFileBrowser && (
+              <div className="max-h-[300px] overflow-y-auto">
+                <FileBrowser rootPath={project.path} maxDepth={4} />
+              </div>
+            )}
+          </div>
+
           {/* Worktrees Section (placeholder) */}
           <div>
             <div className="flex items-center justify-between px-2 py-1">
@@ -543,7 +763,6 @@ function TerminalItem({ session, isActive, onSelect, onClose, dragHandleProps }:
   }, [isEditing])
 
   const handleSelect = () => {
-    console.log('handleSelect', session.id)
     if (isEditing) return
     onSelect()
     // If terminal is in a grid, make that grid active and focus the terminal
@@ -589,12 +808,13 @@ function TerminalItem({ session, isActive, onSelect, onClose, dragHandleProps }:
         )}
       >
         <div
-          className="cursor-grab active:cursor-grabbing touch-none"
+          className="active:cursor-grabbing touch-none p-0.5"
+          {...dragHandleProps}
+          style={{ cursor: 'grab' }}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
-          {...dragHandleProps}
         >
-          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-30 group-hover:opacity-70 pointer-events-none" />
+          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-30 group-hover:opacity-70" />
         </div>
         <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
         <Terminal className={cn('w-3 h-3 flex-shrink-0', isActive && 'text-green-400')} />
