@@ -10,7 +10,9 @@
       "WebSearch",
       "Bash(pnpm remove:*)",
       "Bash(pnpm add:*)",
-      "Bash(npm run build-release:*)"
+      "Bash(npm run build-release:*)",
+      "Bash(npm run build:*)",
+      "Bash(pnpm run build:*)"
     ]
   }
 }

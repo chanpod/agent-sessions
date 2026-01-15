@@ -29,6 +29,7 @@ export const useDetectedServersStore = create<DetectedServersState>((set, get) =
   servers: new Map(),
 
   addServer: (terminalId, server) => {
+    console.log(`[DetectedServersStore] Adding server ${server.url} for terminal ${terminalId}`)
     set((state) => {
       const key = `${terminalId}:${server.url}`
       const newServers = new Map(state.servers)
@@ -44,12 +45,14 @@ export const useDetectedServersStore = create<DetectedServersState>((set, get) =
   },
 
   markServerCrashed: (terminalId, exitCode) => {
+    console.log(`[DetectedServersStore] markServerCrashed called for terminal ${terminalId} with exit code ${exitCode}`)
     set((state) => {
       const newServers = new Map(state.servers)
       let updated = false
 
       for (const [key, server] of newServers.entries()) {
         if (server.terminalId === terminalId && server.status === 'running') {
+          console.log(`[DetectedServersStore] Marking server ${server.url} as crashed`)
           newServers.set(key, {
             ...server,
             status: 'crashed',
@@ -58,6 +61,10 @@ export const useDetectedServersStore = create<DetectedServersState>((set, get) =
           })
           updated = true
         }
+      }
+
+      if (!updated) {
+        console.log(`[DetectedServersStore] No running servers found for terminal ${terminalId}`)
       }
 
       return updated ? { servers: newServers } : state

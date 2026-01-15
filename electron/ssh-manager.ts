@@ -298,20 +298,29 @@ export class SSHManager extends EventEmitter {
 
       // User@host
       args.push(`${connection.config.username}@${connection.config.host}`)
+
+      // Force TTY allocation for interactive shell
+      args.push('-t')
     } else {
       // For key/agent auth, use ControlMaster
       args = this.buildSSHArgs(connection.config, connection.controlPath, false)
+
+      // Force TTY allocation for interactive shell
+      args.push('-t')
     }
 
-    // Add command to cd to remote directory
+    // Add command to cd to remote directory if specified
     if (remoteCwd) {
-      args.push(`cd ${remoteCwd} && exec $SHELL -l`)
-    } else {
-      args.push('exec $SHELL -l') // Login shell
+      // Use bash -c to run command that changes directory and starts shell
+      args.push(`cd ${remoteCwd} && exec bash -l`)
     }
+    // Note: If no remoteCwd, SSH will automatically start the user's default login shell
+
+    // On Windows, node-pty needs the .exe extension
+    const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
 
     return {
-      shell: 'ssh',
+      shell: sshCommand,
       args
     }
   }

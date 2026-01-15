@@ -134,7 +134,7 @@ export function FileViewer() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 border-l border-zinc-800">
+    <div className="flex flex-col h-full bg-zinc-950">
       {/* Tab bar */}
       <div className="flex items-center bg-zinc-950 border-b border-zinc-800 overflow-x-auto">
         <div className="flex flex-1 min-w-0">

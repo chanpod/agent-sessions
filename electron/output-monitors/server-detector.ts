@@ -32,13 +32,13 @@ export class ServerDetector implements OutputDetector {
   // Patterns to detect server URLs
   private readonly patterns = [
     // Direct URL patterns
-    /(?:Local|Network|running at|available at|listening on|server started at|started on)[\s:]+(?:https?:\/\/)?([a-zA-Z0-9\-._~:/?#[\]@!$&'()*+,;=]+:\d+)/gi,
+    /(?:Local|Network|running at|running on|available at|listening on|server started at|started on)[\s:]+(?:https?:\/\/)?([a-zA-Z0-9\-._~:/?#[\]@!$&'()*+,;=]+:\d+)/gi,
 
     // Port-only patterns (will construct URL)
     /(?:running on|listening on|started on|server.* on|port)[:\s]+(?:localhost:)?(\d{2,5})/gi,
 
-    // Framework-specific patterns
-    /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|[:a-fA-F0-9]+):\d+/gi,
+    // Framework-specific patterns (now with capture group!)
+    /(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|[:a-fA-F0-9]+):\d+)/gi,
 
     // Next.js style
     /(?:Local:|Network:)\s+(https?:\/\/[^\s]+)/gi,

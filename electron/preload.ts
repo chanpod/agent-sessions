@@ -178,6 +178,8 @@ const electronAPI = {
       ipcRenderer.invoke('system:get-info'),
     openInEditor: (projectPath: string): Promise<{ success: boolean; editor?: string; error?: string }> =>
       ipcRenderer.invoke('system:open-in-editor', projectPath),
+    openExternal: (url: string): Promise<void> =>
+      ipcRenderer.invoke('system:open-external', url),
   },
   dialog: {
     openDirectory: (): Promise<string | null> =>
@@ -210,6 +212,8 @@ const electronAPI = {
       ipcRenderer.invoke('git:unstage-file', projectPath, filePath),
     discardFile: (projectPath: string, filePath: string): Promise<GitResult> =>
       ipcRenderer.invoke('git:discard-file', projectPath, filePath),
+    commit: (projectPath: string, message: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:commit', projectPath, message),
     onChanged: (callback: (projectPath: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)

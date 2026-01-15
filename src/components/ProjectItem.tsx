@@ -3,6 +3,7 @@ import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { useGridStore } from '../stores/grid-store'
+import { useSSHStore } from '../stores/ssh-store'
 import { ActivityIndicator } from './ActivityIndicator'
 import { FileBrowser } from './FileBrowser'
 import { ProjectTabBar } from './ProjectTabBar'
@@ -51,6 +52,12 @@ export function ProjectItem({
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { servers } = useServerStore()
   const { openFile } = useFileViewerStore()
+  const { getConnection } = useSSHStore()
+
+  // Get SSH connection info if this is an SSH project
+  const sshConnection = project.isSSHProject && project.sshConnectionId
+    ? getConnection(project.sshConnectionId)
+    : null
 
   const [showShellMenu, setShowShellMenu] = useState(false)
   const [showServerMenu, setShowServerMenu] = useState(false)
@@ -93,6 +100,18 @@ export function ProjectItem({
   useEffect(() => {
     if (!window.electron) return
 
+    // Skip git detection for SSH projects for now
+    // TODO: Implement remote git detection over SSH
+    if (project.isSSHProject) {
+      setGitBranch(null)
+      setGitHasChanges(false)
+      setChangedFiles([])
+      return
+    }
+
+    // Skip if project has no path
+    if (!project.path) return
+
     const fetchGitInfo = async () => {
       const result = await window.electron!.git.getInfo(project.path)
       if (result.isGitRepo) {
@@ -131,7 +150,7 @@ export function ProjectItem({
       unsubscribe()
       window.electron?.git.unwatch(project.path)
     }
-  }, [project.path])
+  }, [project.path, project.isSSHProject])
 
   // Fetch scripts when project is expanded
   useEffect(() => {
@@ -200,14 +219,23 @@ export function ProjectItem({
     }
   }
 
-  const refreshGitInfo = async () => {
-    if (!window.electron) return
-    const result = await window.electron.git.getInfo(project.path)
-    if (result.isGitRepo) {
-      setGitBranch(result.branch || null)
-      setGitHasChanges(result.hasChanges || false)
+    const refreshGitInfo = async () => {
+      if (!window.electron) return
+      const result = await window.electron.git.getInfo(project.path)
+      if (result.isGitRepo) {
+        setGitBranch(result.branch || null)
+        setGitHasChanges(result.hasChanges || false)
+        // Fetch changed files
+        if (result.hasChanges) {
+          const filesResult = await window.electron.git.getChangedFiles(project.path)
+          if (filesResult.success && filesResult.files) {
+            setChangedFiles(filesResult.files)
+          }
+        } else {
+          setChangedFiles([])
+        }
+      }
     }
-  }
 
   const handleBranchClick = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -377,6 +405,12 @@ export function ProjectItem({
         />
         <Folder className={cn('w-4 h-4 flex-shrink-0', hasFocusedTerminal ? 'text-green-400' : 'text-blue-400')} />
         <span className="truncate font-medium">{project.name}</span>
+        {sshConnection && (
+          <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-400">
+            <Cloud className="w-3 h-3" />
+            <span className="max-w-[80px] truncate">{sshConnection.name}</span>
+          </span>
+        )}
         {gitBranch && (
           <>
             <button
@@ -531,6 +565,7 @@ export function ProjectItem({
           <div className="mt-2 space-y-1">
             {project.activeTab === 'terminals' && (
               <TerminalsTab
+                project={project}
                 projectId={project.id}
                 projectPath={project.path}
                 shells={shells}

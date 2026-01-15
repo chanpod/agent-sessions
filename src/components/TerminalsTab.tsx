@@ -4,6 +4,7 @@ import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem, ServerItem } from './ProjectItem'
+import { Project } from '../stores/project-store'
 
 interface ShellInfo {
   name: string
@@ -16,6 +17,7 @@ interface ScriptInfo {
 }
 
 interface TerminalsTabProps {
+  project: Project
   projectId: string
   projectPath: string
   shells: ShellInfo[]
@@ -28,6 +30,7 @@ interface TerminalsTabProps {
 }
 
 export function TerminalsTab({
+  project,
   projectId,
   projectPath,
   shells,
@@ -42,6 +45,10 @@ export function TerminalsTab({
   const { servers } = useServerStore()
 
   const [showShellMenu, setShowShellMenu] = useState(false)
+
+  // For SSH projects, we'll use a dummy shell - the actual SSH connection
+  // is determined by the project's sshConnectionId
+  const isSSHProject = project.isSSHProject
   const [showServerMenu, setShowServerMenu] = useState(false)
   const [scripts, setScripts] = useState<ScriptInfo[]>([])
   const [packageManager, setPackageManager] = useState('npm')
@@ -83,6 +90,20 @@ export function TerminalsTab({
     setShowShellMenu(false)
   }
 
+  const handleCreateTerminalClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    if (isSSHProject) {
+      // For SSH projects, directly create terminal without showing menu
+      // Use a dummy shell - App.tsx will use the project's SSH connection
+      onCreateTerminal(projectId, { name: 'SSH', path: 'ssh' })
+    } else {
+      // For local projects, show shell menu
+      setShowShellMenu(!showShellMenu)
+      setShowServerMenu(false)
+    }
+  }
+
   const handleScriptSelect = (script: ScriptInfo) => {
     const command = `${packageManager} run ${script.name}`
     onStartServer(projectId, script.name, command)
@@ -109,16 +130,13 @@ export function TerminalsTab({
           </span>
           <div className="relative">
             <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowShellMenu(!showShellMenu)
-                setShowServerMenu(false)
-              }}
+              onClick={handleCreateTerminalClick}
               className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+              title={isSSHProject ? 'Create SSH terminal' : 'Select shell'}
             >
               <Plus className="w-3.5 h-3.5" />
             </button>
-            {showShellMenu && (
+            {showShellMenu && !isSSHProject && (
               <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[140px]">
                 {shells.map((shell) => (
                   <button

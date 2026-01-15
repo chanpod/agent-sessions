@@ -90,16 +90,62 @@ function App() {
 
     // Process all configs and batch the additions
     ;(async () => {
+      // Step 1: Establish SSH connections for SSH projects FIRST
+      const sshProjectConnections = new Set<string>()
+
+      // Identify unique SSH projects that need connections
+      for (const config of configs) {
+        const project = projects.find((p) => p.id === config.projectId)
+        if (project?.isSSHProject && project.sshConnectionId) {
+          sshProjectConnections.add(project.sshConnectionId)
+        }
+      }
+
+      // Establish all SSH connections in parallel
+      if (sshProjectConnections.size > 0) {
+        console.log(`Establishing ${sshProjectConnections.size} SSH connections...`)
+        await Promise.all(
+          Array.from(sshProjectConnections).map(async (connectionId) => {
+            const connection = getConnection(connectionId)
+            if (connection) {
+              try {
+                const result = await window.electron!.ssh.connect(connection)
+                if (result.success) {
+                  console.log(`SSH connection established: ${connection.name}`)
+                } else {
+                  console.error(`Failed to establish SSH connection to ${connection.name}:`, result.error)
+                }
+              } catch (err) {
+                console.error(`Error connecting to ${connection.name}:`, err)
+              }
+            }
+          })
+        )
+      }
+
+      // Step 2: Now restore terminals with connections ready
       const sessionsToAdd: Parameters<typeof addSession>[0][] = []
       const configUpdates: { oldId: string; newConfig: Parameters<typeof saveConfig>[0] }[] = []
       const gridsToCreate: string[] = []
 
       for (const config of configs) {
         try {
-          const info = await window.electron!.pty.create({
-            shell: config.shell,
-            cwd: config.cwd,
-          })
+          let info
+
+          // Check if this config has an SSH connection
+          if (config.sshConnectionId) {
+            // SSH terminal - use SSH connection ID
+            info = await window.electron!.pty.create({
+              sshConnectionId: config.sshConnectionId,
+              remoteCwd: config.cwd || undefined,
+            })
+          } else {
+            // Local terminal
+            info = await window.electron!.pty.create({
+              shell: config.shell,
+              cwd: config.cwd,
+            })
+          }
 
           sessionsToAdd.push({
             id: info.id,
@@ -126,6 +172,7 @@ function App() {
               shell: config.shell,
               shellName: config.shellName,
               cwd: config.cwd,
+              sshConnectionId: config.sshConnectionId,
             },
           })
         } catch (err) {
@@ -149,7 +196,7 @@ function App() {
         saveConfig(newConfig)
       }
     })()
-  }, [isElectron, addSessionsBatch, saveConfig, removeSavedConfig, createGrid])
+  }, [isElectron, addSessionsBatch, saveConfig, removeSavedConfig, createGrid, projects, getConnection])
 
   useEffect(() => {
     if (!isElectron || !window.electron) return
@@ -229,10 +276,45 @@ function App() {
     const project = projects.find((p) => p.id === projectId)
     if (!project) return
 
+    console.log('[handleCreateTerminal] Project:', project.name, 'isSSHProject:', project.isSSHProject, 'sshConnectionId:', project.sshConnectionId)
+
     let info
 
-    // Check if this is an SSH connection (path starts with "ssh:")
-    if (shell.path.startsWith('ssh:')) {
+    // Check if this is an SSH project
+    if (project.isSSHProject && project.sshConnectionId) {
+      const sshConnection = getConnection(project.sshConnectionId)
+
+      if (!sshConnection) {
+        console.error('SSH connection not found:', project.sshConnectionId)
+        alert(`SSH connection not found for project ${project.name}`)
+        return
+      }
+
+      // Connect to SSH if not already connected
+      const connectResult = await window.electron.ssh.connect(sshConnection)
+      if (!connectResult.success) {
+        console.error('Failed to establish SSH connection:', connectResult.error)
+        alert(`Failed to connect to ${sshConnection.name}: ${connectResult.error}`)
+        return
+      }
+
+      // Create terminal with SSH using the project's remote path
+      info = await window.electron.pty.create({
+        sshConnectionId: project.sshConnectionId,
+        remoteCwd: project.remotePath || undefined,
+      })
+
+      // Save config for persistence
+      saveConfig({
+        id: info.id,
+        projectId,
+        shell: 'ssh',
+        shellName: shell.name,
+        cwd: project.remotePath || '~',
+        sshConnectionId: project.sshConnectionId,
+      })
+    } else if (shell.path.startsWith('ssh:')) {
+      // User manually selected an SSH connection from shell dropdown (for non-SSH projects)
       const sshConnectionId = shell.path.substring(4) // Remove "ssh:" prefix
       const sshConnection = getConnection(sshConnectionId)
 
@@ -252,7 +334,7 @@ function App() {
       // Create terminal with SSH (use project path if provided, otherwise start in home directory)
       info = await window.electron.pty.create({
         sshConnectionId,
-        remoteCwd: project.path || undefined, // Optional: use project path if available
+        remoteCwd: project.path || undefined,
       })
 
       // Save config for persistence
@@ -261,11 +343,19 @@ function App() {
         projectId,
         shell: 'ssh',
         shellName: shell.name,
-        cwd: project.path || '~', // Will be updated when we detect actual working directory
+        cwd: project.path || '~',
         sshConnectionId,
       })
     } else {
       // Local shell
+      // Safety check: if shell.path is 'ssh' without a colon, it means
+      // we're trying to create an SSH terminal but project isn't configured
+      if (shell.path === 'ssh') {
+        console.error('SSH terminal requested but project is not configured as SSH project')
+        alert(`Project ${project.name} is not configured as an SSH project. Please edit the project settings.`)
+        return
+      }
+
       info = await window.electron.pty.create({
         shell: shell.path,
         cwd: project.path || process.cwd(),

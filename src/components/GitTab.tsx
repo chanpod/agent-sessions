@@ -13,6 +13,22 @@ interface GitTabProps {
   onRefreshGitInfo: () => Promise<void>
 }
 
+// Helper function to get file status icon and color
+function getFileStatusIcon(status: ChangedFile['status']) {
+  switch (status) {
+    case 'modified':
+      return { Icon: FileText, color: 'text-yellow-400' }
+    case 'added':
+      return { Icon: FilePlus, color: 'text-green-400' }
+    case 'deleted':
+      return { Icon: FileMinus, color: 'text-red-400' }
+    case 'untracked':
+      return { Icon: FileQuestion, color: 'text-zinc-500' }
+    default:
+      return { Icon: FileText, color: 'text-zinc-400' }
+  }
+}
+
 export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, onRefreshGitInfo }: GitTabProps) {
   const { openFile } = useFileViewerStore()
 
@@ -34,7 +50,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
     if (!showBranchMenu || !window.electron || !gitBranch) return
 
     const fetchBranches = async () => {
-      const result = await window.electron!.git.getBranches(projectPath)
+      const result = await window.electron!.git.listBranches(projectPath)
       if (result.success) {
         setLocalBranches(result.local || [])
         setRemoteBranches(result.remote || [])
@@ -77,7 +93,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
     setIsFetching(true)
     try {
       await window.electron.git.fetch(projectPath)
-      const result = await window.electron.git.getBranches(projectPath)
+      const result = await window.electron.git.listBranches(projectPath)
       if (result.success) {
         setLocalBranches(result.local || [])
         setRemoteBranches(result.remote || [])
@@ -130,6 +146,24 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
     await onRefreshGitInfo()
   }
 
+  const handleStageAll = async () => {
+    if (!window.electron) return
+    const unstagedFiles = changedFiles.filter(f => !f.staged)
+    for (const file of unstagedFiles) {
+      await window.electron.git.stageFile(projectPath, file.path)
+    }
+    await onRefreshGitInfo()
+  }
+
+  const handleUnstageAll = async () => {
+    if (!window.electron) return
+    const stagedFiles = changedFiles.filter(f => f.staged)
+    for (const file of stagedFiles) {
+      await window.electron.git.unstageFile(projectPath, file.path)
+    }
+    await onRefreshGitInfo()
+  }
+
   const handleDiscardFile = async (filePath: string) => {
     if (!window.electron) return
     await window.electron.git.discardFile(projectPath, filePath)
@@ -154,13 +188,60 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
     }
   }
 
-  // Group changed files by status
-  const groupedFiles = {
-    modified: changedFiles.filter((f) => f.status === 'modified'),
-    added: changedFiles.filter((f) => f.status === 'added'),
-    deleted: changedFiles.filter((f) => f.status === 'deleted'),
-    untracked: changedFiles.filter((f) => f.status === 'untracked'),
-    renamed: changedFiles.filter((f) => f.status === 'renamed'),
+  // Group files by staged/unstaged
+  const stagedFiles = changedFiles.filter(f => f.staged)
+  const unstagedFiles = changedFiles.filter(f => !f.staged)
+
+  // File rendering component
+  const FileItem = ({ file, isStaged }: { file: ChangedFile; isStaged: boolean }) => {
+    const { Icon, color } = getFileStatusIcon(file.status)
+    const isDeleted = file.status === 'deleted'
+
+    return (
+      <div className="flex items-center gap-1 py-1 text-xs group">
+        <button
+          onClick={() => !isDeleted && handleOpenChangedFile(file.path)}
+          className={cn(
+            'flex items-center gap-2 flex-1 min-w-0 text-left',
+            isDeleted ? 'text-zinc-500' : 'text-zinc-300 hover:text-white'
+          )}
+          disabled={isDeleted}
+        >
+          <Icon className={cn('w-3 h-3 flex-shrink-0', color)} />
+          <span className={cn('truncate', isDeleted && 'line-through')} title={file.path}>
+            {file.path}
+          </span>
+        </button>
+        <div className="flex items-center gap-0.5">
+          {isStaged ? (
+            <button
+              onClick={(e) => handleUnstageFile(file.path, e)}
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-yellow-400"
+              title="Unstage"
+            >
+              <Minus className="w-3 h-3" />
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={(e) => handleStageFile(file.path, e)}
+                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-green-400"
+                title="Stage"
+              >
+                <Plus className="w-3 h-3" />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-red-400"
+                title={isDeleted ? 'Restore file' : 'Discard changes'}
+              >
+                <Undo2 className="w-3 h-3" />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -272,188 +353,57 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
         )}
       </div>
 
-      {/* Staging & Commit Section */}
+      {/* Changes Section */}
       {gitBranch && changedFiles.length > 0 && (
         <div>
-          <div className="flex items-center justify-between px-2 py-1">
-            <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
-              Changes ({changedFiles.length})
-            </span>
-          </div>
-          <div className="px-2 space-y-1">
-            {/* Modified files */}
-            {groupedFiles.modified.length > 0 && (
-              <div>
-                <div className="text-[10px] text-yellow-400 uppercase mb-1">
-                  Modified ({groupedFiles.modified.length})
-                </div>
-                {groupedFiles.modified.map((file) => (
-                  <div
-                    key={file.path}
-                    className="flex items-center gap-1 py-1 text-xs group"
-                  >
-                    <button
-                      onClick={() => handleOpenChangedFile(file.path)}
-                      className="flex items-center gap-2 flex-1 min-w-0 text-left text-zinc-300 hover:text-white"
-                    >
-                      <FileText className="w-3 h-3 text-yellow-400 flex-shrink-0" />
-                      <span className="truncate" title={file.path}>{file.path}</span>
-                    </button>
-                    {file.staged && <Check className="w-3 h-3 text-green-400" />}
-                    <div className="flex items-center gap-0.5">
-                      {file.staged ? (
-                        <button
-                          onClick={(e) => handleUnstageFile(file.path, e)}
-                          className="p-0.5 rounded hover:bg-zinc-700 text-yellow-400"
-                          title="Unstage"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => handleStageFile(file.path, e)}
-                          className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
-                          title="Stage"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
-                        className="p-0.5 rounded hover:bg-zinc-700 text-red-400"
-                        title="Discard changes"
-                      >
-                        <Undo2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
+          {/* Staged Changes */}
+          {stagedFiles.length > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between px-2 py-1">
+                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                  Staged Changes ({stagedFiles.length})
+                </span>
+                <button
+                  onClick={handleUnstageAll}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-300 uppercase"
+                  title="Unstage all changes"
+                >
+                  Unstage All
+                </button>
+              </div>
+              <div className="px-2 space-y-0.5">
+                {stagedFiles.map(file => (
+                  <FileItem key={file.path} file={file} isStaged={true} />
                 ))}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Added files */}
-            {groupedFiles.added.length > 0 && (
-              <div>
-                <div className="text-[10px] text-green-400 uppercase mb-1">
-                  Added ({groupedFiles.added.length})
-                </div>
-                {groupedFiles.added.map((file) => (
-                  <div
-                    key={file.path}
-                    className="flex items-center gap-1 py-1 text-xs group"
-                  >
-                    <button
-                      onClick={() => handleOpenChangedFile(file.path)}
-                      className="flex items-center gap-2 flex-1 min-w-0 text-left text-zinc-300 hover:text-white"
-                    >
-                      <FilePlus className="w-3 h-3 text-green-400 flex-shrink-0" />
-                      <span className="truncate" title={file.path}>{file.path}</span>
-                    </button>
-                    {file.staged && <Check className="w-3 h-3 text-green-400" />}
-                    <div className="flex items-center gap-0.5">
-                      {file.staged ? (
-                        <button
-                          onClick={(e) => handleUnstageFile(file.path, e)}
-                          className="p-0.5 rounded hover:bg-zinc-700 text-yellow-400"
-                          title="Unstage"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => handleStageFile(file.path, e)}
-                          className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
-                          title="Stage"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
+          {/* Unstaged Changes */}
+          {unstagedFiles.length > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between px-2 py-1">
+                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                  Changes ({unstagedFiles.length})
+                </span>
+                <button
+                  onClick={handleStageAll}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-300 uppercase"
+                  title="Stage all changes"
+                >
+                  Stage All
+                </button>
+              </div>
+              <div className="px-2 space-y-0.5">
+                {unstagedFiles.map(file => (
+                  <FileItem key={file.path} file={file} isStaged={false} />
                 ))}
               </div>
-            )}
-
-            {/* Deleted files */}
-            {groupedFiles.deleted.length > 0 && (
-              <div>
-                <div className="text-[10px] text-red-400 uppercase mb-1">
-                  Deleted ({groupedFiles.deleted.length})
-                </div>
-                {groupedFiles.deleted.map((file) => (
-                  <div
-                    key={file.path}
-                    className="flex items-center gap-1 py-1 text-xs group"
-                  >
-                    <div className="flex items-center gap-2 flex-1 min-w-0 text-zinc-500">
-                      <FileMinus className="w-3 h-3 text-red-400 flex-shrink-0" />
-                      <span className="truncate line-through" title={file.path}>{file.path}</span>
-                    </div>
-                    {file.staged && <Check className="w-3 h-3 text-green-400" />}
-                    <div className="flex items-center gap-0.5">
-                      {file.staged ? (
-                        <button
-                          onClick={(e) => handleUnstageFile(file.path, e)}
-                          className="p-0.5 rounded hover:bg-zinc-700 text-yellow-400"
-                          title="Unstage"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => handleStageFile(file.path, e)}
-                          className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
-                          title="Stage"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
-                        className="p-0.5 rounded hover:bg-zinc-700 text-blue-400"
-                        title="Restore file"
-                      >
-                        <Undo2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Untracked files */}
-            {groupedFiles.untracked.length > 0 && (
-              <div>
-                <div className="text-[10px] text-zinc-500 uppercase mb-1">
-                  Untracked ({groupedFiles.untracked.length})
-                </div>
-                {groupedFiles.untracked.map((file) => (
-                  <div
-                    key={file.path}
-                    className="flex items-center gap-1 py-1 text-xs group"
-                  >
-                    <button
-                      onClick={() => handleOpenChangedFile(file.path)}
-                      className="flex items-center gap-2 flex-1 min-w-0 text-left text-zinc-400 hover:text-white"
-                    >
-                      <FileQuestion className="w-3 h-3 text-zinc-500 flex-shrink-0" />
-                      <span className="truncate" title={file.path}>{file.path}</span>
-                    </button>
-                    <button
-                      onClick={(e) => handleStageFile(file.path, e)}
-                      className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
-                      title="Stage"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Commit UI */}
-          {changedFiles.some(f => f.staged) && (
+          {stagedFiles.length > 0 && (
             <div className="mt-3 px-2">
               <div className="text-[10px] text-zinc-500 uppercase mb-2">
                 Commit Message
@@ -473,7 +423,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
               />
               <div className="flex items-center justify-between mt-2">
                 <span className="text-[10px] text-zinc-600">
-                  {changedFiles.filter(f => f.staged).length} file(s) staged
+                  {stagedFiles.length} file(s) staged
                 </span>
                 <button
                   onClick={handleCommit}

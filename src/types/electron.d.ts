@@ -179,6 +179,7 @@ export interface ElectronAPI {
     stageFile: (projectPath: string, filePath: string) => Promise<GitResult>
     unstageFile: (projectPath: string, filePath: string) => Promise<GitResult>
     discardFile: (projectPath: string, filePath: string) => Promise<GitResult>
+    commit: (projectPath: string, message: string) => Promise<GitResult>
     onChanged: (callback: (projectPath: string) => void) => () => void
   }
   store: {

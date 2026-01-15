@@ -11,6 +11,10 @@ export interface Project {
   createdAt: number
   isExpanded: boolean
   activeTab: ProjectTab
+  // SSH project fields
+  isSSHProject?: boolean // Whether this project uses SSH
+  sshConnectionId?: string // ID of the SSH connection to use
+  remotePath?: string // Remote directory path on the SSH host
 }
 
 interface ProjectStore {
@@ -23,7 +27,7 @@ interface ProjectStore {
   setActiveProject: (id: string | null) => void
   toggleProjectExpanded: (id: string) => void
   setProjectTab: (id: string, tab: ProjectTab) => void
-  updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path'>>) => void
+  updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath'>>) => void
 }
 
 function generateId(): string {
@@ -99,12 +103,16 @@ export const useProjectStore = create<ProjectStore>()(
             console.error('[ProjectStore] Hydration error:', error)
           } else {
             console.log('[ProjectStore] Hydrated with state:', state)
-            // Migration: Add activeTab to existing projects
+            // Migration: Add activeTab to existing projects (only if missing)
             if (state) {
-              state.projects = state.projects.map((p) => ({
-                ...p,
-                activeTab: (p as any).activeTab || 'terminals',
-              }))
+              const needsMigration = state.projects.some((p) => !(p as any).activeTab)
+              if (needsMigration) {
+                console.log('[ProjectStore] Running migration for activeTab...')
+                state.projects = state.projects.map((p) => ({
+                  ...p,
+                  activeTab: (p as any).activeTab || 'terminals',
+                }))
+              }
             }
           }
         }

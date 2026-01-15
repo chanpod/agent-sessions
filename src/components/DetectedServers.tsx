@@ -2,24 +2,54 @@
  * DetectedServers - Display detected servers from terminal output with "Open" buttons
  */
 
-import React from 'react'
+import React, { useMemo, useState } from 'react'
 import { useDetectedServersStore } from '../stores/detected-servers-store'
-import { ExternalLink, Server, X, AlertCircle } from 'lucide-react'
+import { ExternalLink, Server, X, AlertCircle, Copy, Check } from 'lucide-react'
 
 interface DetectedServersProps {
   terminalId: string
 }
 
 export function DetectedServers({ terminalId }: DetectedServersProps) {
-  const { getServersByTerminal, removeServer } = useDetectedServersStore()
-  const servers = getServersByTerminal(terminalId)
+  // Subscribe to servers state changes
+  const allServers = useDetectedServersStore((state) => state.servers)
+  const removeServer = useDetectedServersStore((state) => state.removeServer)
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
+
+  // Filter servers for this terminal (memoized to avoid infinite loop)
+  const servers = useMemo(() => {
+    const result: any[] = []
+    for (const server of allServers.values()) {
+      if (server.terminalId === terminalId) {
+        result.push(server)
+      }
+    }
+    return result
+  }, [allServers, terminalId])
 
   if (servers.length === 0) {
     return null
   }
 
   const handleOpen = (url: string) => {
-    window.open(url, '_blank')
+    if (window.electron?.system?.openExternal) {
+      window.electron.system.openExternal(url)
+    } else {
+      // Fallback for non-Electron environments
+      window.open(url, '_blank')
+    }
+  }
+
+  const handleCopy = async (url: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopiedUrl(url)
+      // Clear the toast after 2 seconds
+      setTimeout(() => setCopiedUrl(null), 2000)
+    } catch (err) {
+      console.error('Failed to copy URL:', err)
+    }
   }
 
   const handleRemove = (url: string, e: React.MouseEvent) => {
@@ -28,7 +58,7 @@ export function DetectedServers({ terminalId }: DetectedServersProps) {
   }
 
   return (
-    <div className="border-b border-neutral-700 bg-neutral-900 px-3 py-2">
+    <div className="border-b border-neutral-700 bg-neutral-900 px-3 py-2 relative">
       <div className="flex flex-col gap-2">
         {servers.map((server) => (
           <div
@@ -62,14 +92,23 @@ export function DetectedServers({ terminalId }: DetectedServersProps) {
 
             <div className="flex items-center gap-1 flex-shrink-0">
               {server.status === 'running' && (
-                <button
-                  onClick={() => handleOpen(server.url)}
-                  className="flex items-center gap-1 px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
-                  title="Open in browser"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  Open
-                </button>
+                <>
+                  <button
+                    onClick={() => handleOpen(server.url)}
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+                    title="Open in browser"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Open
+                  </button>
+                  <button
+                    onClick={(e) => handleCopy(server.url, e)}
+                    className="p-1 rounded hover:bg-neutral-700 text-neutral-400 hover:text-neutral-200 transition-colors"
+                    title="Copy URL"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </>
               )}
               <button
                 onClick={(e) => handleRemove(server.url, e)}
@@ -82,6 +121,14 @@ export function DetectedServers({ terminalId }: DetectedServersProps) {
           </div>
         ))}
       </div>
+
+      {/* Toast notification */}
+      {copiedUrl && (
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-green-600 text-white px-3 py-2 rounded shadow-lg flex items-center gap-2 text-sm animate-in fade-in slide-in-from-bottom-2">
+          <Check className="w-4 h-4" />
+          <span>URL copied to clipboard!</span>
+        </div>
+      )}
     </div>
   )
 }

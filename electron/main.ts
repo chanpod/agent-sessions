@@ -919,6 +919,22 @@ ipcMain.handle(
     }
   }
 )
+// Commit staged changes (git commit)
+ipcMain.handle(
+  'git:commit',
+  async (_event, projectPath: string, message: string) => {
+    try {
+      const escapedMessage = message.replace(/"/g, '\\"')
+      execInContext(`git commit -m "${escapedMessage}"`, projectPath)
+      return { success: true }
+    } catch (err) {
+      console.error('Failed to commit:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
+
 
 // File system IPC handlers
 ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
@@ -1113,6 +1129,11 @@ ipcMain.handle('system:open-in-editor', async (_event, projectPath: string) => {
     console.error('Failed to open in editor:', err)
     return { success: false, error: String(err) }
   }
+})
+
+// Open URL in default browser
+ipcMain.handle('system:open-external', async (_event, url: string) => {
+  await shell.openExternal(url)
 })
 
 // SSH IPC Handlers
