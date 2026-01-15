@@ -133,6 +133,9 @@ export interface ElectronAPI {
     unwatch: (projectPath: string) => Promise<GitResult>
     getChangedFiles: (projectPath: string) => Promise<ChangedFilesResult>
     getFileContent: (projectPath: string, filePath: string) => Promise<GitFileContentResult>
+    stageFile: (projectPath: string, filePath: string) => Promise<GitResult>
+    unstageFile: (projectPath: string, filePath: string) => Promise<GitResult>
+    discardFile: (projectPath: string, filePath: string) => Promise<GitResult>
     onChanged: (callback: (projectPath: string) => void) => () => void
   }
   store: {

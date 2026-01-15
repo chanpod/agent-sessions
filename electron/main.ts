@@ -10,6 +10,98 @@ import Store from 'electron-store'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+// WSL path detection and conversion utilities
+interface WslPathInfo {
+  isWslPath: boolean
+  distro?: string
+  linuxPath?: string
+}
+
+function detectWslPath(inputPath: string): WslPathInfo {
+  // Check for UNC WSL paths: \\wsl$\Ubuntu\... or \\wsl.localhost\Ubuntu\...
+  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i)
+  if (uncMatch) {
+    return {
+      isWslPath: true,
+      distro: uncMatch[1],
+      linuxPath: uncMatch[2].replace(/\\/g, '/') || '/',
+    }
+  }
+
+  // Check for Linux-style paths that start with / (common when user types path manually)
+  if (process.platform === 'win32' && inputPath.startsWith('/') && !inputPath.startsWith('//')) {
+    return {
+      isWslPath: true,
+      linuxPath: inputPath,
+    }
+  }
+
+  return { isWslPath: false }
+}
+
+function convertToWslUncPath(linuxPath: string, distro?: string): string {
+  const dist = distro || getDefaultWslDistro()
+  if (!dist) return linuxPath
+  return `\\\\wsl$\\${dist}${linuxPath.replace(/\//g, '\\')}`
+}
+
+function getDefaultWslDistro(): string | null {
+  if (process.platform !== 'win32') return null
+  try {
+    // Get the default WSL distribution
+    const output = execSync('wsl -l -q', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+    // Output has UTF-16 encoding issues on Windows, clean it up
+    const lines = output.replace(/\0/g, '').split('\n').map(l => l.trim()).filter(l => l.length > 0)
+    return lines[0] || null
+  } catch {
+    return null
+  }
+}
+
+function getWslDistros(): string[] {
+  if (process.platform !== 'win32') return []
+  try {
+    const output = execSync('wsl -l -q', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+    return output.replace(/\0/g, '').split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  } catch {
+    return []
+  }
+}
+
+// Execute a command, routing through WSL if needed
+function execInContext(command: string, projectPath: string, options: { encoding: 'utf-8' } = { encoding: 'utf-8' }): string {
+  const wslInfo = detectWslPath(projectPath)
+
+  if (process.platform === 'win32' && wslInfo.isWslPath) {
+    const linuxPath = wslInfo.linuxPath || projectPath
+    const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
+    // Escape double quotes in the command for WSL
+    const escapedCmd = command.replace(/"/g, '\\"')
+    return execSync(`wsl ${distroArg}bash -c "cd '${linuxPath}' && ${escapedCmd}"`, {
+      ...options,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+  }
+
+  return execSync(command, {
+    cwd: projectPath,
+    ...options,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+}
+
+// Resolve path for file system operations (converts WSL paths to UNC on Windows)
+function resolvePathForFs(inputPath: string): string {
+  if (process.platform !== 'win32') return inputPath
+
+  const wslInfo = detectWslPath(inputPath)
+  if (wslInfo.isWslPath && wslInfo.linuxPath && !inputPath.startsWith('\\\\')) {
+    return convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
+  }
+
+  return inputPath
+}
+
 // Initialize electron-store for persistent storage
 const store = new Store({
   name: 'agent-sessions-data',
@@ -190,12 +282,19 @@ ipcMain.handle('system:get-shells', async () => {
       }
     }
 
-    // WSL - check if available
-    try {
-      execSync('wsl --status', { stdio: 'ignore' })
-      shells.push({ name: 'WSL', path: 'wsl.exe' })
-    } catch {
-      // WSL not available
+    // WSL - list each distro separately
+    const distros = getWslDistros()
+    for (const distro of distros) {
+      shells.push({ name: `WSL (${distro})`, path: `wsl.exe -d ${distro}` })
+    }
+    // If no specific distros but WSL is available, add generic WSL option
+    if (distros.length === 0) {
+      try {
+        execSync('wsl --status', { stdio: 'ignore' })
+        shells.push({ name: 'WSL', path: 'wsl.exe' })
+      } catch {
+        // WSL not available
+      }
     }
   } else {
     // Unix-like shells
@@ -252,7 +351,8 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
   }
 
   try {
-    const packageJsonPath = path.join(projectPath, 'package.json')
+    const fsPath = resolvePathForFs(projectPath)
+    const packageJsonPath = path.join(fsPath, 'package.json')
 
     if (!fs.existsSync(packageJsonPath)) {
       return { hasPackageJson: false, scripts: [] }
@@ -273,11 +373,11 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
 
     // Detect package manager
     let packageManager = 'npm'
-    if (fs.existsSync(path.join(projectPath, 'pnpm-lock.yaml'))) {
+    if (fs.existsSync(path.join(fsPath, 'pnpm-lock.yaml'))) {
       packageManager = 'pnpm'
-    } else if (fs.existsSync(path.join(projectPath, 'yarn.lock'))) {
+    } else if (fs.existsSync(path.join(fsPath, 'yarn.lock'))) {
       packageManager = 'yarn'
-    } else if (fs.existsSync(path.join(projectPath, 'bun.lockb'))) {
+    } else if (fs.existsSync(path.join(fsPath, 'bun.lockb'))) {
       packageManager = 'bun'
     }
 
@@ -297,7 +397,8 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
 ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
   try {
     // Check if it's a git repo
-    const gitDir = path.join(projectPath, '.git')
+    const fsPath = resolvePathForFs(projectPath)
+    const gitDir = path.join(fsPath, '.git')
     if (!fs.existsSync(gitDir)) {
       return { isGitRepo: false }
     }
@@ -305,20 +406,12 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
     // Get current branch
     let branch = ''
     try {
-      branch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: projectPath,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim()
+      branch = execInContext('git rev-parse --abbrev-ref HEAD', projectPath).trim()
     } catch {
       // Could be detached HEAD or other issue
       try {
         // Try to get short SHA for detached HEAD
-        branch = execSync('git rev-parse --short HEAD', {
-          cwd: projectPath,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim()
+        branch = execInContext('git rev-parse --short HEAD', projectPath).trim()
         branch = `(${branch})`
       } catch {
         branch = 'unknown'
@@ -328,11 +421,7 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
     // Check for uncommitted changes
     let hasChanges = false
     try {
-      const status = execSync('git status --porcelain', {
-        cwd: projectPath,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      const status = execInContext('git status --porcelain', projectPath)
       hasChanges = status.trim().length > 0
     } catch {
       // Ignore errors
@@ -352,7 +441,8 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
 // List git branches (local and remote)
 ipcMain.handle('git:list-branches', async (_event, projectPath: string) => {
   try {
-    const gitDir = path.join(projectPath, '.git')
+    const fsPath = resolvePathForFs(projectPath)
+    const gitDir = path.join(fsPath, '.git')
     if (!fs.existsSync(gitDir)) {
       return { success: false, error: 'Not a git repository' }
     }
@@ -360,32 +450,20 @@ ipcMain.handle('git:list-branches', async (_event, projectPath: string) => {
     // Get current branch
     let currentBranch = ''
     try {
-      currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: projectPath,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim()
+      currentBranch = execInContext('git rev-parse --abbrev-ref HEAD', projectPath).trim()
     } catch {
       currentBranch = ''
     }
 
     // Get local branches
-    const localOutput = execSync('git branch --format="%(refname:short)"', {
-      cwd: projectPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    const localOutput = execInContext('git branch --format="%(refname:short)"', projectPath)
     const localBranches = localOutput
       .split('\n')
       .map((b) => b.trim())
       .filter((b) => b.length > 0)
 
     // Get remote branches
-    const remoteOutput = execSync('git branch -r --format="%(refname:short)"', {
-      cwd: projectPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    const remoteOutput = execInContext('git branch -r --format="%(refname:short)"', projectPath)
     const remoteBranches = remoteOutput
       .split('\n')
       .map((b) => b.trim())
@@ -406,7 +484,8 @@ ipcMain.handle('git:list-branches', async (_event, projectPath: string) => {
 // Checkout a git branch
 ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: string) => {
   try {
-    const gitDir = path.join(projectPath, '.git')
+    const fsPath = resolvePathForFs(projectPath)
+    const gitDir = path.join(fsPath, '.git')
     if (!fs.existsSync(gitDir)) {
       return { success: false, error: 'Not a git repository' }
     }
@@ -417,10 +496,7 @@ ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: strin
       const localName = branch.split('/').slice(1).join('/')
       // Check if local branch already exists
       try {
-        execSync(`git rev-parse --verify ${localName}`, {
-          cwd: projectPath,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        })
+        execInContext(`git rev-parse --verify ${localName}`, projectPath)
         // Local branch exists, just checkout
         checkoutCmd = `git checkout ${localName}`
       } catch {
@@ -429,11 +505,7 @@ ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: strin
       }
     }
 
-    execSync(checkoutCmd, {
-      cwd: projectPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    execInContext(checkoutCmd, projectPath)
 
     return { success: true }
   } catch (err) {
@@ -446,16 +518,13 @@ ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: strin
 // Fetch from remote
 ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
   try {
-    const gitDir = path.join(projectPath, '.git')
+    const fsPath = resolvePathForFs(projectPath)
+    const gitDir = path.join(fsPath, '.git')
     if (!fs.existsSync(gitDir)) {
       return { success: false, error: 'Not a git repository' }
     }
 
-    execSync('git fetch --all --prune', {
-      cwd: projectPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    execInContext('git fetch --all --prune', projectPath)
 
     return { success: true }
   } catch (err) {
@@ -465,29 +534,66 @@ ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
   }
 })
 
-// Watch a project's git directory for branch changes
+// Watch a project's git directory for changes (branch switches, commits, staging, file edits)
 ipcMain.handle('git:watch', async (_event, projectPath: string) => {
   // Don't double-watch
   if (gitWatchers.has(projectPath)) {
     return { success: true }
   }
 
-  const gitDir = path.join(projectPath, '.git')
+  const fsPath = resolvePathForFs(projectPath)
+  const gitDir = path.join(fsPath, '.git')
   const headPath = path.join(gitDir, 'HEAD')
+  const indexPath = path.join(gitDir, 'index')
 
   if (!fs.existsSync(headPath)) {
     return { success: false, error: 'Not a git repository' }
   }
 
   try {
-    const watcher = fs.watch(headPath, { persistent: false }, (eventType) => {
-      if (eventType === 'change' && mainWindow) {
-        // Notify renderer that git state changed
-        mainWindow.webContents.send('git:changed', projectPath)
+    const watcherSet: GitWatcherSet = {
+      watchers: [],
+      debounceTimer: null,
+    }
+
+    // Debounce to avoid multiple rapid notifications
+    const notifyChange = () => {
+      if (watcherSet.debounceTimer) clearTimeout(watcherSet.debounceTimer)
+      watcherSet.debounceTimer = setTimeout(() => {
+        if (mainWindow) {
+          mainWindow.webContents.send('git:changed', projectPath)
+        }
+      }, 200)
+    }
+
+    // Watch HEAD for branch changes
+    const headWatcher = fs.watch(headPath, { persistent: false }, (eventType) => {
+      if (eventType === 'change') {
+        notifyChange()
       }
     })
+    watcherSet.watchers.push(headWatcher)
 
-    gitWatchers.set(projectPath, watcher)
+    // Watch index for commits and staging changes
+    if (fs.existsSync(indexPath)) {
+      const indexWatcher = fs.watch(indexPath, { persistent: false }, (eventType) => {
+        if (eventType === 'change') {
+          notifyChange()
+        }
+      })
+      watcherSet.watchers.push(indexWatcher)
+    }
+
+    // Watch refs directory for pushes and fetches
+    const refsDir = path.join(gitDir, 'refs')
+    if (fs.existsSync(refsDir)) {
+      const refsWatcher = fs.watch(refsDir, { persistent: false }, () => {
+        notifyChange()
+      })
+      watcherSet.watchers.push(refsWatcher)
+    }
+
+    gitWatchers.set(projectPath, watcherSet)
     return { success: true }
   } catch (err) {
     console.error('Failed to watch git:', err)
@@ -497,9 +603,14 @@ ipcMain.handle('git:watch', async (_event, projectPath: string) => {
 
 // Stop watching a project's git directory
 ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
-  const watcher = gitWatchers.get(projectPath)
-  if (watcher) {
-    watcher.close()
+  const watcherSet = gitWatchers.get(projectPath)
+  if (watcherSet) {
+    if (watcherSet.debounceTimer) {
+      clearTimeout(watcherSet.debounceTimer)
+    }
+    for (const watcher of watcherSet.watchers) {
+      watcher.close()
+    }
     gitWatchers.delete(projectPath)
   }
   return { success: true }
@@ -508,16 +619,13 @@ ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
 // Get list of changed files with their status
 ipcMain.handle('git:get-changed-files', async (_event, projectPath: string) => {
   try {
-    const gitDir = path.join(projectPath, '.git')
+    const fsPath = resolvePathForFs(projectPath)
+    const gitDir = path.join(fsPath, '.git')
     if (!fs.existsSync(gitDir)) {
       return { success: false, error: 'Not a git repository' }
     }
 
-    const status = execSync('git status --porcelain', {
-      cwd: projectPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    const status = execInContext('git status --porcelain', projectPath)
 
     interface ChangedFile {
       path: string
@@ -585,17 +693,14 @@ ipcMain.handle(
   'git:get-file-content',
   async (_event, projectPath: string, filePath: string) => {
     try {
-      const gitDir = path.join(projectPath, '.git')
+      const fsPath = resolvePathForFs(projectPath)
+      const gitDir = path.join(fsPath, '.git')
       if (!fs.existsSync(gitDir)) {
         return { success: false, error: 'Not a git repository' }
       }
 
       // Get the file content from HEAD
-      const content = execSync(`git show HEAD:${filePath}`, {
-        cwd: projectPath,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      const content = execInContext(`git show HEAD:${filePath}`, projectPath)
 
       return { success: true, content }
     } catch (err) {
@@ -610,14 +715,73 @@ ipcMain.handle(
   }
 )
 
+// Stage a file (git add)
+ipcMain.handle(
+  'git:stage-file',
+  async (_event, projectPath: string, filePath: string) => {
+    try {
+      execInContext(`git add "${filePath}"`, projectPath)
+      return { success: true }
+    } catch (err) {
+      console.error('Failed to stage file:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
+
+// Unstage a file (git restore --staged)
+ipcMain.handle(
+  'git:unstage-file',
+  async (_event, projectPath: string, filePath: string) => {
+    try {
+      execInContext(`git restore --staged "${filePath}"`, projectPath)
+      return { success: true }
+    } catch (err) {
+      console.error('Failed to unstage file:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
+
+// Discard changes to a file (git restore)
+ipcMain.handle(
+  'git:discard-file',
+  async (_event, projectPath: string, filePath: string) => {
+    try {
+      // For untracked files, we need to remove them
+      const status = execInContext(`git status --porcelain "${filePath}"`, projectPath).trim()
+
+      if (status.startsWith('??')) {
+        // Untracked file - delete it
+        const fsPath = resolvePathForFs(projectPath)
+        const fullPath = path.join(fsPath, filePath)
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath)
+        }
+      } else {
+        // Tracked file - restore it
+        execInContext(`git restore "${filePath}"`, projectPath)
+      }
+      return { success: true }
+    } catch (err) {
+      console.error('Failed to discard file:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
+
 // File system IPC handlers
 ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
   try {
-    if (!fs.existsSync(filePath)) {
+    const fsPath = resolvePathForFs(filePath)
+    if (!fs.existsSync(fsPath)) {
       return { success: false, error: 'File not found' }
     }
 
-    const stats = fs.statSync(filePath)
+    const stats = fs.statSync(fsPath)
     if (stats.isDirectory()) {
       return { success: false, error: 'Path is a directory' }
     }
@@ -627,7 +791,7 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
       return { success: false, error: 'File too large (max 5MB)' }
     }
 
-    const content = fs.readFileSync(filePath, 'utf-8')
+    const content = fs.readFileSync(fsPath, 'utf-8')
     return {
       success: true,
       content,
@@ -642,7 +806,24 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
 
 ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf-8')
+    const fsPath = resolvePathForFs(filePath)
+    fs.writeFileSync(fsPath, content, 'utf-8')
+
+    // Notify git watchers if this file is in a watched project
+    // This ensures the changed files list updates when files are edited through the app
+    for (const [projectPath, watcherSet] of gitWatchers.entries()) {
+      if (filePath.startsWith(projectPath)) {
+        // Debounce the notification
+        if (watcherSet.debounceTimer) clearTimeout(watcherSet.debounceTimer)
+        watcherSet.debounceTimer = setTimeout(() => {
+          if (mainWindow) {
+            mainWindow.webContents.send('git:changed', projectPath)
+          }
+        }, 200)
+        break
+      }
+    }
+
     return { success: true }
   } catch (err) {
     console.error('Failed to write file:', err)
@@ -652,19 +833,21 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
 
 ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
   try {
-    if (!fs.existsSync(dirPath)) {
+    const fsPath = resolvePathForFs(dirPath)
+    if (!fs.existsSync(fsPath)) {
       return { success: false, error: 'Directory not found' }
     }
 
-    const stats = fs.statSync(dirPath)
+    const stats = fs.statSync(fsPath)
     if (!stats.isDirectory()) {
       return { success: false, error: 'Path is not a directory' }
     }
 
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    const entries = fs.readdirSync(fsPath, { withFileTypes: true })
+    // Keep returning original path format (not UNC) for consistency with user input
     const items = entries.map((entry) => ({
       name: entry.name,
-      path: path.join(dirPath, entry.name),
+      path: path.posix.join(dirPath, entry.name), // Use posix join to preserve Linux-style paths
       isDirectory: entry.isDirectory(),
       isFile: entry.isFile(),
     }))

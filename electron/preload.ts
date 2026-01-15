@@ -165,6 +165,12 @@ const electronAPI = {
       ipcRenderer.invoke('git:get-changed-files', projectPath),
     getFileContent: (projectPath: string, filePath: string): Promise<GitFileContentResult> =>
       ipcRenderer.invoke('git:get-file-content', projectPath, filePath),
+    stageFile: (projectPath: string, filePath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:stage-file', projectPath, filePath),
+    unstageFile: (projectPath: string, filePath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:unstage-file', projectPath, filePath),
+    discardFile: (projectPath: string, filePath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:discard-file', projectPath, filePath),
     onChanged: (callback: (projectPath: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)

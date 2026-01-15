@@ -1,4 +1,4 @@
-import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil, FileCode, FileText, FilePlus, FileMinus, FileQuestion, FileSymlink, ExternalLink } from 'lucide-react'
+import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Minus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil, FileCode, FileText, FilePlus, FileMinus, FileQuestion, FileSymlink, ExternalLink, Undo2 } from 'lucide-react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
@@ -7,6 +7,7 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { FileBrowser } from './FileBrowser'
 import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { useFileViewerStore } from '../stores/file-viewer-store'
@@ -64,6 +65,15 @@ export function ProjectItem({
   const [showFileBrowser, setShowFileBrowser] = useState(false)
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([])
   const [showChangedFilesMenu, setShowChangedFilesMenu] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null) // file path to confirm discard
+
+  // Refs and positions for portal-based dropdowns
+  const changedFilesBtnRef = useRef<HTMLButtonElement>(null)
+  const branchBtnRef = useRef<HTMLButtonElement>(null)
+  const changedFilesMenuRef = useRef<HTMLDivElement>(null)
+  const branchMenuRef = useRef<HTMLDivElement>(null)
+  const [changedFilesMenuPos, setChangedFilesMenuPos] = useState<{ top: number; left: number } | null>(null)
+  const [branchMenuPos, setBranchMenuPos] = useState<{ top: number; left: number } | null>(null)
 
   // Filter out server terminals from regular terminal list (they have shell: '')
   const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
@@ -132,6 +142,38 @@ export function ProjectItem({
     }
   }, [project.isExpanded, project.path])
 
+  // Close portal menus when clicking outside
+  useEffect(() => {
+    if (!showBranchMenu && !showChangedFilesMenu) return
+
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node
+      // Check if click is outside the branch menu and button
+      if (showBranchMenu && branchMenuRef.current && branchBtnRef.current) {
+        if (!branchMenuRef.current.contains(target) && !branchBtnRef.current.contains(target)) {
+          setShowBranchMenu(false)
+        }
+      }
+      // Check if click is outside the changed files menu and button
+      if (showChangedFilesMenu && changedFilesMenuRef.current && changedFilesBtnRef.current) {
+        if (!changedFilesMenuRef.current.contains(target) && !changedFilesBtnRef.current.contains(target)) {
+          setShowChangedFilesMenu(false)
+          setConfirmDiscard(null)
+        }
+      }
+    }
+
+    // Use setTimeout to avoid immediate close from the same click that opened it
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', handleClickOutside)
+    }, 0)
+
+    return () => {
+      clearTimeout(timeoutId)
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showBranchMenu, showChangedFilesMenu])
+
   const handleShellSelect = (shell: ShellInfo) => {
     onCreateTerminal(project.id, shell)
     setShowShellMenu(false)
@@ -166,11 +208,15 @@ export function ProjectItem({
     e.stopPropagation()
     if (!window.electron || !gitBranch) return
 
-    setShowBranchMenu(!showBranchMenu)
+    const newShowState = !showBranchMenu
+    setShowBranchMenu(newShowState)
     setShowShellMenu(false)
     setShowServerMenu(false)
+    setShowChangedFilesMenu(false)
 
-    if (!showBranchMenu) {
+    if (newShowState && branchBtnRef.current) {
+      const rect = branchBtnRef.current.getBoundingClientRect()
+      setBranchMenuPos({ top: rect.bottom + 4, left: rect.left })
       // Fetch branch list when opening menu
       const result = await window.electron.git.listBranches(project.path)
       if (result.success) {
@@ -217,10 +263,16 @@ export function ProjectItem({
 
   const handleChangedFilesClick = (e: React.MouseEvent) => {
     e.stopPropagation()
-    setShowChangedFilesMenu(!showChangedFilesMenu)
+    const newShowState = !showChangedFilesMenu
+    setShowChangedFilesMenu(newShowState)
     setShowBranchMenu(false)
     setShowShellMenu(false)
     setShowServerMenu(false)
+
+    if (newShowState && changedFilesBtnRef.current) {
+      const rect = changedFilesBtnRef.current.getBoundingClientRect()
+      setChangedFilesMenuPos({ top: rect.bottom + 4, left: rect.left })
+    }
   }
 
   const handleOpenInEditor = async (e: React.MouseEvent) => {
@@ -243,6 +295,24 @@ export function ProjectItem({
       openFile(fullPath, fileName, result.content, project.path)
       setShowChangedFilesMenu(false)
     }
+  }
+
+  const handleStageFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.electron) return
+    await window.electron.git.stageFile(project.path, filePath)
+  }
+
+  const handleUnstageFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.electron) return
+    await window.electron.git.unstageFile(project.path, filePath)
+  }
+
+  const handleDiscardFile = async (filePath: string) => {
+    if (!window.electron) return
+    await window.electron.git.discardFile(project.path, filePath)
+    setConfirmDiscard(null)
   }
 
   // Group changed files by status
@@ -282,8 +352,9 @@ export function ProjectItem({
         <Folder className={cn('w-4 h-4 flex-shrink-0', hasFocusedTerminal ? 'text-green-400' : 'text-blue-400')} />
         <span className="truncate font-medium">{project.name}</span>
         {gitBranch && (
-          <div className="relative">
+          <>
             <button
+              ref={branchBtnRef}
               onClick={handleBranchClick}
               className={cn(
                 'flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full transition-colors',
@@ -297,8 +368,13 @@ export function ProjectItem({
               {gitHasChanges && <span className="text-amber-400">•</span>}
             </button>
 
-            {showBranchMenu && (
-              <div className="absolute left-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[200px] max-h-[400px] overflow-y-auto">
+            {showBranchMenu && branchMenuPos && createPortal(
+              <div
+                ref={branchMenuRef}
+                className="fixed py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg min-w-[200px] max-h-[400px] overflow-y-auto"
+                style={{ top: branchMenuPos.top, left: branchMenuPos.left, zIndex: 9999 }}
+                onClick={(e) => e.stopPropagation()}
+              >
                 {/* Fetch button */}
                 <button
                   onClick={handleFetch}
@@ -374,14 +450,16 @@ export function ProjectItem({
                     No branches found
                   </div>
                 )}
-              </div>
+              </div>,
+              document.body
             )}
-          </div>
+          </>
         )}
         {/* Changed Files Badge */}
         {gitHasChanges && changedFiles.length > 0 && (
-          <div className="relative">
+          <>
             <button
+              ref={changedFilesBtnRef}
               onClick={handleChangedFilesClick}
               className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full transition-colors bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
             >
@@ -389,8 +467,13 @@ export function ProjectItem({
               <span>{changedFiles.length} {changedFiles.length === 1 ? 'file' : 'files'}</span>
             </button>
 
-            {showChangedFilesMenu && (
-              <div className="absolute left-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[250px] max-h-[400px] overflow-y-auto">
+            {showChangedFilesMenu && changedFilesMenuPos && createPortal(
+              <div
+                ref={changedFilesMenuRef}
+                className="fixed py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg min-w-[250px] max-h-[400px] overflow-y-auto"
+                style={{ top: changedFilesMenuPos.top, left: changedFilesMenuPos.left, zIndex: 9999 }}
+                onClick={(e) => e.stopPropagation()}
+              >
                 {/* Modified files */}
                 {groupedFiles.modified.length > 0 && (
                   <>
@@ -399,15 +482,45 @@ export function ProjectItem({
                       Modified ({groupedFiles.modified.length})
                     </div>
                     {groupedFiles.modified.map((file) => (
-                      <button
+                      <div
                         key={file.path}
-                        onClick={() => handleOpenChangedFile(file.path)}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 text-left"
+                        className="w-full flex items-center gap-1 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 group"
                       >
-                        <FileText className="w-3 h-3 text-amber-400 flex-shrink-0" />
-                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
-                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
-                      </button>
+                        <button
+                          onClick={() => handleOpenChangedFile(file.path)}
+                          className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                        >
+                          <FileText className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                          <span className="truncate" title={file.path}>{file.path}</span>
+                        </button>
+                        {file.staged && <span className="text-[10px] text-green-400 flex-shrink-0">staged</span>}
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                          {file.staged ? (
+                            <button
+                              onClick={(e) => handleUnstageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-yellow-400"
+                              title="Unstage"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => handleStageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-green-400"
+                              title="Stage"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                            className="p-0.5 rounded hover:bg-zinc-600 text-red-400"
+                            title="Discard changes"
+                          >
+                            <Undo2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </>
                 )}
@@ -421,15 +534,45 @@ export function ProjectItem({
                       Added ({groupedFiles.added.length})
                     </div>
                     {groupedFiles.added.map((file) => (
-                      <button
+                      <div
                         key={file.path}
-                        onClick={() => handleOpenChangedFile(file.path)}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 text-left"
+                        className="w-full flex items-center gap-1 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 group"
                       >
-                        <FilePlus className="w-3 h-3 text-green-400 flex-shrink-0" />
-                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
-                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
-                      </button>
+                        <button
+                          onClick={() => handleOpenChangedFile(file.path)}
+                          className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                        >
+                          <FilePlus className="w-3 h-3 text-green-400 flex-shrink-0" />
+                          <span className="truncate" title={file.path}>{file.path}</span>
+                        </button>
+                        {file.staged && <span className="text-[10px] text-green-400 flex-shrink-0">staged</span>}
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                          {file.staged ? (
+                            <button
+                              onClick={(e) => handleUnstageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-yellow-400"
+                              title="Unstage"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => handleStageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-green-400"
+                              title="Stage"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                            className="p-0.5 rounded hover:bg-zinc-600 text-red-400"
+                            title="Discard changes"
+                          >
+                            <Undo2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </>
                 )}
@@ -445,12 +588,39 @@ export function ProjectItem({
                     {groupedFiles.deleted.map((file) => (
                       <div
                         key={file.path}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500"
-                        title="File deleted"
+                        className="w-full flex items-center gap-1 px-3 py-1.5 text-xs text-zinc-500 hover:bg-zinc-700 group"
                       >
-                        <FileMinus className="w-3 h-3 text-red-400 flex-shrink-0" />
-                        <span className="truncate flex-1 line-through" title={file.path}>{file.path}</span>
-                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <FileMinus className="w-3 h-3 text-red-400 flex-shrink-0" />
+                          <span className="truncate line-through" title={file.path}>{file.path}</span>
+                        </div>
+                        {file.staged && <span className="text-[10px] text-green-400 flex-shrink-0">staged</span>}
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                          {file.staged ? (
+                            <button
+                              onClick={(e) => handleUnstageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-yellow-400"
+                              title="Unstage"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => handleStageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-green-400"
+                              title="Stage"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                            className="p-0.5 rounded hover:bg-zinc-600 text-blue-400"
+                            title="Restore file"
+                          >
+                            <Undo2 className="w-3 h-3" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </>
@@ -465,15 +635,45 @@ export function ProjectItem({
                       Renamed ({groupedFiles.renamed.length})
                     </div>
                     {groupedFiles.renamed.map((file) => (
-                      <button
+                      <div
                         key={file.path}
-                        onClick={() => handleOpenChangedFile(file.path)}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 text-left"
+                        className="w-full flex items-center gap-1 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 group"
                       >
-                        <FileSymlink className="w-3 h-3 text-blue-400 flex-shrink-0" />
-                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
-                        {file.staged && <span className="text-[10px] text-green-400">staged</span>}
-                      </button>
+                        <button
+                          onClick={() => handleOpenChangedFile(file.path)}
+                          className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                        >
+                          <FileSymlink className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                          <span className="truncate" title={file.path}>{file.path}</span>
+                        </button>
+                        {file.staged && <span className="text-[10px] text-green-400 flex-shrink-0">staged</span>}
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                          {file.staged ? (
+                            <button
+                              onClick={(e) => handleUnstageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-yellow-400"
+                              title="Unstage"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => handleStageFile(file.path, e)}
+                              className="p-0.5 rounded hover:bg-zinc-600 text-green-400"
+                              title="Stage"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                            className="p-0.5 rounded hover:bg-zinc-600 text-red-400"
+                            title="Discard changes"
+                          >
+                            <Undo2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </>
                 )}
@@ -487,14 +687,34 @@ export function ProjectItem({
                       Untracked ({groupedFiles.untracked.length})
                     </div>
                     {groupedFiles.untracked.map((file) => (
-                      <button
+                      <div
                         key={file.path}
-                        onClick={() => handleOpenChangedFile(file.path)}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-700 text-left"
+                        className="w-full flex items-center gap-1 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-700 group"
                       >
-                        <FileQuestion className="w-3 h-3 text-zinc-500 flex-shrink-0" />
-                        <span className="truncate flex-1" title={file.path}>{file.path}</span>
-                      </button>
+                        <button
+                          onClick={() => handleOpenChangedFile(file.path)}
+                          className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                        >
+                          <FileQuestion className="w-3 h-3 text-zinc-500 flex-shrink-0" />
+                          <span className="truncate" title={file.path}>{file.path}</span>
+                        </button>
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                          <button
+                            onClick={(e) => handleStageFile(file.path, e)}
+                            className="p-0.5 rounded hover:bg-zinc-600 text-green-400"
+                            title="Stage"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                            className="p-0.5 rounded hover:bg-zinc-600 text-red-400"
+                            title="Delete file"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </>
                 )}
@@ -504,9 +724,36 @@ export function ProjectItem({
                     No changes
                   </div>
                 )}
-              </div>
+
+                {/* Confirm discard dialog */}
+                {confirmDiscard && (
+                  <div className="border-t border-zinc-700 mt-1 pt-2 px-3 pb-2">
+                    <div className="text-xs text-red-400 mb-2">
+                      Discard changes to <span className="font-medium">{confirmDiscard.split('/').pop()}</span>?
+                    </div>
+                    <div className="text-[10px] text-zinc-500 mb-2">
+                      This cannot be undone.
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setConfirmDiscard(null)}
+                        className="flex-1 px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 rounded"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => handleDiscardFile(confirmDiscard)}
+                        className="flex-1 px-2 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>,
+              document.body
             )}
-          </div>
+          </>
         )}
         <span className="flex-1" />
         <button

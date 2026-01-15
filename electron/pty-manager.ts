@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import * as pty from 'node-pty'
 import { randomUUID } from 'crypto'
 import os from 'os'
+import { execSync } from 'child_process'
 
 export interface TerminalInfo {
   id: string
@@ -17,6 +18,35 @@ interface TerminalInstance {
   ptyProcess: pty.IPty
 }
 
+// WSL path detection for pty-manager
+function isWslPath(inputPath: string): boolean {
+  if (process.platform !== 'win32') return false
+  // Check for UNC WSL paths or Linux-style paths
+  return /^\\\\wsl(?:\$|\.localhost)\\/i.test(inputPath) ||
+    (inputPath.startsWith('/') && !inputPath.startsWith('//'))
+}
+
+function getDefaultWslDistro(): string | null {
+  if (process.platform !== 'win32') return null
+  try {
+    const output = execSync('wsl -l -q', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+    const lines = output.replace(/\0/g, '').split('\n').map(l => l.trim()).filter(l => l.length > 0)
+    return lines[0] || null
+  } catch {
+    return null
+  }
+}
+
+function getLinuxPathFromWslPath(inputPath: string): string {
+  // Extract Linux path from UNC path
+  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i)
+  if (uncMatch) {
+    return uncMatch[1].replace(/\\/g, '/') || '/'
+  }
+  // Already a Linux-style path
+  return inputPath
+}
+
 export class PtyManager {
   private terminals: Map<string, TerminalInstance> = new Map()
   private window: BrowserWindow
@@ -27,14 +57,34 @@ export class PtyManager {
 
   createTerminal(options: { cwd?: string; shell?: string } = {}): TerminalInfo {
     const id = randomUUID()
-    const shell = options.shell || this.getDefaultShell()
-    const cwd = options.cwd || process.cwd()
+    let shell = options.shell || this.getDefaultShell()
+    const originalCwd = options.cwd || process.cwd()
+    let effectiveCwd = originalCwd
+    let shellArgs: string[] = []
 
-    const ptyProcess = pty.spawn(shell, [], {
+    // Handle WSL paths on Windows
+    if (process.platform === 'win32' && originalCwd && isWslPath(originalCwd)) {
+      const linuxPath = getLinuxPathFromWslPath(originalCwd)
+      const distro = getDefaultWslDistro()
+
+      // If shell is not already WSL, switch to WSL
+      if (!shell.includes('wsl')) {
+        shell = 'wsl.exe'
+        if (distro) {
+          shellArgs = ['-d', distro, '--cd', linuxPath]
+        } else {
+          shellArgs = ['--cd', linuxPath]
+        }
+      }
+      // For file operations, use Windows cwd (we'll cd in WSL)
+      effectiveCwd = process.cwd()
+    }
+
+    const ptyProcess = pty.spawn(shell, shellArgs, {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
-      cwd,
+      cwd: effectiveCwd,
       env: {
         ...process.env,
         TERM: 'xterm-256color',
@@ -46,7 +96,7 @@ export class PtyManager {
       id,
       pid: ptyProcess.pid,
       shell,
-      cwd,
+      cwd: originalCwd, // Store original cwd for display
       title: shell.split('/').pop() || shell,
       createdAt: Date.now(),
     }
