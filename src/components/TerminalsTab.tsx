@@ -186,7 +186,7 @@ export function TerminalsTab({
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
-            {showServerMenu && !showCustomCommand && (
+              {showServerMenu && !showCustomCommand && (
               <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[180px] max-h-[300px] overflow-y-auto">
                 {scripts.length > 0 ? (
                   <>
@@ -219,8 +219,8 @@ export function TerminalsTab({
                   Custom command...
                 </button>
               </div>
-            )}
-            {showServerMenu && showCustomCommand && (
+              )}
+              {showServerMenu && showCustomCommand && (
               <div className="absolute right-0 top-full mt-1 p-2 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[240px]">
                 <div className="text-[10px] text-zinc-500 uppercase mb-2">
                   Custom Command
@@ -257,7 +257,8 @@ export function TerminalsTab({
                   </button>
                 </div>
               </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
         {projectServers.length === 0 ? (
