@@ -1,4 +1,4 @@
-import { Terminal, Plus, Server, Play, Command } from 'lucide-react'
+import { Terminal, Plus, Server, Play, Command, RefreshCw } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
@@ -48,25 +48,35 @@ export function TerminalsTab({
   const [showCustomCommand, setShowCustomCommand] = useState(false)
   const [customCommand, setCustomCommand] = useState('')
   const [customName, setCustomName] = useState('')
+  const [isRescanningScripts, setIsRescanningScripts] = useState(false)
 
   // Filter sessions and servers for this project
   const projectSessions = sessions.filter((s) => s.projectId === projectId && s.shell !== '')
   const projectServers = servers.filter((s) => s.projectId === projectId)
 
   // Fetch package.json scripts
-  useEffect(() => {
+  const fetchScripts = async () => {
     if (!window.electron) return
 
-    const fetchScripts = async () => {
-      const result = await window.electron!.fs.getPackageScripts(projectPath)
-      if (result.success && result.scripts) {
-        setScripts(result.scripts)
-        setPackageManager(result.packageManager || 'npm')
-      }
+    const result = await window.electron!.fs.getPackageScripts(projectPath)
+    if (result.success && result.scripts) {
+      setScripts(result.scripts)
+      setPackageManager(result.packageManager || 'npm')
     }
+  }
 
+  useEffect(() => {
     fetchScripts()
   }, [projectPath])
+
+  const handleRescanScripts = async () => {
+    setIsRescanningScripts(true)
+    try {
+      await fetchScripts()
+    } finally {
+      setIsRescanningScripts(false)
+    }
+  }
 
   const handleShellSelect = (shell: ShellInfo) => {
     onCreateTerminal(projectId, shell)
@@ -152,18 +162,30 @@ export function TerminalsTab({
           <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
             Servers
           </span>
-          <div className="relative">
+          <div className="flex items-center gap-1">
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                setShowServerMenu(!showServerMenu)
-                setShowShellMenu(false)
-                setShowCustomCommand(false)
+                handleRescanScripts()
               }}
-              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+              disabled={isRescanningScripts}
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+              title="Rescan package.json scripts"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <RefreshCw className={`w-3.5 h-3.5 ${isRescanningScripts ? 'animate-spin' : ''}`} />
             </button>
+            <div className="relative">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setShowServerMenu(!showServerMenu)
+                  setShowShellMenu(false)
+                  setShowCustomCommand(false)
+                }}
+                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
             {showServerMenu && !showCustomCommand && (
               <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[180px] max-h-[300px] overflow-y-auto">
                 {scripts.length > 0 ? (
