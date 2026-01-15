@@ -2,12 +2,15 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
 
+export type ProjectTab = 'terminals' | 'files' | 'git'
+
 export interface Project {
   id: string
   name: string
   path: string // Root directory path
   createdAt: number
   isExpanded: boolean
+  activeTab: ProjectTab
 }
 
 interface ProjectStore {
@@ -15,10 +18,11 @@ interface ProjectStore {
   activeProjectId: string | null
 
   // Actions
-  addProject: (project: Omit<Project, 'id' | 'createdAt' | 'isExpanded'>) => string
+  addProject: (project: Omit<Project, 'id' | 'createdAt' | 'isExpanded' | 'activeTab'>) => string
   removeProject: (id: string) => void
   setActiveProject: (id: string | null) => void
   toggleProjectExpanded: (id: string) => void
+  setProjectTab: (id: string, tab: ProjectTab) => void
   updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path'>>) => void
 }
 
@@ -39,6 +43,7 @@ export const useProjectStore = create<ProjectStore>()(
           id,
           createdAt: Date.now(),
           isExpanded: true,
+          activeTab: 'terminals',
         }
         set((state) => ({
           projects: [...state.projects, newProject],
@@ -70,6 +75,13 @@ export const useProjectStore = create<ProjectStore>()(
           ),
         })),
 
+      setProjectTab: (id, tab) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, activeTab: tab } : p
+          ),
+        })),
+
       updateProject: (id, updates) =>
         set((state) => ({
           projects: state.projects.map((p) =>
@@ -87,6 +99,13 @@ export const useProjectStore = create<ProjectStore>()(
             console.error('[ProjectStore] Hydration error:', error)
           } else {
             console.log('[ProjectStore] Hydrated with state:', state)
+            // Migration: Add activeTab to existing projects
+            if (state) {
+              state.projects = state.projects.map((p) => ({
+                ...p,
+                activeTab: (p as any).activeTab || 'terminals',
+              }))
+            }
           }
         }
       },

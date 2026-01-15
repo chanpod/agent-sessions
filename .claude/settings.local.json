@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install:*)",
+      "Bash(CI=true pnpm install:*)",
+      "Bash(pnpm approve-builds:*)",
+      "Bash(git restore:*)"
+    ]
+  }
+}

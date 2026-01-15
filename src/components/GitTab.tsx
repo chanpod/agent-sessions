@@ -1,0 +1,532 @@
+import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
+import type { ChangedFile } from '../types/electron'
+import { useFileViewerStore } from '../stores/file-viewer-store'
+import { cn } from '../lib/utils'
+
+interface GitTabProps {
+  projectPath: string
+  gitBranch: string | null
+  gitHasChanges: boolean
+  changedFiles: ChangedFile[]
+  onRefreshGitInfo: () => Promise<void>
+}
+
+export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, onRefreshGitInfo }: GitTabProps) {
+  const { openFile } = useFileViewerStore()
+
+  const [showBranchMenu, setShowBranchMenu] = useState(false)
+  const [localBranches, setLocalBranches] = useState<string[]>([])
+  const [remoteBranches, setRemoteBranches] = useState<string[]>([])
+  const [isFetching, setIsFetching] = useState(false)
+  const [isCheckingOut, setIsCheckingOut] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null)
+  const [commitMessage, setCommitMessage] = useState('')
+  const [isCommitting, setIsCommitting] = useState(false)
+
+  const branchBtnRef = useRef<HTMLButtonElement>(null)
+  const branchMenuRef = useRef<HTMLDivElement>(null)
+  const [branchMenuPos, setBranchMenuPos] = useState<{ top: number; left: number } | null>(null)
+
+  // Fetch branches when branch menu opens
+  useEffect(() => {
+    if (!showBranchMenu || !window.electron || !gitBranch) return
+
+    const fetchBranches = async () => {
+      const result = await window.electron!.git.getBranches(projectPath)
+      if (result.success) {
+        setLocalBranches(result.local || [])
+        setRemoteBranches(result.remote || [])
+      }
+    }
+
+    fetchBranches()
+  }, [showBranchMenu, projectPath, gitBranch])
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        branchMenuRef.current &&
+        !branchMenuRef.current.contains(event.target as Node) &&
+        branchBtnRef.current &&
+        !branchBtnRef.current.contains(event.target as Node)
+      ) {
+        setShowBranchMenu(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const handleBranchClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const newShowState = !showBranchMenu
+    setShowBranchMenu(newShowState)
+
+    if (newShowState && branchBtnRef.current) {
+      const rect = branchBtnRef.current.getBoundingClientRect()
+      setBranchMenuPos({ top: rect.bottom + 4, left: rect.left })
+    }
+  }
+
+  const handleFetch = async () => {
+    if (!window.electron) return
+    setIsFetching(true)
+    try {
+      await window.electron.git.fetch(projectPath)
+      const result = await window.electron.git.getBranches(projectPath)
+      if (result.success) {
+        setLocalBranches(result.local || [])
+        setRemoteBranches(result.remote || [])
+      }
+    } finally {
+      setIsFetching(false)
+    }
+  }
+
+  const handleCheckout = async (branch: string) => {
+    if (!window.electron) return
+    setIsCheckingOut(true)
+    try {
+      const result = await window.electron.git.checkout(projectPath, branch)
+      if (result.success) {
+        await onRefreshGitInfo()
+        setShowBranchMenu(false)
+      } else {
+        console.error('Checkout failed:', result.error)
+      }
+    } finally {
+      setIsCheckingOut(false)
+    }
+  }
+
+  const handleOpenChangedFile = async (filePath: string) => {
+    if (!window.electron) return
+
+    const separator = projectPath.includes('\\') ? '\\' : '/'
+    const fullPath = `${projectPath}${separator}${filePath}`.replace(/\/\//g, '/').replace(/\\\\/g, '\\')
+    const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
+
+    const result = await window.electron.fs.readFile(fullPath)
+    if (result.success && result.content !== undefined) {
+      openFile(fullPath, fileName, result.content, projectPath)
+    }
+  }
+
+  const handleStageFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.electron) return
+    await window.electron.git.stageFile(projectPath, filePath)
+    await onRefreshGitInfo()
+  }
+
+  const handleUnstageFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.electron) return
+    await window.electron.git.unstageFile(projectPath, filePath)
+    await onRefreshGitInfo()
+  }
+
+  const handleDiscardFile = async (filePath: string) => {
+    if (!window.electron) return
+    await window.electron.git.discardFile(projectPath, filePath)
+    setConfirmDiscard(null)
+    await onRefreshGitInfo()
+  }
+
+  const handleCommit = async () => {
+    if (!window.electron || !commitMessage.trim()) return
+
+    setIsCommitting(true)
+    try {
+      const result = await window.electron.git.commit(projectPath, commitMessage.trim())
+      if (result.success) {
+        setCommitMessage('')
+        await onRefreshGitInfo()
+      } else {
+        console.error('Commit failed:', result.error)
+      }
+    } finally {
+      setIsCommitting(false)
+    }
+  }
+
+  // Group changed files by status
+  const groupedFiles = {
+    modified: changedFiles.filter((f) => f.status === 'modified'),
+    added: changedFiles.filter((f) => f.status === 'added'),
+    deleted: changedFiles.filter((f) => f.status === 'deleted'),
+    untracked: changedFiles.filter((f) => f.status === 'untracked'),
+    renamed: changedFiles.filter((f) => f.status === 'renamed'),
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Branch Section */}
+      <div>
+        <div className="flex items-center justify-between px-2 py-1">
+          <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+            Branch
+          </span>
+        </div>
+        {gitBranch ? (
+          <div className="px-2 py-1">
+            <button
+              ref={branchBtnRef}
+              onClick={handleBranchClick}
+              className={cn(
+                'flex items-center gap-2 text-sm px-2 py-1.5 rounded transition-colors w-full',
+                gitHasChanges
+                  ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                  : 'bg-zinc-700/50 text-zinc-400 hover:bg-zinc-700'
+              )}
+            >
+              <GitBranch className="w-4 h-4" />
+              <span className="flex-1 text-left">{gitBranch}</span>
+              {gitHasChanges && <span className="text-amber-400">•</span>}
+            </button>
+
+            {showBranchMenu && branchMenuPos && createPortal(
+              <div
+                ref={branchMenuRef}
+                className="fixed py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg min-w-[200px] max-h-[400px] overflow-y-auto"
+                style={{ top: branchMenuPos.top, left: branchMenuPos.left, zIndex: 9999 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={handleFetch}
+                  disabled={isFetching}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left border-b border-zinc-700 mb-1"
+                >
+                  <RefreshCw className={cn('w-3 h-3', isFetching && 'animate-spin')} />
+                  {isFetching ? 'Fetching...' : 'Fetch from remote'}
+                </button>
+
+                {localBranches.length > 0 && (
+                  <>
+                    <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase">
+                      Local branches
+                    </div>
+                    {localBranches.map((branch) => (
+                      <button
+                        key={branch}
+                        onClick={() => handleCheckout(branch)}
+                        disabled={isCheckingOut || branch === gitBranch}
+                        className={cn(
+                          'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left',
+                          branch === gitBranch
+                            ? 'bg-zinc-700 text-white'
+                            : 'text-zinc-300 hover:bg-zinc-700 hover:text-white'
+                        )}
+                      >
+                        <GitBranch className="w-3 h-3" />
+                        <span className="truncate">{branch}</span>
+                        {branch === gitBranch && <Check className="w-3 h-3 ml-auto" />}
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {remoteBranches.length > 0 && (
+                  <>
+                    <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase border-t border-zinc-700 mt-1 pt-2">
+                      Remote branches
+                    </div>
+                    {remoteBranches.map((branch) => {
+                      const hasLocal = localBranches.includes(branch)
+                      return (
+                        <button
+                          key={branch}
+                          onClick={() => handleCheckout(branch)}
+                          disabled={isCheckingOut || hasLocal}
+                          className={cn(
+                            'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left',
+                            hasLocal
+                              ? 'text-zinc-600'
+                              : 'text-zinc-300 hover:bg-zinc-700 hover:text-white'
+                          )}
+                          title={hasLocal ? 'Already have local branch' : `Checkout ${branch}`}
+                        >
+                          <Cloud className="w-3 h-3" />
+                          <span className="truncate">{branch}</span>
+                        </button>
+                      )
+                    })}
+                  </>
+                )}
+
+                {localBranches.length === 0 && remoteBranches.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-zinc-500">
+                    No branches found
+                  </div>
+                )}
+              </div>,
+              document.body
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-zinc-600 px-2 py-1">Not a git repository</p>
+        )}
+      </div>
+
+      {/* Staging & Commit Section */}
+      {gitBranch && changedFiles.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between px-2 py-1">
+            <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Changes ({changedFiles.length})
+            </span>
+          </div>
+          <div className="px-2 space-y-1">
+            {/* Modified files */}
+            {groupedFiles.modified.length > 0 && (
+              <div>
+                <div className="text-[10px] text-yellow-400 uppercase mb-1">
+                  Modified ({groupedFiles.modified.length})
+                </div>
+                {groupedFiles.modified.map((file) => (
+                  <div
+                    key={file.path}
+                    className="flex items-center gap-1 py-1 text-xs group"
+                  >
+                    <button
+                      onClick={() => handleOpenChangedFile(file.path)}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left text-zinc-300 hover:text-white"
+                    >
+                      <FileText className="w-3 h-3 text-yellow-400 flex-shrink-0" />
+                      <span className="truncate" title={file.path}>{file.path}</span>
+                    </button>
+                    {file.staged && <Check className="w-3 h-3 text-green-400" />}
+                    <div className="flex items-center gap-0.5">
+                      {file.staged ? (
+                        <button
+                          onClick={(e) => handleUnstageFile(file.path, e)}
+                          className="p-0.5 rounded hover:bg-zinc-700 text-yellow-400"
+                          title="Unstage"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => handleStageFile(file.path, e)}
+                          className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
+                          title="Stage"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                        className="p-0.5 rounded hover:bg-zinc-700 text-red-400"
+                        title="Discard changes"
+                      >
+                        <Undo2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Added files */}
+            {groupedFiles.added.length > 0 && (
+              <div>
+                <div className="text-[10px] text-green-400 uppercase mb-1">
+                  Added ({groupedFiles.added.length})
+                </div>
+                {groupedFiles.added.map((file) => (
+                  <div
+                    key={file.path}
+                    className="flex items-center gap-1 py-1 text-xs group"
+                  >
+                    <button
+                      onClick={() => handleOpenChangedFile(file.path)}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left text-zinc-300 hover:text-white"
+                    >
+                      <FilePlus className="w-3 h-3 text-green-400 flex-shrink-0" />
+                      <span className="truncate" title={file.path}>{file.path}</span>
+                    </button>
+                    {file.staged && <Check className="w-3 h-3 text-green-400" />}
+                    <div className="flex items-center gap-0.5">
+                      {file.staged ? (
+                        <button
+                          onClick={(e) => handleUnstageFile(file.path, e)}
+                          className="p-0.5 rounded hover:bg-zinc-700 text-yellow-400"
+                          title="Unstage"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => handleStageFile(file.path, e)}
+                          className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
+                          title="Stage"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Deleted files */}
+            {groupedFiles.deleted.length > 0 && (
+              <div>
+                <div className="text-[10px] text-red-400 uppercase mb-1">
+                  Deleted ({groupedFiles.deleted.length})
+                </div>
+                {groupedFiles.deleted.map((file) => (
+                  <div
+                    key={file.path}
+                    className="flex items-center gap-1 py-1 text-xs group"
+                  >
+                    <div className="flex items-center gap-2 flex-1 min-w-0 text-zinc-500">
+                      <FileMinus className="w-3 h-3 text-red-400 flex-shrink-0" />
+                      <span className="truncate line-through" title={file.path}>{file.path}</span>
+                    </div>
+                    {file.staged && <Check className="w-3 h-3 text-green-400" />}
+                    <div className="flex items-center gap-0.5">
+                      {file.staged ? (
+                        <button
+                          onClick={(e) => handleUnstageFile(file.path, e)}
+                          className="p-0.5 rounded hover:bg-zinc-700 text-yellow-400"
+                          title="Unstage"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => handleStageFile(file.path, e)}
+                          className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
+                          title="Stage"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDiscard(file.path) }}
+                        className="p-0.5 rounded hover:bg-zinc-700 text-blue-400"
+                        title="Restore file"
+                      >
+                        <Undo2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Untracked files */}
+            {groupedFiles.untracked.length > 0 && (
+              <div>
+                <div className="text-[10px] text-zinc-500 uppercase mb-1">
+                  Untracked ({groupedFiles.untracked.length})
+                </div>
+                {groupedFiles.untracked.map((file) => (
+                  <div
+                    key={file.path}
+                    className="flex items-center gap-1 py-1 text-xs group"
+                  >
+                    <button
+                      onClick={() => handleOpenChangedFile(file.path)}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left text-zinc-400 hover:text-white"
+                    >
+                      <FileQuestion className="w-3 h-3 text-zinc-500 flex-shrink-0" />
+                      <span className="truncate" title={file.path}>{file.path}</span>
+                    </button>
+                    <button
+                      onClick={(e) => handleStageFile(file.path, e)}
+                      className="p-0.5 rounded hover:bg-zinc-700 text-green-400"
+                      title="Stage"
+                    >
+                      <Plus className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Commit UI */}
+          {changedFiles.some(f => f.staged) && (
+            <div className="mt-3 px-2">
+              <div className="text-[10px] text-zinc-500 uppercase mb-2">
+                Commit Message
+              </div>
+              <textarea
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                placeholder="Enter commit message..."
+                className="w-full px-2 py-1.5 text-xs bg-zinc-900 border border-zinc-700 rounded text-zinc-200 placeholder-zinc-600 resize-none"
+                rows={3}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault()
+                    handleCommit()
+                  }
+                }}
+              />
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-[10px] text-zinc-600">
+                  {changedFiles.filter(f => f.staged).length} file(s) staged
+                </span>
+                <button
+                  onClick={handleCommit}
+                  disabled={!commitMessage.trim() || isCommitting}
+                  className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded transition-colors"
+                >
+                  {isCommitting ? 'Committing...' : 'Commit'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {gitBranch && changedFiles.length === 0 && (
+        <p className="text-xs text-zinc-600 px-2 py-1">No changes</p>
+      )}
+
+      {/* Confirm discard dialog */}
+      {confirmDiscard && createPortal(
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center"
+          style={{ zIndex: 9999 }}
+          onClick={() => setConfirmDiscard(null)}
+        >
+          <div
+            className="bg-zinc-800 border border-zinc-700 rounded-md p-4 min-w-[300px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm text-red-400 mb-2">
+              Discard changes to <span className="font-medium">{confirmDiscard.split('/').pop()}</span>?
+            </div>
+            <div className="text-xs text-zinc-500 mb-4">
+              This cannot be undone.
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmDiscard(null)}
+                className="flex-1 px-3 py-2 text-sm text-zinc-300 hover:text-white hover:bg-zinc-700 rounded border border-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDiscardFile(confirmDiscard)}
+                className="flex-1 px-3 py-2 text-sm bg-red-600 hover:bg-red-500 text-white rounded"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}

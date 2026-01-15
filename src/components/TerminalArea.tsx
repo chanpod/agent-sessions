@@ -54,13 +54,13 @@ export function TerminalArea() {
     <main
       ref={containerRef}
       className={cn(
-        'flex-1 flex min-w-0 bg-zinc-950 relative',
+        'flex-1 flex min-w-0 min-h-0 bg-zinc-950 relative',
         isDragging && 'select-none cursor-col-resize'
       )}
     >
       {/* Terminal section */}
       <div
-        className="flex flex-col min-w-0"
+        className="flex flex-col min-w-0 min-h-0 h-full"
         style={{ width: showFileViewer ? `${splitPosition}%` : '100%' }}
       >
         {activeGrid ? (
@@ -84,7 +84,7 @@ export function TerminalArea() {
       {/* File viewer section */}
       {showFileViewer && (
         <div
-          className="flex flex-col min-w-0"
+          className="flex flex-col min-w-0 h-full"
           style={{ width: `${100 - splitPosition}%` }}
         >
           <FileViewer />
