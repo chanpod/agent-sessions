@@ -300,7 +300,9 @@ function App() {
     })
 
     // Write the command to start the server
-    await window.electron.pty.write(info.id, command + '\n')
+    // Use \r on Windows to auto-execute, \n on Unix
+    const lineEnding = navigator.platform.toLowerCase().includes('win') ? '\r' : '\n'
+    await window.electron.pty.write(info.id, command + lineEnding)
 
     // Mark as running after a short delay
     setTimeout(() => {
@@ -337,7 +339,9 @@ function App() {
       await new Promise((resolve) => setTimeout(resolve, 300))
 
       // Run the command again in the same terminal
-      await window.electron.pty.write(server.terminalId, command + '\n')
+      // Use \r on Windows to auto-execute, \n on Unix
+      const lineEnding = navigator.platform.toLowerCase().includes('win') ? '\r' : '\n'
+      await window.electron.pty.write(server.terminalId, command + lineEnding)
       updateServerStatus(serverId, 'running')
     }
   }
