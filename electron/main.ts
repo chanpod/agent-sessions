@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { exec } from 'child_process'
 import path from 'path'
@@ -163,6 +163,118 @@ function setupAutoUpdater() {
 
   // Check for updates
   autoUpdater.checkForUpdatesAndNotify()
+}
+
+function createMenu() {
+  const isMac = process.platform === 'darwin'
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    // App menu (macOS only)
+    ...(isMac ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' as const },
+        { type: 'separator' as const },
+        { role: 'services' as const },
+        { type: 'separator' as const },
+        { role: 'hide' as const },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
+        { type: 'separator' as const },
+        { role: 'quit' as const }
+      ]
+    }] : []),
+    // File menu
+    {
+      label: 'File',
+      submenu: [
+        isMac ? { role: 'close' as const } : { role: 'quit' as const }
+      ]
+    },
+    // Edit menu
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' as const },
+        { role: 'redo' as const },
+        { type: 'separator' as const },
+        { role: 'cut' as const },
+        { role: 'copy' as const },
+        { role: 'paste' as const },
+        ...(isMac ? [
+          { role: 'pasteAndMatchStyle' as const },
+          { role: 'delete' as const },
+          { role: 'selectAll' as const }
+        ] : [
+          { role: 'delete' as const },
+          { type: 'separator' as const },
+          { role: 'selectAll' as const }
+        ])
+      ]
+    },
+    // View menu
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' as const },
+        { role: 'forceReload' as const },
+        { role: 'toggleDevTools' as const },
+        { type: 'separator' as const },
+        { role: 'resetZoom' as const },
+        { role: 'zoomIn' as const },
+        { role: 'zoomOut' as const },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const }
+      ]
+    },
+    // Help menu
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Check for Updates...',
+          click: async () => {
+            if (isDev) {
+              dialog.showMessageBox(mainWindow!, {
+                type: 'info',
+                title: 'Updates Disabled',
+                message: 'Auto-updates are disabled in development mode.',
+              })
+              return
+            }
+
+            try {
+              const result = await autoUpdater.checkForUpdates()
+              if (result) {
+                dialog.showMessageBox(mainWindow!, {
+                  type: 'info',
+                  title: 'Checking for Updates',
+                  message: 'Checking for updates...',
+                })
+              }
+            } catch (err) {
+              dialog.showMessageBox(mainWindow!, {
+                type: 'error',
+                title: 'Update Check Failed',
+                message: 'Failed to check for updates.',
+                detail: String(err),
+              })
+            }
+          }
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Learn More',
+          click: async () => {
+            await shell.openExternal('https://github.com/chanpod/agent-sessions')
+          }
+        }
+      ]
+    }
+  ]
+
+  const menu = Menu.buildFromTemplate(template)
+  Menu.setApplicationMenu(menu)
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -920,6 +1032,7 @@ ipcMain.handle('system:open-in-editor', async (_event, projectPath: string) => {
 })
 
 app.whenReady().then(() => {
+  createMenu()
   createWindow()
   setupAutoUpdater()
 })
