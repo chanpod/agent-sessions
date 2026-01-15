@@ -1,6 +1,6 @@
 {
   "name": "agent-sessions",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Multi-terminal agent session manager",
   "main": "dist-electron/main.js",
   "scripts": {
