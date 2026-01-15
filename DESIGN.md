@@ -1,8 +1,8 @@
-# Agent Sessions - Design Document
+# ToolChain - Design Document
 
 ## Overview
 
-Agent Sessions is a cross-platform desktop application for managing multiple terminal sessions, with a focus on AI agent workflows, development servers, and project management.
+ToolChain is a cross-platform desktop application for managing multiple terminal sessions, with a focus on AI agent workflows, development servers, and project management.
 
 ## Vision
 

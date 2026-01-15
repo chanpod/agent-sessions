@@ -60,7 +60,7 @@ export function TerminalArea() {
     >
       {/* Terminal section */}
       <div
-        className="flex flex-col min-w-0 min-h-0 h-full"
+        className="flex flex-col min-w-0 min-h-0 w-full h-full"
         style={{ width: showFileViewer ? `${splitPosition}%` : '100%' }}
       >
         {activeGrid ? (

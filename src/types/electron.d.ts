@@ -1,11 +1,51 @@
 export interface PtyOptions {
   cwd?: string
   shell?: string
+  sshConnectionId?: string // For SSH connections
+  remoteCwd?: string // Remote working directory for SSH
 }
 
 export interface ShellInfo {
   name: string
   path: string
+}
+
+export interface SSHConnectionConfig {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  authMethod: 'key' | 'agent' | 'password'
+  identityFile?: string
+  options?: string[]
+}
+
+export interface SSHConnectionResult {
+  success: boolean
+  connectionId?: string
+  error?: string
+}
+
+export interface SSHTestResult {
+  success: boolean
+  message?: string
+  error?: string
+}
+
+export interface DetectorEvent {
+  terminalId: string
+  type: string
+  timestamp: number
+  data: any
+}
+
+export interface DetectedServer {
+  url: string
+  port: number
+  protocol: 'http' | 'https'
+  host: string
+  detectedAt: number
 }
 
 export interface SystemInfo {
@@ -113,6 +153,9 @@ export interface ElectronAPI {
     onExit: (callback: (id: string, code: number) => void) => () => void
     onTitleChange: (callback: (id: string, title: string) => void) => () => void
   }
+  detector: {
+    onEvent: (callback: (event: DetectorEvent) => void) => () => void
+  }
   system: {
     getShells: () => Promise<ShellInfo[]>
     getInfo: () => Promise<SystemInfo>
@@ -148,6 +191,13 @@ export interface ElectronAPI {
     readFile: (filePath: string) => Promise<FileReadResult>
     writeFile: (filePath: string, content: string) => Promise<FileWriteResult>
     listDir: (dirPath: string) => Promise<DirListResult>
+  }
+  ssh: {
+    connect: (config: SSHConnectionConfig) => Promise<SSHConnectionResult>
+    disconnect: (connectionId: string) => Promise<{ success: boolean; error?: string }>
+    test: (config: SSHConnectionConfig) => Promise<SSHTestResult>
+    getStatus: (connectionId: string) => Promise<{ connected: boolean; error?: string }>
+    onStatusChange: (callback: (connectionId: string, connected: boolean, error?: string) => void) => () => void
   }
 }
 

@@ -24,7 +24,7 @@ export default defineConfig({
             outDir: 'dist-electron',
             minify: false,
             rollupOptions: {
-              external: ['node-pty', 'electron'],
+              external: ['node-pty', 'electron', 'sql.js'],
               output: {
                 entryFileNames: '[name].js',
               },

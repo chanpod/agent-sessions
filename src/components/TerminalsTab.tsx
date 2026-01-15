@@ -58,8 +58,8 @@ export function TerminalsTab({
   const fetchScripts = async () => {
     if (!window.electron) return
 
-    const result = await window.electron!.fs.getPackageScripts(projectPath)
-    if (result.success && result.scripts) {
+    const result = await window.electron!.project.getScripts(projectPath)
+    if (result.hasPackageJson && result.scripts) {
       setScripts(result.scripts)
       setPackageManager(result.packageManager || 'npm')
     }

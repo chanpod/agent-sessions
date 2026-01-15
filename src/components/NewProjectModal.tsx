@@ -13,11 +13,11 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim() || !path.trim()) return
+    if (!name.trim()) return
 
     addProject({
       name: name.trim(),
-      path: path.trim(),
+      path: path.trim(), // Can be empty - will start in default location
     })
     onClose()
   }
@@ -68,14 +68,14 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-              Project Path
+              Project Path (Optional)
             </label>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
-                placeholder="/path/to/project"
+                placeholder="/path/to/project or /home/user/remote-project"
                 className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-md text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
               <button
@@ -87,7 +87,7 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
               </button>
             </div>
             <p className="mt-1 text-xs text-zinc-600">
-              This is where terminals will start by default
+              Default working directory for terminals. Leave empty to use SSH connections or shell defaults.
             </p>
           </div>
 
@@ -102,7 +102,7 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
             </button>
             <button
               type="submit"
-              disabled={!name.trim() || !path.trim()}
+              disabled={!name.trim()}
               className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-md transition-colors"
             >
               Create Project

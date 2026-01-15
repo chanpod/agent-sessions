@@ -1,7 +1,7 @@
 {
-  "name": "agent-sessions",
-  "version": "0.2.4",
-  "description": "Multi-terminal agent session manager",
+  "name": "toolchain",
+  "version": "1.0.0",
+  "description": "ToolChain - Multi-terminal development environment manager",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -16,17 +16,16 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@monaco-editor/react": "^4.7.0",
-    "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
-    "electron-store": "^11.0.2",
     "electron-updater": "^6.7.3",
     "lucide-react": "^0.460.0",
     "monaco-editor": "^0.55.1",
     "node-pty": "^1.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "sql.js": "^1.13.0",
     "tailwind-merge": "^2.5.0",
     "vite-plugin-monaco-editor": "^1.1.0",
     "zustand": "^5.0.0"
@@ -47,14 +46,20 @@
     "vite-plugin-electron-renderer": "^0.14.0"
   },
   "build": {
-    "appId": "com.agent-sessions.app",
-    "productName": "Agent Sessions",
+    "appId": "com.toolchain.app",
+    "productName": "ToolChain",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/sql.js/dist/sql-wasm.wasm",
+        "to": "sql-wasm.wasm"
+      }
     ],
     "mac": {
       "target": "dmg",
@@ -75,6 +80,10 @@
   },
   "packageManager": "pnpm@10.27.0+sha512.72d699da16b1179c14ba9e64dc71c9a40988cbdc65c264cb0e489db7de917f20dcf4d64d8723625f2969ba52d4b7e2a1170682d9ac2a5dcaeaab732b7e16f04a",
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "node-pty"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "node-pty"
+    ]
   }
 }

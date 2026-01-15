@@ -7,7 +7,7 @@ export type ProjectTab = 'terminals' | 'files' | 'git'
 export interface Project {
   id: string
   name: string
-  path: string // Root directory path
+  path: string // Root directory path (optional - can be empty for SSH-only projects)
   createdAt: number
   isExpanded: boolean
   activeTab: ProjectTab
@@ -90,7 +90,7 @@ export const useProjectStore = create<ProjectStore>()(
         })),
     }),
     {
-      name: 'agent-sessions-projects',
+      name: 'toolchain-projects',
       storage: createJSONStorage(() => electronStorage),
       onRehydrateStorage: () => {
         console.log('[ProjectStore] Starting hydration...')

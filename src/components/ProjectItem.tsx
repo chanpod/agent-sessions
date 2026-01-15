@@ -1,4 +1,4 @@
-import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Minus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil, FileCode, FileText, FilePlus, FileMinus, FileQuestion, FileSymlink, ExternalLink, Undo2 } from 'lucide-react'
+import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Minus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil, FileCode, FileText, FilePlus, FileMinus, FileQuestion, FileSymlink, ExternalLink, Undo2, Trash2 } from 'lucide-react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
@@ -47,7 +47,7 @@ export function ProjectItem({
   onRestartServer,
   onDeleteServer,
 }: ProjectItemProps) {
-  const { toggleProjectExpanded, activeProjectId, setActiveProject, setProjectTab } = useProjectStore()
+  const { toggleProjectExpanded, activeProjectId, setActiveProject, setProjectTab, removeProject } = useProjectStore()
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { servers } = useServerStore()
   const { openFile } = useFileViewerStore()
@@ -70,6 +70,7 @@ export function ProjectItem({
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([])
   const [showChangedFilesMenu, setShowChangedFilesMenu] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null) // file path to confirm discard
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   // Refs and positions for portal-based dropdowns
   const changedFilesBtnRef = useRef<HTMLButtonElement>(null)
@@ -319,6 +320,27 @@ export function ProjectItem({
     setConfirmDiscard(null)
   }
 
+  const handleDeleteProject = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setShowDeleteConfirm(true)
+  }
+
+  const confirmDeleteProject = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    // Close all terminals for this project
+    const projectTerminals = sessions.filter((s) => s.projectId === project.id)
+    projectTerminals.forEach((session) => onCloseTerminal(session.id))
+
+    // Remove the project
+    removeProject(project.id)
+    setShowDeleteConfirm(false)
+  }
+
+  const cancelDeleteProject = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setShowDeleteConfirm(false)
+  }
+
   // Group changed files by status
   const groupedFiles = {
     modified: changedFiles.filter((f) => f.status === 'modified'),
@@ -460,13 +482,40 @@ export function ProjectItem({
           </>
         )}
         <span className="flex-1" />
-        <button
-          onClick={handleOpenInEditor}
-          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
-          title="Open in editor"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-        </button>
+        {!showDeleteConfirm ? (
+          <>
+            <button
+              onClick={handleOpenInEditor}
+              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+              title="Open in editor"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleDeleteProject}
+              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-900/50 text-zinc-500 hover:text-red-400"
+              title="Delete project"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        ) : (
+          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <span className="text-[10px] text-red-400 mr-1">Delete?</span>
+            <button
+              onClick={confirmDeleteProject}
+              className="px-2 py-0.5 text-[10px] bg-red-600 hover:bg-red-700 text-white rounded"
+            >
+              Yes
+            </button>
+            <button
+              onClick={cancelDeleteProject}
+              className="px-2 py-0.5 text-[10px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
+            >
+              No
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Expanded Content */}

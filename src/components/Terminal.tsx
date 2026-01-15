@@ -29,7 +29,7 @@ export function Terminal({ sessionId, gridId }: TerminalProps) {
     if (!containerRef.current) return
 
     // Get or create terminal instance from registry
-    const { isNew } = getOrCreateTerminal(sessionId, containerRef.current)
+    const { terminal, isNew } = getOrCreateTerminal(sessionId, containerRef.current)
 
     // Only set up resize observer once per mount
     if (!initializedRef.current) {
@@ -39,6 +39,11 @@ export function Terminal({ sessionId, gridId }: TerminalProps) {
         handleResize()
       })
       resizeObserver.observe(containerRef.current)
+
+      // Initial resize after mount to ensure proper fitting
+      requestAnimationFrame(() => {
+        handleResize()
+      })
 
       // Focus if this is a new terminal
       if (isNew) {

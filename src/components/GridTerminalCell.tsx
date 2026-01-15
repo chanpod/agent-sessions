@@ -5,6 +5,7 @@ import { useProjectStore } from '../stores/project-store'
 import { useGridStore } from '../stores/grid-store'
 import { Terminal } from './Terminal'
 import { ActivityIndicator } from './ActivityIndicator'
+import { DetectedServers } from './DetectedServers'
 import { cn } from '../lib/utils'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -205,8 +206,11 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
         </div>
       </div>
 
+      {/* Detected Servers */}
+      <DetectedServers terminalId={session.id} />
+
       {/* Terminal */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 min-w-0 w-full">
         <Terminal sessionId={session.id} gridId={gridId} />
       </div>
     </div>

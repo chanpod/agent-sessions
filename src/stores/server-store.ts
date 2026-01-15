@@ -81,7 +81,7 @@ export const useServerStore = create<ServerStore>()(
         get().servers.filter((s) => s.projectId === projectId),
     }),
     {
-      name: 'agent-sessions-servers',
+      name: 'toolchain-servers',
       storage: createJSONStorage(() => electronStorage),
       partialize: (state) => ({
         savedConfigs: state.savedConfigs,

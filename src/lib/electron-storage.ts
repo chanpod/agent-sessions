@@ -2,7 +2,7 @@ import { StateStorage } from 'zustand/middleware'
 
 /**
  * Custom storage adapter for Zustand that uses Electron's main process
- * to persist data to the filesystem via electron-store.
+ * to persist data to SQLite database.
  *
  * This is more reliable than localStorage in Electron dev mode.
  */

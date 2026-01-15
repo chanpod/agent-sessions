@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Settings, FolderPlus } from 'lucide-react'
+import { Settings, FolderPlus, Terminal, ChevronDown } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
+import { useSSHStore } from '../stores/ssh-store'
 import { ProjectItem } from './ProjectItem'
 import { NewProjectModal } from './NewProjectModal'
+import { SettingsModal } from './SettingsModal'
 
 interface ShellInfo {
   name: string
@@ -11,6 +13,7 @@ interface ShellInfo {
 
 interface SidebarProps {
   onCreateTerminal: (projectId: string, shell: ShellInfo) => void
+  onCreateQuickTerminal: (shell: ShellInfo) => void
   onCloseTerminal: (id: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
@@ -22,10 +25,13 @@ const MIN_WIDTH = 180
 const MAX_WIDTH = 500
 const DEFAULT_WIDTH = 256
 
-export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
+export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
   const { projects } = useProjectStore()
+  const { connections: sshConnections } = useSSHStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [showNewProject, setShowNewProject] = useState(false)
+  const [showQuickTerminalMenu, setShowQuickTerminalMenu] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH
@@ -76,6 +82,15 @@ export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onSt
     loadShells()
   }, [])
 
+  // Combine local shells with SSH connections for terminal creation
+  const allShells = [
+    ...shells,
+    ...sshConnections.map((conn) => ({
+      name: `SSH: ${conn.name}`,
+      path: `ssh:${conn.id}`, // Special format to identify SSH connections
+    })),
+  ]
+
   return (
     <>
       <aside
@@ -85,11 +100,46 @@ export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onSt
       >
         {/* Header - draggable region for window */}
         <div className="h-12 flex items-center px-4 border-b border-zinc-800 app-drag-region">
-          <h1 className="text-sm font-semibold text-zinc-300">Agent Sessions</h1>
+          <h1 className="text-sm font-semibold text-zinc-300">ToolChain</h1>
         </div>
 
         {/* Projects List */}
         <div className="flex-1 overflow-y-auto p-2">
+          {/* Quick Terminal */}
+          <div className="mb-4">
+            <div className="relative">
+              <button
+                onClick={() => setShowQuickTerminalMenu(!showQuickTerminalMenu)}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4" />
+                  New Terminal
+                </div>
+                <ChevronDown className={`w-4 h-4 transition-transform ${showQuickTerminalMenu ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Shell Dropdown */}
+              {showQuickTerminalMenu && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-10 max-h-60 overflow-y-auto">
+                  {allShells.map((shell) => (
+                    <button
+                      key={shell.path}
+                      onClick={() => {
+                        onCreateQuickTerminal(shell)
+                        setShowQuickTerminalMenu(false)
+                      }}
+                      className="w-full px-3 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-700 transition-colors"
+                    >
+                      {shell.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Projects */}
           <div className="flex items-center justify-between px-2 mb-2">
             <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
               Projects
@@ -119,7 +169,7 @@ export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onSt
                 <ProjectItem
                   key={project.id}
                   project={project}
-                  shells={shells}
+                  shells={allShells}
                   onCreateTerminal={onCreateTerminal}
                   onCloseTerminal={onCloseTerminal}
                   onStartServer={onStartServer}
@@ -134,7 +184,10 @@ export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onSt
 
         {/* Footer */}
         <div className="p-3 border-t border-zinc-800">
-          <button className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md transition-colors">
+          <button
+            onClick={() => setShowSettings(true)}
+            className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md transition-colors"
+          >
             <Settings className="w-4 h-4" />
             Settings
           </button>
@@ -149,6 +202,10 @@ export function Sidebar({ onCreateTerminal, onCloseTerminal, onStartServer, onSt
 
       {showNewProject && (
         <NewProjectModal onClose={() => setShowNewProject(false)} />
+      )}
+
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} />
       )}
     </>
   )

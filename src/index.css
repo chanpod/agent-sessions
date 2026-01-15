@@ -83,6 +83,9 @@ body {
   gap: 1px;
   background-color: var(--color-border);
   width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
 }
 
 /* Auto layout based on terminal count */
@@ -137,6 +140,8 @@ body {
   overflow: hidden;
   min-width: 0;
   min-height: 0;
+  width: 100%;
+  height: 100%;
 }
 
 /* Focused grid cell */

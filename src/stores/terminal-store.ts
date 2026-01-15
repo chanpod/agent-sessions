@@ -8,8 +8,9 @@ export interface SavedTerminalConfig {
   id: string
   projectId: string
   shell: string
-  shellName: string // Friendly name like "bash"
+  shellName: string // Friendly name like "bash" or "SSH: Production"
   cwd: string
+  sshConnectionId?: string // For SSH terminals
 }
 
 // Full runtime session (includes pid, status, etc.)
@@ -179,7 +180,7 @@ export const useTerminalStore = create<TerminalStore>()(
         get().sessions.filter((s) => s.projectId === projectId),
     }),
     {
-      name: 'agent-sessions-terminals',
+      name: 'toolchain-terminals',
       storage: createJSONStorage(() => electronStorage),
       // Only persist savedConfigs, not runtime sessions
       partialize: (state) => ({

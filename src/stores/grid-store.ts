@@ -167,7 +167,7 @@ export const useGridStore = create<GridStore>()(
         get().grids.find((g) => g.id === gridId),
     }),
     {
-      name: 'agent-sessions-grid',
+      name: 'toolchain-grid',
       storage: createJSONStorage(() => electronStorage),
       // Don't persist grids - they are recreated when terminals are restored
       // This avoids orphaned grids when terminal IDs change on restart

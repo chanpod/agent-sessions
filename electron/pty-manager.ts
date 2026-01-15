@@ -3,6 +3,8 @@ import * as pty from 'node-pty'
 import { randomUUID } from 'crypto'
 import os from 'os'
 import { execSync } from 'child_process'
+import { DetectorManager } from './output-monitors/detector-manager'
+import { ServerDetector } from './output-monitors/server-detector'
 
 export interface TerminalInfo {
   id: string
@@ -50,9 +52,80 @@ function getLinuxPathFromWslPath(inputPath: string): string {
 export class PtyManager {
   private terminals: Map<string, TerminalInstance> = new Map()
   private window: BrowserWindow
+  private detectorManager: DetectorManager
 
   constructor(window: BrowserWindow) {
     this.window = window
+
+    // Initialize output monitoring
+    this.detectorManager = new DetectorManager()
+    this.detectorManager.registerDetector(new ServerDetector())
+
+    // Forward detected events to renderer
+    this.detectorManager.onEvent((event) => {
+      if (!this.window.isDestroyed()) {
+        this.window.webContents.send('detector:event', event)
+      }
+    })
+  }
+
+  /**
+   * Create terminal with custom command (used for SSH)
+   */
+  createTerminalWithCommand(shell: string, shellArgs: string[], displayCwd: string): TerminalInfo {
+    const id = randomUUID()
+
+    // Clean environment for SSH - remove SSH_ASKPASS and related vars
+    const cleanEnv = { ...process.env }
+    delete cleanEnv.SSH_ASKPASS
+    delete cleanEnv.SSH_ASKPASS_REQUIRE
+    delete cleanEnv.DISPLAY // Force SSH to use terminal prompts, not GUI
+
+    const ptyProcess = pty.spawn(shell, shellArgs, {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: process.cwd(),
+      env: {
+        ...cleanEnv,
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+      } as Record<string, string>,
+    })
+
+    const info: TerminalInfo = {
+      id,
+      pid: ptyProcess.pid,
+      shell: `${shell} ${shellArgs.slice(0, 3).join(' ')}...`, // Show abbreviated command
+      cwd: displayCwd,
+      title: 'SSH',
+      createdAt: Date.now(),
+    }
+
+    const instance: TerminalInstance = { info, ptyProcess }
+    this.terminals.set(id, instance)
+
+    // Forward PTY data to renderer
+    ptyProcess.onData((data) => {
+      // Process through detectors
+      this.detectorManager.processOutput(id, data)
+
+      if (!this.window.isDestroyed()) {
+        this.window.webContents.send('pty:data', id, data)
+      }
+    })
+
+    ptyProcess.onExit(({ exitCode }) => {
+      // Notify detectors of exit
+      this.detectorManager.handleTerminalExit(id, exitCode)
+
+      if (!this.window.isDestroyed()) {
+        this.window.webContents.send('pty:exit', id, exitCode)
+      }
+      this.terminals.delete(id)
+    })
+
+    return info
   }
 
   createTerminal(options: { cwd?: string; shell?: string } = {}): TerminalInfo {
@@ -106,12 +179,18 @@ export class PtyManager {
 
     // Forward PTY data to renderer
     ptyProcess.onData((data) => {
+      // Process through detectors
+      this.detectorManager.processOutput(id, data)
+
       if (!this.window.isDestroyed()) {
         this.window.webContents.send('pty:data', id, data)
       }
     })
 
     ptyProcess.onExit(({ exitCode }) => {
+      // Notify detectors of exit
+      this.detectorManager.handleTerminalExit(id, exitCode)
+
       if (!this.window.isDestroyed()) {
         this.window.webContents.send('pty:exit', id, exitCode)
       }
@@ -140,6 +219,7 @@ export class PtyManager {
     if (instance) {
       instance.ptyProcess.kill()
       this.terminals.delete(id)
+      this.detectorManager.cleanupTerminal(id)
     }
   }
 

@@ -16,7 +16,9 @@ import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
+import { useSSHStore } from './stores/ssh-store'
 import { disposeTerminal } from './lib/terminal-registry'
+import { useDetectedServers } from './hooks/useDetectedServers'
 
 function App() {
   const [isElectron, setIsElectron] = useState(false)
@@ -35,6 +37,7 @@ function App() {
   } = useTerminalStore()
   const restoringRef = useRef(false)
   const { projects } = useProjectStore()
+  const { connections: sshConnections, getConnection } = useSSHStore()
   const {
     addServer,
     removeServer,
@@ -68,6 +71,9 @@ function App() {
     // Check if running in Electron
     setIsElectron(typeof window !== 'undefined' && !!window.electron)
   }, [])
+
+  // Listen for detected servers from terminal output
+  useDetectedServers()
 
   // Restore saved terminals on startup (runs once)
   useEffect(() => {
@@ -156,6 +162,17 @@ function App() {
 
     const unsubExit = window.electron.pty.onExit((id, code) => {
       markSessionExited(id, code)
+
+      // Check if this terminal belongs to a server
+      const { servers } = useServerStore.getState()
+      const server = servers.find((s) => s.terminalId === id)
+
+      if (server) {
+        // Server process died - mark as error if non-zero exit, stopped if clean exit
+        const newStatus = code !== 0 ? 'error' : 'stopped'
+        updateServerStatus(server.id, newStatus)
+        console.log(`[App] Server "${server.name}" process exited with code ${code}, marked as ${newStatus}`)
+      }
     })
 
     const unsubTitle = window.electron.pty.onTitleChange((id, title) => {
@@ -167,7 +184,7 @@ function App() {
       unsubExit()
       unsubTitle()
     }
-  }, [isElectron, markSessionExited, updateSessionTitle, updateSessionActivity])
+  }, [isElectron, markSessionExited, updateSessionTitle, updateSessionActivity, updateServerStatus])
 
   // Keyboard shortcuts: Ctrl+N for project switch, Alt+N for terminal focus
   useEffect(() => {
@@ -212,23 +229,133 @@ function App() {
     const project = projects.find((p) => p.id === projectId)
     if (!project) return
 
-    const info = await window.electron.pty.create({
-      shell: shell.path,
-      cwd: project.path,
-    })
+    let info
 
-    // Save config for persistence
-    saveConfig({
-      id: info.id,
-      projectId,
-      shell: shell.path,
-      shellName: shell.name,
-      cwd: project.path,
-    })
+    // Check if this is an SSH connection (path starts with "ssh:")
+    if (shell.path.startsWith('ssh:')) {
+      const sshConnectionId = shell.path.substring(4) // Remove "ssh:" prefix
+      const sshConnection = getConnection(sshConnectionId)
+
+      if (!sshConnection) {
+        console.error('SSH connection not found:', sshConnectionId)
+        return
+      }
+
+      // Connect to SSH if not already connected
+      const connectResult = await window.electron.ssh.connect(sshConnection)
+      if (!connectResult.success) {
+        console.error('Failed to establish SSH connection:', connectResult.error)
+        alert(`Failed to connect to ${sshConnection.name}: ${connectResult.error}`)
+        return
+      }
+
+      // Create terminal with SSH (use project path if provided, otherwise start in home directory)
+      info = await window.electron.pty.create({
+        sshConnectionId,
+        remoteCwd: project.path || undefined, // Optional: use project path if available
+      })
+
+      // Save config for persistence
+      saveConfig({
+        id: info.id,
+        projectId,
+        shell: 'ssh',
+        shellName: shell.name,
+        cwd: project.path || '~', // Will be updated when we detect actual working directory
+        sshConnectionId,
+      })
+    } else {
+      // Local shell
+      info = await window.electron.pty.create({
+        shell: shell.path,
+        cwd: project.path || process.cwd(),
+      })
+
+      // Save config for persistence
+      saveConfig({
+        id: info.id,
+        projectId,
+        shell: shell.path,
+        shellName: shell.name,
+        cwd: project.path || process.cwd(),
+      })
+    }
 
     addSession({
       id: info.id,
       projectId,
+      pid: info.pid,
+      shell: shell.path,
+      shellName: shell.name,
+      cwd: info.cwd,
+      title: shell.name,
+      createdAt: info.createdAt,
+    })
+
+    // Create a new grid for this terminal
+    createGrid(info.id)
+  }
+
+  const handleCreateQuickTerminal = async (shell: { name: string; path: string }) => {
+    if (!window.electron) return
+
+    let info
+
+    // Check if this is an SSH connection (path starts with "ssh:")
+    if (shell.path.startsWith('ssh:')) {
+      const sshConnectionId = shell.path.substring(4) // Remove "ssh:" prefix
+      const sshConnection = getConnection(sshConnectionId)
+
+      if (!sshConnection) {
+        console.error('SSH connection not found:', sshConnectionId)
+        return
+      }
+
+      // Connect to SSH if not already connected
+      const connectResult = await window.electron.ssh.connect(sshConnection)
+      if (!connectResult.success) {
+        console.error('Failed to establish SSH connection:', connectResult.error)
+        alert(`Failed to connect to ${sshConnection.name}: ${connectResult.error}`)
+        return
+      }
+
+      // Create terminal with SSH (no specific working directory - will start in home)
+      info = await window.electron.pty.create({
+        sshConnectionId,
+      })
+
+      // Save config for persistence (use empty projectId for quick terminals)
+      saveConfig({
+        id: info.id,
+        projectId: '', // Empty projectId indicates this is a quick terminal
+        shell: 'ssh',
+        shellName: shell.name,
+        cwd: '~',
+        sshConnectionId,
+      })
+    } else {
+      // Local shell - get system default directory
+      const systemInfo = await window.electron.system.getInfo()
+      const defaultCwd = systemInfo.cwd
+
+      info = await window.electron.pty.create({
+        shell: shell.path,
+        cwd: defaultCwd,
+      })
+
+      // Save config for persistence
+      saveConfig({
+        id: info.id,
+        projectId: '', // Empty projectId indicates this is a quick terminal
+        shell: shell.path,
+        shellName: shell.name,
+        cwd: defaultCwd,
+      })
+    }
+
+    addSession({
+      id: info.id,
+      projectId: '', // Empty projectId for quick terminals
       pid: info.pid,
       shell: shell.path,
       shellName: shell.name,
@@ -444,7 +571,7 @@ function App() {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="text-center">
-          <h1 className="text-2xl font-bold mb-2">Agent Sessions</h1>
+          <h1 className="text-2xl font-bold mb-2">ToolChain</h1>
           <p className="text-muted-foreground">
             This app requires Electron to run.
           </p>
@@ -466,6 +593,7 @@ function App() {
       <div className="flex h-screen overflow-hidden">
         <Sidebar
           onCreateTerminal={handleCreateTerminal}
+          onCreateQuickTerminal={handleCreateQuickTerminal}
           onCloseTerminal={handleCloseTerminal}
           onStartServer={handleStartServer}
           onStopServer={handleStopServer}

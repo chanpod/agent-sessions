@@ -1,10 +1,12 @@
 import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable'
+import { useEffect } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useGridStore, LayoutMode } from '../stores/grid-store'
 import { GridTerminalCell } from './GridTerminalCell'
 import { cn } from '../lib/utils'
 import { Grid2X2, Grid3X3, LayoutGrid, Square } from 'lucide-react'
+import { resizeTerminal } from '../lib/terminal-registry'
 
 interface TerminalGridViewProps {
   gridId: string
@@ -34,8 +36,19 @@ export function TerminalGridView({ gridId, showHeader = true }: TerminalGridView
   // Determine layout attribute - only apply manual layout if not auto
   const dataLayout = grid.layoutMode !== 'auto' ? grid.layoutMode : undefined
 
+  // Trigger resize when grid layout or terminal count changes
+  useEffect(() => {
+    // Wait for layout to settle, then resize all terminals in this grid
+    const timer = setTimeout(() => {
+      grid.terminalIds.forEach((terminalId) => {
+        resizeTerminal(terminalId)
+      })
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [count, dataLayout, grid.terminalIds.length])
+
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 w-full h-full">
       {/* Grid header with layout controls */}
       {showHeader && gridSessions.length > 1 && (
         <div className="h-10 flex items-center px-4 border-b border-zinc-800 bg-zinc-900/30">

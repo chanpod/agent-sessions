@@ -4,7 +4,13 @@
       "Bash(pnpm install:*)",
       "Bash(CI=true pnpm install:*)",
       "Bash(pnpm approve-builds:*)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "WebFetch(domain:github.com)",
+      "Read(//c/Users/chanp/AppData/Roaming/**)",
+      "WebSearch",
+      "Bash(pnpm remove:*)",
+      "Bash(pnpm add:*)",
+      "Bash(npm run build-release:*)"
     ]
   }
 }

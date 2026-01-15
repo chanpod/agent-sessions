@@ -3,6 +3,38 @@ import { contextBridge, ipcRenderer } from 'electron'
 export interface PtyOptions {
   cwd?: string
   shell?: string
+  sshConnectionId?: string
+  remoteCwd?: string
+}
+
+export interface SSHConnectionConfig {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  authMethod: 'key' | 'agent' | 'password'
+  identityFile?: string
+  options?: string[]
+}
+
+export interface SSHConnectionResult {
+  success: boolean
+  connectionId?: string
+  error?: string
+}
+
+export interface SSHTestResult {
+  success: boolean
+  message?: string
+  error?: string
+}
+
+export interface DetectorEvent {
+  terminalId: string
+  type: string
+  timestamp: number
+  data: any
 }
 
 export interface ShellInfo {
@@ -132,6 +164,13 @@ const electronAPI = {
       return () => ipcRenderer.removeListener('pty:title', handler)
     },
   },
+  detector: {
+    onEvent: (callback: (event: DetectorEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, detectorEvent: DetectorEvent) => callback(detectorEvent)
+      ipcRenderer.on('detector:event', handler)
+      return () => ipcRenderer.removeListener('detector:event', handler)
+    },
+  },
   system: {
     getShells: (): Promise<ShellInfo[]> =>
       ipcRenderer.invoke('system:get-shells'),
@@ -194,6 +233,22 @@ const electronAPI = {
       ipcRenderer.invoke('fs:writeFile', filePath, content),
     listDir: (dirPath: string): Promise<DirListResult> =>
       ipcRenderer.invoke('fs:listDir', dirPath),
+  },
+  ssh: {
+    connect: (config: SSHConnectionConfig): Promise<SSHConnectionResult> =>
+      ipcRenderer.invoke('ssh:connect', config),
+    disconnect: (connectionId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('ssh:disconnect', connectionId),
+    test: (config: SSHConnectionConfig): Promise<SSHTestResult> =>
+      ipcRenderer.invoke('ssh:test', config),
+    getStatus: (connectionId: string): Promise<{ connected: boolean; error?: string }> =>
+      ipcRenderer.invoke('ssh:get-status', connectionId),
+    onStatusChange: (callback: (connectionId: string, connected: boolean, error?: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, connectionId: string, connected: boolean, error?: string) =>
+        callback(connectionId, connected, error)
+      ipcRenderer.on('ssh:status-change', handler)
+      return () => ipcRenderer.removeListener('ssh:status-change', handler)
+    },
   },
 }
 

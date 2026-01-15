@@ -6,7 +6,8 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { PtyManager } from './pty-manager.js'
-import Store from 'electron-store'
+import { SSHManager } from './ssh-manager.js'
+import { ToolChainDB } from './database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -102,11 +103,20 @@ function resolvePathForFs(inputPath: string): string {
   return inputPath
 }
 
-// Initialize electron-store for persistent storage
-const store = new Store({
-  name: 'agent-sessions-data',
-  defaults: {},
-})
+// Initialize SQLite database for persistent storage
+const db = new ToolChainDB()
+let dbReady = false
+
+// Initialize database asynchronously
+;(async () => {
+  try {
+    await db.initialize()
+    dbReady = true
+    console.log('[Database] Ready')
+  } catch (err) {
+    console.error('[Database] Initialization failed:', err)
+  }
+})()
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -279,6 +289,7 @@ function createMenu() {
 
 let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
+let sshManager: SSHManager | null = null
 
 // Git watchers for detecting branch and file changes
 interface GitWatcherSet {
@@ -306,6 +317,14 @@ function createWindow() {
   })
 
   ptyManager = new PtyManager(mainWindow)
+  sshManager = new SSHManager()
+
+  // Forward SSH status changes to renderer
+  sshManager.on('status-change', (connectionId: string, connected: boolean, error?: string) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ssh:status-change', connectionId, connected, error)
+    }
+  })
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
@@ -318,6 +337,8 @@ function createWindow() {
     mainWindow = null
     ptyManager?.dispose()
     ptyManager = null
+    sshManager?.disposeAll()
+    sshManager = null
     // Clean up all git watchers
     for (const watcherSet of gitWatchers.values()) {
       if (watcherSet.debounceTimer) {
@@ -332,8 +353,21 @@ function createWindow() {
 }
 
 // IPC Handlers
-ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string }) => {
-  return ptyManager?.createTerminal(options)
+ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string }) => {
+  if (!ptyManager) return null
+
+  // If this is an SSH connection, build the SSH command using SSH manager
+  if (options.sshConnectionId && sshManager) {
+    const sshCommand = sshManager.buildSSHCommand(options.sshConnectionId, options.remoteCwd)
+    if (!sshCommand) {
+      throw new Error('Failed to build SSH command - connection not found or not connected')
+    }
+
+    // Create terminal with SSH shell command
+    return ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~')
+  }
+
+  return ptyManager.createTerminal(options)
 })
 
 ipcMain.handle('pty:write', async (_event, id: string, data: string) => {
@@ -979,26 +1013,75 @@ ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
   }
 })
 
+// Helper to wait for database to be ready
+async function waitForDb(timeoutMs = 5000): Promise<boolean> {
+  const startTime = Date.now()
+  while (!dbReady) {
+    if (Date.now() - startTime > timeoutMs) {
+      console.error('[Database] Timeout waiting for database to be ready')
+      return false
+    }
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  return true
+}
+
 // Storage IPC handlers (for Zustand persistence)
 ipcMain.handle('store:get', async (_event, key: string) => {
-  const value = store.get(key)
-  console.log(`[Store] Get "${key}":`, value)
+  await waitForDb()
+
+  if (!dbReady) {
+    console.error(`[Database] Get "${key}" failed - database not ready`)
+    return undefined
+  }
+
+  const value = db.get(key)
+  console.log(`[Database] Get "${key}":`, value ? 'Found' : 'Not found')
   return value
 })
 
 ipcMain.handle('store:set', async (_event, key: string, value: unknown) => {
-  console.log(`[Store] Set "${key}":`, value)
-  store.set(key, value)
+  await waitForDb()
+
+  if (!dbReady) {
+    console.error(`[Database] Set "${key}" failed - database not ready`)
+    return
+  }
+
+  console.log(`[Database] Set "${key}"`)
+  db.set(key, value)
+
+  // Verify the write completed
+  const verification = db.get(key)
+  if (verification) {
+    console.log(`[Database] Set verified for "${key}": SUCCESS`)
+  } else {
+    console.error(`[Database] WARNING: Set "${key}" failed to persist!`)
+  }
 })
 
 ipcMain.handle('store:delete', async (_event, key: string) => {
-  console.log(`[Store] Delete "${key}"`)
-  store.delete(key)
+  await waitForDb()
+
+  if (!dbReady) {
+    console.error(`[Database] Delete "${key}" failed - database not ready`)
+    return
+  }
+
+  console.log(`[Database] Delete "${key}"`)
+  db.delete(key)
 })
 
 ipcMain.handle('store:clear', async () => {
-  console.log('[Store] Clear all')
-  store.clear()
+  await waitForDb()
+
+  if (!dbReady) {
+    console.error('[Database] Clear failed - database not ready')
+    return
+  }
+
+  console.log('[Database] Clear all')
+  db.clear()
 })
 
 // Open a path in the default code editor
@@ -1030,6 +1113,35 @@ ipcMain.handle('system:open-in-editor', async (_event, projectPath: string) => {
     console.error('Failed to open in editor:', err)
     return { success: false, error: String(err) }
   }
+})
+
+// SSH IPC Handlers
+ipcMain.handle('ssh:connect', async (_event, config: any) => {
+  if (!sshManager) {
+    return { success: false, error: 'SSH manager not initialized' }
+  }
+  return sshManager.connect(config)
+})
+
+ipcMain.handle('ssh:disconnect', async (_event, connectionId: string) => {
+  if (!sshManager) {
+    return { success: false, error: 'SSH manager not initialized' }
+  }
+  return sshManager.disconnect(connectionId)
+})
+
+ipcMain.handle('ssh:test', async (_event, config: any) => {
+  if (!sshManager) {
+    return { success: false, error: 'SSH manager not initialized' }
+  }
+  return sshManager.testConnection(config)
+})
+
+ipcMain.handle('ssh:get-status', async (_event, connectionId: string) => {
+  if (!sshManager) {
+    return { connected: false, error: 'SSH manager not initialized' }
+  }
+  return sshManager.getStatus(connectionId)
 })
 
 app.whenReady().then(() => {
