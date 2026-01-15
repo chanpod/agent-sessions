@@ -36,14 +36,12 @@ jobs:
           node-version: 20
           cache: 'pnpm'
 
-      - name: Setup Python for macOS
-        if: matrix.platform == 'mac'
+      - name: Setup Python (for node-gyp)
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python setuptools (for node-gyp)
-        if: matrix.platform == 'mac'
         run: pip install setuptools
 
       - name: Install dependencies
