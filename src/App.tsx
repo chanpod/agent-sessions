@@ -609,8 +609,12 @@ function App() {
     const server = servers.find((s) => s.id === serverId)
 
     if (server) {
-      // Send Ctrl+C to gracefully stop the process, but keep terminal open for logs
+      // Send Ctrl+C multiple times to force-terminate without prompts
+      // On Windows, double Ctrl+C bypasses "Terminate batch job (Y/N)?" prompt
       await window.electron.pty.write(server.terminalId, '\x03')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await window.electron.pty.write(server.terminalId, '\x03')
+
       updateServerStatus(serverId, 'stopped')
     }
   }
@@ -624,11 +628,13 @@ function App() {
     if (server) {
       const { command } = server
 
-      // Send Ctrl+C to stop current process
+      // Send Ctrl+C multiple times to force-terminate without prompts
+      await window.electron.pty.write(server.terminalId, '\x03')
+      await new Promise((resolve) => setTimeout(resolve, 50))
       await window.electron.pty.write(server.terminalId, '\x03')
 
       // Small delay for process to terminate
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      await new Promise((resolve) => setTimeout(resolve, 200))
 
       // Run the command again in the same terminal
       // Use \r on Windows to auto-execute, \n on Unix

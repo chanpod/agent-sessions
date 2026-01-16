@@ -125,9 +125,9 @@ export function TerminalsTab({
   return (
     <>
       {/* Terminals Section */}
-      <div>
-        <div className="flex items-center justify-between px-2 py-1">
-          <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+      <div className="mb-3 bg-zinc-800/20 rounded-md p-2">
+        <div className="flex items-center justify-between px-2 py-2">
+          <span className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
             Terminals
           </span>
           <div className="relative">
@@ -136,7 +136,7 @@ export function TerminalsTab({
               className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
               title={isSSHProject ? 'Create SSH terminal' : 'Select shell'}
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-4 h-4" />
             </button>
             {showShellMenu && !isSSHProject && (
               <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[140px]">
@@ -155,7 +155,7 @@ export function TerminalsTab({
           </div>
         </div>
         {projectSessions.length === 0 ? (
-          <p className="text-xs text-zinc-600 px-2 py-1">No terminals</p>
+          <p className="text-sm text-zinc-600 px-2 py-1">No terminals</p>
         ) : (
           <ul className="space-y-0.5">
             {projectSessions.map((session) => (
@@ -178,9 +178,9 @@ export function TerminalsTab({
       </div>
 
       {/* Servers Section */}
-      <div>
-        <div className="flex items-center justify-between px-2 py-1">
-          <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+      <div className="mt-3 pt-3 bg-zinc-800/20 rounded-md p-2 border-t border-zinc-700/50">
+        <div className="flex items-center justify-between px-2 py-2">
+          <span className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
             Servers
           </span>
           <div className="flex items-center gap-1">
@@ -193,7 +193,7 @@ export function TerminalsTab({
               className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
               title="Rescan package.json scripts"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRescanningScripts ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-4 h-4 ${isRescanningScripts ? 'animate-spin' : ''}`} />
             </button>
             <div className="relative">
               <button
@@ -205,7 +205,7 @@ export function TerminalsTab({
                 }}
                 className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Plus className="w-4 h-4" />
               </button>
               {showServerMenu && !showCustomCommand && (
               <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[180px] max-h-[300px] overflow-y-auto">
@@ -283,7 +283,7 @@ export function TerminalsTab({
           </div>
         </div>
         {projectServers.length === 0 ? (
-          <p className="text-xs text-zinc-600 px-2 py-1 flex items-center gap-1">
+          <p className="text-sm text-zinc-600 px-2 py-1 flex items-center gap-1">
             <Server className="w-3 h-3" />
             None running
           </p>

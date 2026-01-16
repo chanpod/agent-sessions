@@ -23,8 +23,8 @@ interface SidebarProps {
 }
 
 const MIN_WIDTH = 180
-const MAX_WIDTH = 500
-const DEFAULT_WIDTH = 256
+const MAX_WIDTH = 650
+const DEFAULT_WIDTH = 500
 
 export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
   const { projects } = useProjectStore()
@@ -142,7 +142,7 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
 
           {/* Projects */}
           <div className="flex items-center justify-between px-2 mb-2">
-            <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
               Projects
             </h2>
             <button
@@ -165,7 +165,7 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
               </button>
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-0">
               {projects.map((project) => (
                 <ProjectItem
                   key={project.id}

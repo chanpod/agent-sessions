@@ -389,7 +389,7 @@ export function ProjectItem({
   }
 
   return (
-    <div className="mb-1">
+    <div className="mb-3 pb-3 border-b border-zinc-800/50 last:border-b-0">
       {/* Project Header */}
       <div
         role="button"
@@ -400,7 +400,7 @@ export function ProjectItem({
         }}
         onKeyDown={(e) => e.key === 'Enter' && toggleProjectExpanded(project.id)}
         className={cn(
-          'w-full flex items-center gap-1 px-2 py-1.5 text-sm rounded-md transition-colors cursor-pointer group',
+          'w-full flex items-center gap-2 px-3 py-2.5 text-base rounded-md transition-colors cursor-pointer group',
           isActive
             ? 'bg-zinc-800 text-white'
             : 'text-zinc-300 hover:bg-zinc-800/50',
@@ -409,12 +409,12 @@ export function ProjectItem({
       >
         <ChevronRight
           className={cn(
-            'w-4 h-4 transition-transform flex-shrink-0',
+            'w-5 h-5 transition-transform flex-shrink-0',
             project.isExpanded && 'rotate-90'
           )}
         />
         <Folder className={cn('w-4 h-4 flex-shrink-0', hasFocusedTerminal ? 'text-green-400' : 'text-blue-400')} />
-        <span className="truncate font-medium">{project.name}</span>
+        <span className="truncate font-semibold">{project.name}</span>
         {sshConnection && (
           <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-400">
             <Cloud className="w-3 h-3" />
@@ -458,7 +458,7 @@ export function ProjectItem({
                 {/* Local branches */}
                 {localBranches.length > 0 && (
                   <>
-                    <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase">
+                    <div className="px-3 py-1 text-xs text-zinc-500 uppercase">
                       Local branches
                     </div>
                     {localBranches.map((branch) => (
@@ -488,7 +488,7 @@ export function ProjectItem({
                 {remoteBranches.length > 0 && (
                   <>
                     <div className="border-t border-zinc-700 my-1" />
-                    <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase">
+                    <div className="px-3 py-1 text-xs text-zinc-500 uppercase">
                       Remote branches
                     </div>
                     {remoteBranches.map((branch) => {
@@ -545,16 +545,16 @@ export function ProjectItem({
           </>
         ) : (
           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-            <span className="text-[10px] text-red-400 mr-1">Delete?</span>
+            <span className="text-xs text-red-400 mr-1">Delete?</span>
             <button
               onClick={confirmDeleteProject}
-              className="px-2 py-0.5 text-[10px] bg-red-600 hover:bg-red-700 text-white rounded"
+              className="px-2 py-0.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded"
             >
               Yes
             </button>
             <button
               onClick={cancelDeleteProject}
-              className="px-2 py-0.5 text-[10px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
+              className="px-2 py-0.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
             >
               No
             </button>
@@ -564,7 +564,7 @@ export function ProjectItem({
 
       {/* Expanded Content */}
       {project.isExpanded && (
-        <div className="ml-4 mt-1">
+        <div className="ml-2 mt-2 mr-1 bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
           <ProjectTabBar
             activeTab={project.activeTab}
             onTabChange={(tab) => setProjectTab(project.id, tab)}
@@ -675,7 +675,7 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
         onClick={handleSelect}
         onKeyDown={(e) => !isEditing && e.key === 'Enter' && handleSelect()}
         className={cn(
-          'w-full flex items-center gap-2 px-2 py-1 text-xs rounded transition-colors group',
+          'w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors group',
           isActive
             ? 'ring-2 ring-green-500 bg-green-500/10 text-green-400'
             : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300'
@@ -691,7 +691,7 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
           <GripVertical className="w-4 h-4 flex-shrink-0 opacity-30 group-hover:opacity-70" />
         </div>
         <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
-        <Terminal className={cn('w-3 h-3 flex-shrink-0', isActive && 'text-green-400')} />
+        <Terminal className={cn('w-4 h-4 flex-shrink-0', isActive && 'text-green-400')} />
 
         {/* Terminal name - editable */}
         {isEditing ? (
@@ -717,13 +717,13 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
         )}
 
         {isActive && !isEditing && (
-          <span className="text-[10px] text-green-400 font-medium">focused</span>
+          <span className="text-xs text-green-400 font-medium">focused</span>
         )}
         {grid && grid.terminalIds.length > 1 && !isActive && !isEditing && (
-          <span className="text-[10px] text-blue-400">+{grid.terminalIds.length - 1}</span>
+          <span className="text-xs text-blue-400">+{grid.terminalIds.length - 1}</span>
         )}
         {session.status === 'exited' && !isEditing && (
-          <span className="text-[10px] text-zinc-600">exited</span>
+          <span className="text-xs text-zinc-600">exited</span>
         )}
 
         {/* Edit button */}
@@ -811,9 +811,9 @@ export function ServerItem({ server, isActive, onSelect, onStop, onRestart, onDe
             : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300'
         )}
       >
-        <Server className={cn('w-3 h-3 flex-shrink-0', statusColors[server.status])} />
+        <Server className={cn('w-4 h-4 flex-shrink-0', statusColors[server.status])} />
         <span className="truncate flex-1 text-left">{server.name}</span>
-        <span className="text-[10px] text-zinc-600">{server.status}</span>
+        <span className="text-xs text-zinc-600">{server.status}</span>
 
         {/* Action buttons - always visible on hover */}
         <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
