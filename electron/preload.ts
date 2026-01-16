@@ -214,6 +214,10 @@ const electronAPI = {
       ipcRenderer.invoke('git:discard-file', projectPath, filePath),
     commit: (projectPath: string, message: string): Promise<GitResult> =>
       ipcRenderer.invoke('git:commit', projectPath, message),
+    push: (projectPath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:push', projectPath),
+    pull: (projectPath: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:pull', projectPath),
     onChanged: (callback: (projectPath: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)

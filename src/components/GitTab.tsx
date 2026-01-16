@@ -1,4 +1,4 @@
-import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud } from 'lucide-react'
+import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
@@ -40,6 +40,9 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
   const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [isCommitting, setIsCommitting] = useState(false)
+  const [isPushing, setIsPushing] = useState(false)
+  const [isPulling, setIsPulling] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   const branchBtnRef = useRef<HTMLButtonElement>(null)
   const branchMenuRef = useRef<HTMLDivElement>(null)
@@ -188,6 +191,48 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
     }
   }
 
+  const handlePush = async () => {
+    if (!window.electron) return
+    setIsPushing(true)
+    try {
+      const result = await window.electron.git.push(projectPath)
+      if (result.success) {
+        await onRefreshGitInfo()
+      } else {
+        console.error('Push failed:', result.error)
+      }
+    } finally {
+      setIsPushing(false)
+    }
+  }
+
+  const handlePull = async () => {
+    if (!window.electron) return
+    setIsPulling(true)
+    try {
+      const result = await window.electron.git.pull(projectPath)
+      if (result.success) {
+        await onRefreshGitInfo()
+      } else {
+        console.error('Pull failed:', result.error)
+      }
+    } finally {
+      setIsPulling(false)
+    }
+  }
+
+  const handleRefresh = async () => {
+    if (!window.electron) return
+    setIsRefreshing(true)
+    try {
+      // Fetch from remote to update refs without merging
+      await window.electron.git.fetch(projectPath)
+      await onRefreshGitInfo()
+    } finally {
+      setIsRefreshing(false)
+    }
+  }
+
   // Group files by staged/unstaged
   const stagedFiles = changedFiles.filter(f => f.staged)
   const unstagedFiles = changedFiles.filter(f => !f.staged)
@@ -255,20 +300,49 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
         </div>
         {gitBranch ? (
           <div className="px-2 py-1">
-            <button
-              ref={branchBtnRef}
-              onClick={handleBranchClick}
-              className={cn(
-                'flex items-center gap-2 text-sm px-2 py-1.5 rounded transition-colors w-full',
-                gitHasChanges
-                  ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
-                  : 'bg-zinc-700/50 text-zinc-400 hover:bg-zinc-700'
-              )}
-            >
-              <GitBranch className="w-4 h-4" />
-              <span className="flex-1 text-left">{gitBranch}</span>
-              {gitHasChanges && <span className="text-amber-400">•</span>}
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                ref={branchBtnRef}
+                onClick={handleBranchClick}
+                className={cn(
+                  'flex items-center gap-2 text-sm px-2 py-1.5 rounded transition-colors flex-1',
+                  gitHasChanges
+                    ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                    : 'bg-zinc-700/50 text-zinc-400 hover:bg-zinc-700'
+                )}
+              >
+                <GitBranch className="w-4 h-4" />
+                <span className="flex-1 text-left">{gitBranch}</span>
+                {gitHasChanges && <span className="text-amber-400">•</span>}
+              </button>
+
+              <button
+                onClick={handleRefresh}
+                disabled={isRefreshing || isPushing || isPulling}
+                className="p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Refresh (Fetch from remote)"
+              >
+                <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
+              </button>
+
+              <button
+                onClick={handlePull}
+                disabled={isPulling || isRefreshing}
+                className="p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Pull from remote"
+              >
+                <ArrowDown className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                onClick={handlePush}
+                disabled={isPushing || isRefreshing}
+                className="p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-green-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Push to remote"
+              >
+                <ArrowUp className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
             {showBranchMenu && branchMenuPos && createPortal(
               <div
@@ -373,7 +447,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
               </div>
               <div className="px-2 space-y-0.5">
                 {stagedFiles.map(file => (
-                  <FileItem key={file.path} file={file} isStaged={true} />
+                  <FileItem key={`staged-${file.path}`} file={file} isStaged={true} />
                 ))}
               </div>
             </div>
@@ -396,7 +470,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
               </div>
               <div className="px-2 space-y-0.5">
                 {unstagedFiles.map(file => (
-                  <FileItem key={file.path} file={file} isStaged={false} />
+                  <FileItem key={`unstaged-${file.path}`} file={file} isStaged={false} />
                 ))}
               </div>
             </div>

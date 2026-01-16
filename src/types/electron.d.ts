@@ -180,6 +180,8 @@ export interface ElectronAPI {
     unstageFile: (projectPath: string, filePath: string) => Promise<GitResult>
     discardFile: (projectPath: string, filePath: string) => Promise<GitResult>
     commit: (projectPath: string, message: string) => Promise<GitResult>
+    push: (projectPath: string) => Promise<GitResult>
+    pull: (projectPath: string) => Promise<GitResult>
     onChanged: (callback: (projectPath: string) => void) => () => void
   }
   store: {

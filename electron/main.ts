@@ -814,18 +814,25 @@ ipcMain.handle('git:get-changed-files', async (_event, projectPath: string) => {
         }
       }
 
-      // Determine if file has staged changes
-      const isStaged = stagedCode !== ' ' && stagedCode !== '?'
+      // If file has staged changes, add a staged entry
+      if (stagedCode !== ' ' && stagedCode !== '?') {
+        const fileStatus = getStatus(stagedCode)
+        files.push({
+          path: filePath,
+          status: fileStatus,
+          staged: true,
+        })
+      }
 
-      // Use staged status if available, otherwise use unstaged
-      const statusCode = stagedCode !== ' ' && stagedCode !== '?' ? stagedCode : unstagedCode
-      const fileStatus = statusCode === '?' ? 'untracked' : getStatus(statusCode)
-
-      files.push({
-        path: filePath,
-        status: fileStatus,
-        staged: isStaged,
-      })
+      // If file has unstaged changes, add an unstaged entry
+      if (unstagedCode !== ' ') {
+        const fileStatus = unstagedCode === '?' ? 'untracked' : getStatus(unstagedCode)
+        files.push({
+          path: filePath,
+          status: fileStatus,
+          staged: false,
+        })
+      }
     })
 
     return { success: true, files }
@@ -935,6 +942,35 @@ ipcMain.handle(
   }
 )
 
+// Push changes to remote (git push)
+ipcMain.handle(
+  'git:push',
+  async (_event, projectPath: string) => {
+    try {
+      execInContext(`git push`, projectPath)
+      return { success: true }
+    } catch (err) {
+      console.error('Failed to push:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
+
+// Pull changes from remote (git pull)
+ipcMain.handle(
+  'git:pull',
+  async (_event, projectPath: string) => {
+    try {
+      execInContext(`git pull`, projectPath)
+      return { success: true }
+    } catch (err) {
+      console.error('Failed to pull:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      return { success: false, error: errorMsg }
+    }
+  }
+)
 
 // File system IPC handlers
 ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
