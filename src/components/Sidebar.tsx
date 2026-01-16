@@ -15,6 +15,7 @@ interface SidebarProps {
   onCreateTerminal: (projectId: string, shell: ShellInfo) => void
   onCreateQuickTerminal: (shell: ShellInfo) => void
   onCloseTerminal: (id: string) => void
+  onReconnectTerminal: (id: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
@@ -25,7 +26,7 @@ const MIN_WIDTH = 180
 const MAX_WIDTH = 500
 const DEFAULT_WIDTH = 256
 
-export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
+export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
   const { projects } = useProjectStore()
   const { connections: sshConnections } = useSSHStore()
   const [shells, setShells] = useState<ShellInfo[]>([])
@@ -172,6 +173,7 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
                   shells={allShells}
                   onCreateTerminal={onCreateTerminal}
                   onCloseTerminal={onCloseTerminal}
+                  onReconnectTerminal={onReconnectTerminal}
                   onStartServer={onStartServer}
                   onStopServer={onStopServer}
                   onRestartServer={onRestartServer}

@@ -353,7 +353,7 @@ function createWindow() {
 }
 
 // IPC Handlers
-ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string }) => {
+ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string }) => {
   if (!ptyManager) return null
 
   // If this is an SSH connection, build the SSH command using SSH manager
@@ -364,7 +364,7 @@ ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: str
     }
 
     // Create terminal with SSH shell command
-    return ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~')
+    return ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~', options.id)
   }
 
   return ptyManager.createTerminal(options)
@@ -1107,7 +1107,6 @@ ipcMain.handle('store:get', async (_event, key: string) => {
   }
 
   const value = db.get(key)
-  console.log(`[Database] Get "${key}":`, value ? 'Found' : 'Not found')
   return value
 })
 
@@ -1119,14 +1118,11 @@ ipcMain.handle('store:set', async (_event, key: string, value: unknown) => {
     return
   }
 
-  console.log(`[Database] Set "${key}"`)
   db.set(key, value)
 
   // Verify the write completed
   const verification = db.get(key)
-  if (verification) {
-    console.log(`[Database] Set verified for "${key}": SUCCESS`)
-  } else {
+  if (!verification) {
     console.error(`[Database] WARNING: Set "${key}" failed to persist!`)
   }
 })
@@ -1139,7 +1135,6 @@ ipcMain.handle('store:delete', async (_event, key: string) => {
     return
   }
 
-  console.log(`[Database] Delete "${key}"`)
   db.delete(key)
 })
 
@@ -1151,7 +1146,6 @@ ipcMain.handle('store:clear', async () => {
     return
   }
 
-  console.log('[Database] Clear all')
   db.clear()
 })
 

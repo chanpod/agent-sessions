@@ -32,7 +32,7 @@ function getFileStatusIcon(status: ChangedFile['status']) {
 }
 
 export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
-  const { openFile } = useFileViewerStore()
+  const { openFile, setShowDiff } = useFileViewerStore()
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
@@ -134,6 +134,8 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     const result = await window.electron.fs.readFile(fullPath)
     if (result.success && result.content !== undefined) {
       openFile(fullPath, fileName, result.content, projectPath)
+      // Enable diff view to show changes compared to git HEAD
+      setShowDiff(true)
     }
   }
 

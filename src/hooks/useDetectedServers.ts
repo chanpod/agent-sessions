@@ -27,8 +27,9 @@ export function useDetectedServers() {
           break
 
         case 'server-error':
-          // Could show a notification or update UI
-          console.log('[useDetectedServers] Server error in terminal', event.terminalId)
+          // Server crashed due to error (port in use, etc.)
+          console.log('[useDetectedServers] Server error in terminal', event.terminalId, '- marking as crashed')
+          markServerCrashed(event.terminalId, 1) // Exit code 1 for error
           break
       }
     })

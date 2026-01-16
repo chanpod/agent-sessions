@@ -3,6 +3,7 @@ export interface PtyOptions {
   shell?: string
   sshConnectionId?: string // For SSH connections
   remoteCwd?: string // Remote working directory for SSH
+  id?: string // Optional ID to reuse (for reconnection)
 }
 
 export interface ShellInfo {

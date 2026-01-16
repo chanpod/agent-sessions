@@ -48,6 +48,7 @@ interface TerminalStore {
   removeSessionsByProject: (projectId: string) => void
   setActiveSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
+  updateSessionPid: (id: string, pid: number) => void
   markSessionExited: (id: string, exitCode: number) => void
   updateSessionActivity: (id: string) => void
 
@@ -156,6 +157,13 @@ export const useTerminalStore = create<TerminalStore>()(
         set((state) => ({
           sessions: state.sessions.map((s) =>
             s.id === id ? { ...s, title } : s
+          ),
+        })),
+
+      updateSessionPid: (id, pid) =>
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, pid, status: 'running' as const, exitCode: undefined } : s
           ),
         })),
 

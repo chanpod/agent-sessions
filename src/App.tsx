@@ -17,7 +17,7 @@ import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
 import { useSSHStore } from './stores/ssh-store'
-import { disposeTerminal } from './lib/terminal-registry'
+import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
 
 function App() {
@@ -29,6 +29,7 @@ function App() {
     addSessionsBatch,
     removeSession,
     updateSessionTitle,
+    updateSessionPid,
     markSessionExited,
     updateSessionActivity,
     saveConfig,
@@ -279,6 +280,7 @@ function App() {
     console.log('[handleCreateTerminal] Project:', project.name, 'isSSHProject:', project.isSSHProject, 'sshConnectionId:', project.sshConnectionId)
 
     let info
+    let sessionSshConnectionId: string | undefined = undefined
 
     // Check if this is an SSH project
     if (project.isSSHProject && project.sshConnectionId) {
@@ -303,6 +305,8 @@ function App() {
         sshConnectionId: project.sshConnectionId,
         remoteCwd: project.remotePath || undefined,
       })
+
+      sessionSshConnectionId = project.sshConnectionId
 
       // Save config for persistence
       saveConfig({
@@ -336,6 +340,8 @@ function App() {
         sshConnectionId,
         remoteCwd: project.path || undefined,
       })
+
+      sessionSshConnectionId = sshConnectionId
 
       // Save config for persistence
       saveConfig({
@@ -380,6 +386,7 @@ function App() {
       cwd: info.cwd,
       title: shell.name,
       createdAt: info.createdAt,
+      sshConnectionId: sessionSshConnectionId,
     })
 
     // Create a new grid for this terminal
@@ -465,6 +472,74 @@ function App() {
     disposeTerminal(id)
     await window.electron.pty.kill(id)
     removeSession(id)
+  }
+
+  const handleReconnectTerminal = async (id: string) => {
+    if (!window.electron) return
+
+    // Find the terminal session
+    const session = sessions.find((s) => s.id === id)
+    if (!session) {
+      console.error('Cannot reconnect: Session not found')
+      return
+    }
+
+    // Get the SSH connection ID from session or from the project
+    let sshConnectionId = session.sshConnectionId
+    if (!sshConnectionId && session.projectId) {
+      const project = projects.find((p) => p.id === session.projectId)
+      if (project?.sshConnectionId) {
+        sshConnectionId = project.sshConnectionId
+      }
+    }
+
+    if (!sshConnectionId) {
+      console.error('Cannot reconnect: Not an SSH terminal or SSH connection ID not found')
+      alert('Cannot reconnect: This terminal is not associated with an SSH connection')
+      return
+    }
+
+    // Get the SSH connection
+    const sshConnection = getConnection(sshConnectionId)
+    if (!sshConnection) {
+      console.error('SSH connection not found:', sshConnectionId)
+      alert('SSH connection configuration not found')
+      return
+    }
+
+    try {
+      // Clear the terminal display
+      clearTerminal(id)
+
+      // Disconnect the existing SSH connection
+      await window.electron.ssh.disconnect(sshConnectionId)
+
+      // Reconnect to SSH
+      const connectResult = await window.electron.ssh.connect(sshConnection)
+      if (!connectResult.success) {
+        console.error('Failed to reconnect SSH:', connectResult.error)
+        alert(`Failed to reconnect: ${connectResult.error}`)
+        return
+      }
+
+      // Kill the old terminal PTY (but keep session in store)
+      await window.electron.pty.kill(id)
+
+      // Create a new PTY with the SAME ID so it reuses the terminal instance
+      const info = await window.electron.pty.create({
+        sshConnectionId: sshConnectionId,
+        remoteCwd: session.cwd || undefined,
+        id: id, // Reuse the same ID!
+      })
+
+      // Update the session with the new PID
+      updateSessionPid(id, info.pid)
+
+      console.log(`Reconnected terminal ${id} with new PID ${info.pid}`)
+    } catch (error) {
+      console.error('Error reconnecting terminal:', error)
+      alert(`Failed to reconnect: ${error}`)
+    }
   }
 
   const handleStartServer = async (projectId: string, name: string, command: string) => {
@@ -685,6 +760,7 @@ function App() {
           onCreateTerminal={handleCreateTerminal}
           onCreateQuickTerminal={handleCreateQuickTerminal}
           onCloseTerminal={handleCloseTerminal}
+          onReconnectTerminal={handleReconnectTerminal}
           onStartServer={handleStartServer}
           onStopServer={handleStopServer}
           onRestartServer={handleRestartServer}

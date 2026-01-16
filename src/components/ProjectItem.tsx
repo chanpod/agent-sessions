@@ -32,6 +32,7 @@ interface ProjectItemProps {
   shells: ShellInfo[]
   onCreateTerminal: (projectId: string, shell: ShellInfo) => void
   onCloseTerminal: (id: string) => void
+  onReconnectTerminal: (id: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
@@ -43,6 +44,7 @@ export function ProjectItem({
   shells,
   onCreateTerminal,
   onCloseTerminal,
+  onReconnectTerminal,
   onStartServer,
   onStopServer,
   onRestartServer,
@@ -579,6 +581,7 @@ export function ProjectItem({
                 shells={shells}
                 onCreateTerminal={onCreateTerminal}
                 onCloseTerminal={onCloseTerminal}
+                onReconnectTerminal={onReconnectTerminal}
                 onStartServer={onStartServer}
                 onStopServer={onStopServer}
                 onRestartServer={onRestartServer}
@@ -613,10 +616,11 @@ export interface TerminalItemProps {
   isActive: boolean
   onSelect: () => void
   onClose: () => void
+  onReconnect?: () => void
   dragHandleProps?: Record<string, unknown>
 }
 
-export function TerminalItem({ session, isActive, onSelect, onClose, dragHandleProps }: TerminalItemProps) {
+export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect, dragHandleProps }: TerminalItemProps) {
   const { setFocusedTerminal, setActiveGrid } = useGridStore()
   const grid = useGridStore((state) => state.grids.find((g) => g.terminalIds.includes(session.id)))
   const { updateSessionTitle } = useTerminalStore()
@@ -731,6 +735,21 @@ export function TerminalItem({ session, isActive, onSelect, onClose, dragHandleP
             title="Rename"
           >
             <Pencil className="w-3 h-3" />
+          </button>
+        )}
+
+        {/* Reconnect button - only for SSH terminals */}
+        {!isEditing && (session.sshConnectionId || session.shell === 'ssh') && onReconnect && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onReconnect()
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-zinc-700 rounded text-zinc-500 hover:text-zinc-300"
+            title="Reconnect SSH"
+          >
+            <RefreshCw className="w-3 h-3" />
           </button>
         )}
 

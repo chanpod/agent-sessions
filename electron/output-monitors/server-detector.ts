@@ -105,6 +105,8 @@ export class ServerDetector implements OutputDetector {
     const events: DetectedEvent[] = []
     const state = this.terminalStates.get(terminalId)
 
+    console.log(`[ServerDetector] onTerminalExit called for terminal ${terminalId}, has state: ${!!state}, servers: ${state?.servers.size || 0}`)
+
     if (state && state.servers.size > 0) {
       // Server crashed
       events.push({
@@ -116,7 +118,11 @@ export class ServerDetector implements OutputDetector {
           servers: Array.from(state.servers.values()),
         },
       })
-      console.log(`[ServerDetector] Terminal ${terminalId} exited with code ${exitCode}, ${state.servers.size} servers affected`)
+      console.log(`[ServerDetector] Emitting server-crashed event for terminal ${terminalId} with ${state.servers.size} servers`)
+
+      // Clear the servers since they're no longer running
+      state.servers.clear()
+      state.hasErrors = false
     }
 
     return events

@@ -274,3 +274,10 @@ export function focusTerminal(sessionId: string): void {
     instance.terminal.focus()
   }
 }
+
+export function clearTerminal(sessionId: string): void {
+  const instance = terminalInstances.get(sessionId)
+  if (instance) {
+    instance.terminal.clear()
+  }
+}

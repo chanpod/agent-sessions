@@ -23,6 +23,7 @@ interface TerminalsTabProps {
   shells: ShellInfo[]
   onCreateTerminal: (projectId: string, shell: ShellInfo) => void
   onCloseTerminal: (id: string) => void
+  onReconnectTerminal: (id: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
@@ -36,6 +37,7 @@ export function TerminalsTab({
   shells,
   onCreateTerminal,
   onCloseTerminal,
+  onReconnectTerminal,
   onStartServer,
   onStopServer,
   onRestartServer,
@@ -167,6 +169,7 @@ export function TerminalsTab({
                   isActive={activeSessionId === session.id}
                   onSelect={() => setActiveSession(session.id)}
                   onClose={() => onCloseTerminal(session.id)}
+                  onReconnect={() => onReconnectTerminal(session.id)}
                 />
               </DraggableTerminalItem>
             ))}

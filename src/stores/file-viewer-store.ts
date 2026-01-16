@@ -28,6 +28,7 @@ interface FileViewerState {
   toggleVisibility: () => void
   setVisibility: (visible: boolean) => void
   toggleDiffMode: () => void
+  setShowDiff: (show: boolean) => void
   setGitContent: (path: string, gitContent: string | undefined) => void
 }
 
@@ -168,6 +169,10 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
 
   toggleDiffMode: () => {
     set((state) => ({ showDiff: !state.showDiff }))
+  },
+
+  setShowDiff: (show) => {
+    set({ showDiff: show })
   },
 
   setGitContent: (path, gitContent) => {
