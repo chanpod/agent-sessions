@@ -68,6 +68,8 @@ export function ProjectItem({
   const [customName, setCustomName] = useState('')
   const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [gitHasChanges, setGitHasChanges] = useState(false)
+  const [gitAhead, setGitAhead] = useState(0)
+  const [gitBehind, setGitBehind] = useState(0)
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
   const [remoteBranches, setRemoteBranches] = useState<string[]>([])
@@ -117,6 +119,8 @@ export function ProjectItem({
       if (result.isGitRepo) {
         setGitBranch(result.branch || null)
         setGitHasChanges(result.hasChanges || false)
+        setGitAhead(result.ahead || 0)
+        setGitBehind(result.behind || 0)
         // Fetch changed files if there are changes
         if (result.hasChanges) {
           const filesResult = await window.electron!.git.getChangedFiles(project.path)
@@ -129,6 +133,8 @@ export function ProjectItem({
       } else {
         setGitBranch(null)
         setGitHasChanges(false)
+        setGitAhead(0)
+        setGitBehind(0)
         setChangedFiles([])
       }
     }
@@ -225,6 +231,8 @@ export function ProjectItem({
       if (result.isGitRepo) {
         setGitBranch(result.branch || null)
         setGitHasChanges(result.hasChanges || false)
+        setGitAhead(result.ahead || 0)
+        setGitBehind(result.behind || 0)
         // Fetch changed files
         if (result.hasChanges) {
           const filesResult = await window.electron.git.getChangedFiles(project.path)
@@ -588,6 +596,8 @@ export function ProjectItem({
                 gitBranch={gitBranch}
                 gitHasChanges={gitHasChanges}
                 changedFiles={changedFiles}
+                ahead={gitAhead}
+                behind={gitBehind}
                 onRefreshGitInfo={refreshGitInfo}
               />
             )}

@@ -81,6 +81,8 @@ export interface GitInfo {
   isGitRepo: boolean
   branch?: string
   hasChanges?: boolean
+  ahead?: number
+  behind?: number
   error?: string
 }
 

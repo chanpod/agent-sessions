@@ -10,6 +10,8 @@ interface GitTabProps {
   gitBranch: string | null
   gitHasChanges: boolean
   changedFiles: ChangedFile[]
+  ahead: number
+  behind: number
   onRefreshGitInfo: () => Promise<void>
 }
 
@@ -29,7 +31,7 @@ function getFileStatusIcon(status: ChangedFile['status']) {
   }
 }
 
-export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, onRefreshGitInfo }: GitTabProps) {
+export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
   const { openFile } = useFileViewerStore()
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
@@ -328,19 +330,29 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, on
               <button
                 onClick={handlePull}
                 disabled={isPulling || isRefreshing}
-                className="p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Pull from remote"
+                className="relative p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={`Pull from remote${behind > 0 ? ` (${behind} commit${behind !== 1 ? 's' : ''} behind)` : ''}`}
               >
                 <ArrowDown className="w-3.5 h-3.5" />
+                {behind > 0 && (
+                  <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 text-[9px] font-medium bg-blue-500 text-white rounded-full">
+                    {behind}
+                  </span>
+                )}
               </button>
 
               <button
                 onClick={handlePush}
                 disabled={isPushing || isRefreshing}
-                className="p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-green-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title="Push to remote"
+                className="relative p-1.5 rounded bg-zinc-700/50 hover:bg-zinc-700 text-zinc-400 hover:text-green-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={`Push to remote${ahead > 0 ? ` (${ahead} commit${ahead !== 1 ? 's' : ''} ahead)` : ''}`}
               >
                 <ArrowUp className="w-3.5 h-3.5" />
+                {ahead > 0 && (
+                  <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 text-[9px] font-medium bg-green-500 text-white rounded-full">
+                    {ahead}
+                  </span>
+                )}
               </button>
             </div>
 
