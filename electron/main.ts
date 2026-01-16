@@ -574,10 +574,29 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
       // Ignore errors
     }
 
+    // Get ahead/behind counts
+    let ahead = 0
+    let behind = 0
+    try {
+      // Check if branch has upstream
+      const upstream = execInContext('git rev-parse --abbrev-ref @{upstream}', projectPath).trim()
+      if (upstream) {
+        // Get ahead/behind counts: "behind\tahead"
+        const counts = execInContext('git rev-list --left-right --count @{upstream}...HEAD', projectPath).trim()
+        const [behindStr, aheadStr] = counts.split('\t')
+        behind = parseInt(behindStr) || 0
+        ahead = parseInt(aheadStr) || 0
+      }
+    } catch {
+      // No upstream or error - leave as 0
+    }
+
     return {
       isGitRepo: true,
       branch,
       hasChanges,
+      ahead,
+      behind,
     }
   } catch (err) {
     console.error('Failed to get git info:', err)
