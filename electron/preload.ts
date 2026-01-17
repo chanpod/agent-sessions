@@ -281,6 +281,9 @@ const electronAPI = {
 
 contextBridge.exposeInMainWorld('electron', electronAPI)
 
+console.log('[Preload] Electron API exposed to window.electron')
+console.log('[Preload] API methods:', Object.keys(electronAPI))
+
 // Type declaration for the renderer
 declare global {
   interface Window {

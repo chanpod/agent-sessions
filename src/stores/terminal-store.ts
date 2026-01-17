@@ -176,7 +176,14 @@ export const useTerminalStore = create<TerminalStore>()(
 
       updateSessionActivity: (id) => {
         const now = Date.now()
-        console.log('[DEBUG] updateSessionActivity called:', { id, timestamp: now })
+        const state = get()
+        const session = state.sessions.find((s) => s.id === id)
+
+        // Only update if last activity was more than 1 second ago (throttle)
+        if (!session || (now - session.lastActivityTime) < 1000) {
+          return
+        }
+
         set((state) => ({
           sessions: state.sessions.map((s) =>
             s.id === id ? { ...s, lastActivityTime: now } : s

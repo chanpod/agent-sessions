@@ -296,6 +296,11 @@ interface GitWatcherSet {
 const gitWatchers = new Map<string, GitWatcherSet>()
 
 function createWindow() {
+  const preloadPath = path.join(__dirname, 'preload.js')
+  console.log('[Main] __dirname:', __dirname)
+  console.log('[Main] Preload path:', preloadPath)
+  console.log('[Main] Preload exists:', fs.existsSync(preloadPath))
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -306,7 +311,7 @@ function createWindow() {
     trafficLightPosition: { x: 15, y: 15 },
     icon: path.join(__dirname, '../build/icon.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadPath,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false, // Required for node-pty
@@ -494,46 +499,119 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
     command: string
   }
 
-  try {
-    const fsPath = resolvePathForFs(projectPath)
-    const packageJsonPath = path.join(fsPath, 'package.json')
+  interface PackageScripts {
+    packagePath: string
+    packageName?: string
+    scripts: ScriptInfo[]
+    packageManager?: string
+  }
 
-    if (!fs.existsSync(packageJsonPath)) {
-      return { hasPackageJson: false, scripts: [] }
+  // Recursively find all package.json files, excluding node_modules and other common directories
+  function findPackageJsonFiles(dir: string, rootDir: string, depth: number = 0): string[] {
+    if (depth > 10) return [] // Prevent infinite recursion
+
+    const results: string[] = []
+    const excludeDirs = ['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo']
+
+    try {
+      const packageJsonPath = path.join(dir, 'package.json')
+      if (fs.existsSync(packageJsonPath)) {
+        const relativePath = path.relative(rootDir, dir)
+        results.push(relativePath || '.')
+      }
+
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+          const subdirPath = path.join(dir, entry.name)
+          results.push(...findPackageJsonFiles(subdirPath, rootDir, depth + 1))
+        }
+      }
+    } catch (err) {
+      // Ignore errors for directories we can't read
     }
 
-    const content = fs.readFileSync(packageJsonPath, 'utf-8')
-    const packageJson = JSON.parse(content)
+    return results
+  }
 
-    const scripts: ScriptInfo[] = []
+  // Detect package manager for a given directory
+  function detectPackageManager(dir: string): string {
+    if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
+      return 'pnpm'
+    } else if (fs.existsSync(path.join(dir, 'yarn.lock'))) {
+      return 'yarn'
+    } else if (fs.existsSync(path.join(dir, 'bun.lockb'))) {
+      return 'bun'
+    }
+    return 'npm'
+  }
 
-    if (packageJson.scripts && typeof packageJson.scripts === 'object') {
-      for (const [name, command] of Object.entries(packageJson.scripts)) {
+  try {
+    const fsPath = resolvePathForFs(projectPath)
+    const rootPackageJsonPath = path.join(fsPath, 'package.json')
+
+    if (!fs.existsSync(rootPackageJsonPath)) {
+      return { hasPackageJson: false, packages: [], scripts: [] }
+    }
+
+    // Find all package.json files in the project
+    const packagePaths = findPackageJsonFiles(fsPath, fsPath)
+    const packages: PackageScripts[] = []
+
+    // Read and process each package.json
+    for (const relativePath of packagePaths) {
+      try {
+        const packageDir = path.join(fsPath, relativePath)
+        const packageJsonPath = path.join(packageDir, 'package.json')
+        const content = fs.readFileSync(packageJsonPath, 'utf-8')
+        const packageJson = JSON.parse(content)
+
+        const scripts: ScriptInfo[] = []
+        if (packageJson.scripts && typeof packageJson.scripts === 'object') {
+          for (const [name, command] of Object.entries(packageJson.scripts)) {
+            if (typeof command === 'string') {
+              scripts.push({ name, command })
+            }
+          }
+        }
+
+        // Only include packages that have scripts
+        if (scripts.length > 0) {
+          packages.push({
+            packagePath: relativePath,
+            packageName: packageJson.name,
+            scripts,
+            packageManager: detectPackageManager(packageDir),
+          })
+        }
+      } catch (err) {
+        console.error(`Failed to read package.json at ${relativePath}:`, err)
+      }
+    }
+
+    // Get legacy fields from root package.json for backward compatibility
+    const rootContent = fs.readFileSync(rootPackageJsonPath, 'utf-8')
+    const rootPackageJson = JSON.parse(rootContent)
+    const rootScripts: ScriptInfo[] = []
+    if (rootPackageJson.scripts && typeof rootPackageJson.scripts === 'object') {
+      for (const [name, command] of Object.entries(rootPackageJson.scripts)) {
         if (typeof command === 'string') {
-          scripts.push({ name, command })
+          rootScripts.push({ name, command })
         }
       }
     }
 
-    // Detect package manager
-    let packageManager = 'npm'
-    if (fs.existsSync(path.join(fsPath, 'pnpm-lock.yaml'))) {
-      packageManager = 'pnpm'
-    } else if (fs.existsSync(path.join(fsPath, 'yarn.lock'))) {
-      packageManager = 'yarn'
-    } else if (fs.existsSync(path.join(fsPath, 'bun.lockb'))) {
-      packageManager = 'bun'
-    }
-
     return {
       hasPackageJson: true,
-      scripts,
-      packageManager,
-      projectName: packageJson.name || path.basename(projectPath),
+      packages,
+      // Keep legacy fields for backward compatibility
+      scripts: rootScripts,
+      packageManager: detectPackageManager(fsPath),
+      projectName: rootPackageJson.name || path.basename(projectPath),
     }
   } catch (err) {
     console.error('Failed to read package.json:', err)
-    return { hasPackageJson: false, scripts: [], error: String(err) }
+    return { hasPackageJson: false, packages: [], scripts: [], error: String(err) }
   }
 })
 

@@ -130,17 +130,28 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   }
 
   const handleOpenChangedFile = async (filePath: string) => {
-    if (!window.electron) return
+    console.log('[GitTab] Opening file:', filePath)
+    console.log('[GitTab] window.electron available:', !!window.electron)
+
+    if (!window.electron) {
+      console.error('[GitTab] window.electron is not available!')
+      return
+    }
 
     const separator = projectPath.includes('\\') ? '\\' : '/'
     const fullPath = `${projectPath}${separator}${filePath}`.replace(/\/\//g, '/').replace(/\\\\/g, '\\')
     const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
 
+    console.log('[GitTab] Reading file from:', fullPath)
     const result = await window.electron.fs.readFile(fullPath)
+    console.log('[GitTab] Read result:', result)
+
     if (result.success && result.content !== undefined) {
       openFile(fullPath, fileName, result.content, projectPath)
       // Enable diff view to show changes compared to git HEAD
       setShowDiff(true)
+    } else {
+      console.error('[GitTab] Failed to read file:', result.error)
     }
   }
 

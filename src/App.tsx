@@ -13,11 +13,13 @@ import { Terminal as TerminalIcon } from 'lucide-react'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
 import { UpdateNotification } from './components/UpdateNotification'
+import { FileSearchModal } from './components/FileSearchModal'
 import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
 import { useSSHStore } from './stores/ssh-store'
+import { useFileSearchStore } from './stores/file-search-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
 
@@ -58,6 +60,7 @@ function App() {
     getGridForTerminal,
   } = useGridStore()
   const { setActiveProject } = useProjectStore()
+  const { openSearch } = useFileSearchStore()
 
   // Configure drag sensors with a distance threshold
   // This prevents clicks from being interpreted as drags
@@ -235,9 +238,16 @@ function App() {
     }
   }, [isElectron, markSessionExited, updateSessionTitle, updateSessionActivity, updateServerStatus])
 
-  // Keyboard shortcuts: Ctrl+N for project switch, Alt+N for terminal focus
+  // Keyboard shortcuts: Ctrl+P for file search, Ctrl+N for project switch, Alt+N for terminal focus
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+P / Cmd+P: Open file search
+      if ((e.ctrlKey || e.metaKey) && e.key === 'p' && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        openSearch()
+        return
+      }
+
       const num = parseInt(e.key, 10)
       if (isNaN(num) || num < 1 || num > 9) return
 
@@ -269,7 +279,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [projects, grids, activeGridId, setActiveProject, setFocusedTerminal])
+  }, [projects, grids, activeGridId, setActiveProject, setFocusedTerminal, openSearch])
 
   const handleCreateTerminal = async (projectId: string, shell: { name: string; path: string }) => {
     if (!window.electron) return
@@ -784,6 +794,7 @@ function App() {
         ) : null}
       </DragOverlay>
       <UpdateNotification />
+      <FileSearchModal />
     </DndContext>
   )
 }
