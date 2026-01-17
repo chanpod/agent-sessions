@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { X, Server, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { useSSHStore, type SSHConnection, type SSHAuthMethod } from '../stores/ssh-store'
 

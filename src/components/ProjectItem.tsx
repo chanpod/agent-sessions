@@ -1,11 +1,10 @@
-import { ChevronRight, Terminal, X, Server, GitBranch, Plus, Minus, Folder, Play, Square, Command, RefreshCw, Check, Cloud, GripVertical, Pencil, FileCode, FileText, FilePlus, FileMinus, FileQuestion, FileSymlink, ExternalLink, Undo2, Trash2 } from 'lucide-react'
+import { ChevronRight, Terminal, X, Server, GitBranch, Folder, Square, RefreshCw, Check, Cloud, GripVertical, Pencil, ExternalLink, Trash2 } from 'lucide-react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { useGridStore } from '../stores/grid-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { ActivityIndicator } from './ActivityIndicator'
-import { FileBrowser } from './FileBrowser'
 import { ProjectTabBar } from './ProjectTabBar'
 import { TerminalsTab } from './TerminalsTab'
 import { FilesTab } from './FilesTab'
@@ -14,7 +13,6 @@ import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
-import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 
 interface ShellInfo {
@@ -51,9 +49,8 @@ export function ProjectItem({
   onDeleteServer,
 }: ProjectItemProps) {
   const { toggleProjectExpanded, activeProjectId, setActiveProject, setProjectTab, removeProject } = useProjectStore()
-  const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
+  const { sessions, activeSessionId } = useTerminalStore()
   const { servers } = useServerStore()
-  const { openFile } = useFileViewerStore()
   const { getConnection } = useSSHStore()
 
   // Get SSH connection info if this is an SSH project
@@ -61,13 +58,6 @@ export function ProjectItem({
     ? getConnection(project.sshConnectionId)
     : null
 
-  const [showShellMenu, setShowShellMenu] = useState(false)
-  const [showServerMenu, setShowServerMenu] = useState(false)
-  const [scripts, setScripts] = useState<ScriptInfo[]>([])
-  const [packageManager, setPackageManager] = useState('npm')
-  const [showCustomCommand, setShowCustomCommand] = useState(false)
-  const [customCommand, setCustomCommand] = useState('')
-  const [customName, setCustomName] = useState('')
   const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [gitHasChanges, setGitHasChanges] = useState(false)
   const [gitAhead, setGitAhead] = useState(0)
@@ -77,18 +67,13 @@ export function ProjectItem({
   const [remoteBranches, setRemoteBranches] = useState<string[]>([])
   const [isFetching, setIsFetching] = useState(false)
   const [isCheckingOut, setIsCheckingOut] = useState(false)
-  const [showFileBrowser, setShowFileBrowser] = useState(false)
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([])
   const [showChangedFilesMenu, setShowChangedFilesMenu] = useState(false)
-  const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null) // file path to confirm discard
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   // Refs and positions for portal-based dropdowns
-  const changedFilesBtnRef = useRef<HTMLButtonElement>(null)
   const branchBtnRef = useRef<HTMLButtonElement>(null)
-  const changedFilesMenuRef = useRef<HTMLDivElement>(null)
   const branchMenuRef = useRef<HTMLDivElement>(null)
-  const [changedFilesMenuPos, setChangedFilesMenuPos] = useState<{ top: number; left: number } | null>(null)
   const [branchMenuPos, setBranchMenuPos] = useState<{ top: number; left: number } | null>(null)
 
   // Filter out server terminals from regular terminal list (they have shell: '')
@@ -160,20 +145,6 @@ export function ProjectItem({
     }
   }, [project.path, project.isSSHProject])
 
-  // Fetch scripts when project is expanded
-  useEffect(() => {
-    if (project.isExpanded && window.electron) {
-      window.electron.project.getScripts(project.path).then((result) => {
-        if (result.hasPackageJson) {
-          setScripts(result.scripts)
-          setPackageManager(result.packageManager || 'npm')
-        } else {
-          setScripts([])
-        }
-      })
-    }
-  }, [project.isExpanded, project.path])
-
   // Close portal menus when clicking outside
   useEffect(() => {
     if (!showBranchMenu && !showChangedFilesMenu) return
@@ -184,13 +155,6 @@ export function ProjectItem({
       if (showBranchMenu && branchMenuRef.current && branchBtnRef.current) {
         if (!branchMenuRef.current.contains(target) && !branchBtnRef.current.contains(target)) {
           setShowBranchMenu(false)
-        }
-      }
-      // Check if click is outside the changed files menu and button
-      if (showChangedFilesMenu && changedFilesMenuRef.current && changedFilesBtnRef.current) {
-        if (!changedFilesMenuRef.current.contains(target) && !changedFilesBtnRef.current.contains(target)) {
-          setShowChangedFilesMenu(false)
-          setConfirmDiscard(null)
         }
       }
     }
@@ -206,28 +170,7 @@ export function ProjectItem({
     }
   }, [showBranchMenu, showChangedFilesMenu])
 
-  const handleShellSelect = (shell: ShellInfo) => {
-    onCreateTerminal(project.id, shell)
-    setShowShellMenu(false)
-  }
-
-  const handleScriptSelect = (script: ScriptInfo) => {
-    const command = `${packageManager} run ${script.name}`
-    onStartServer(project.id, script.name, command)
-    setShowServerMenu(false)
-  }
-
-  const handleCustomCommand = () => {
-    if (customCommand.trim()) {
-      onStartServer(project.id, customName || 'custom', customCommand.trim())
-      setCustomCommand('')
-      setCustomName('')
-      setShowCustomCommand(false)
-      setShowServerMenu(false)
-    }
-  }
-
-    const refreshGitInfo = async () => {
+  const refreshGitInfo = async () => {
       if (!window.electron) return
       const result = await window.electron.git.getInfo(project.path)
       if (result.isGitRepo) {
@@ -253,8 +196,6 @@ export function ProjectItem({
 
     const newShowState = !showBranchMenu
     setShowBranchMenu(newShowState)
-    setShowShellMenu(false)
-    setShowServerMenu(false)
     setShowChangedFilesMenu(false)
 
     if (newShowState && branchBtnRef.current) {
@@ -304,58 +245,10 @@ export function ProjectItem({
     }
   }
 
-  const handleChangedFilesClick = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    const newShowState = !showChangedFilesMenu
-    setShowChangedFilesMenu(newShowState)
-    setShowBranchMenu(false)
-    setShowShellMenu(false)
-    setShowServerMenu(false)
-
-    if (newShowState && changedFilesBtnRef.current) {
-      const rect = changedFilesBtnRef.current.getBoundingClientRect()
-      setChangedFilesMenuPos({ top: rect.bottom + 4, left: rect.left })
-    }
-  }
-
   const handleOpenInEditor = async (e: React.MouseEvent) => {
     e.stopPropagation()
     if (!window.electron) return
     await window.electron.system.openInEditor(project.path)
-  }
-
-  const handleOpenChangedFile = async (filePath: string) => {
-    if (!window.electron) return
-
-    // Construct full path (handle both / and \ separators)
-    const separator = project.path.includes('\\') ? '\\' : '/'
-    const fullPath = `${project.path}${separator}${filePath}`.replace(/\/\//g, '/').replace(/\\\\/g, '\\')
-    const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
-
-    // Read file content
-    const result = await window.electron.fs.readFile(fullPath)
-    if (result.success && result.content !== undefined) {
-      openFile(fullPath, fileName, result.content, project.path)
-      setShowChangedFilesMenu(false)
-    }
-  }
-
-  const handleStageFile = async (filePath: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!window.electron) return
-    await window.electron.git.stageFile(project.path, filePath)
-  }
-
-  const handleUnstageFile = async (filePath: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!window.electron) return
-    await window.electron.git.unstageFile(project.path, filePath)
-  }
-
-  const handleDiscardFile = async (filePath: string) => {
-    if (!window.electron) return
-    await window.electron.git.discardFile(project.path, filePath)
-    setConfirmDiscard(null)
   }
 
   const handleDeleteProject = (e: React.MouseEvent) => {
@@ -377,15 +270,6 @@ export function ProjectItem({
   const cancelDeleteProject = (e: React.MouseEvent) => {
     e.stopPropagation()
     setShowDeleteConfirm(false)
-  }
-
-  // Group changed files by status
-  const groupedFiles = {
-    modified: changedFiles.filter((f) => f.status === 'modified'),
-    added: changedFiles.filter((f) => f.status === 'added'),
-    deleted: changedFiles.filter((f) => f.status === 'deleted'),
-    untracked: changedFiles.filter((f) => f.status === 'untracked'),
-    renamed: changedFiles.filter((f) => f.status === 'renamed'),
   }
 
   return (

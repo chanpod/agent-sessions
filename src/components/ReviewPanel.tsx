@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useReviewStore, type ReviewFinding } from '../stores/review-store'
 import { useFileViewerStore } from '../stores/file-viewer-store'
-import { cn } from '../lib/utils'
+import { cn, normalizeFilePath } from '../lib/utils'
 
 interface ReviewPanelProps {
   projectPath: string
@@ -84,8 +84,7 @@ export function ReviewPanel({ projectPath }: ReviewPanelProps) {
 
     setSelectedFinding(finding.id)
 
-    const separator = projectPath.includes('\\') ? '\\' : '/'
-    const fullPath = `${projectPath}${separator}${finding.file}`.replace(/\/\//g, '/').replace(/\\\\/g, '\\')
+    const fullPath = normalizeFilePath(projectPath, finding.file)
     const fileName = finding.file.split('/').pop() || finding.file
 
     const result = await window.electron.fs.readFile(fullPath)

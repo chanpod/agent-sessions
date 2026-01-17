@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { useReviewStore } from '../stores/review-store'
-import { cn } from '../lib/utils'
+import { cn, normalizeFilePath } from '../lib/utils'
 
 interface GitTabProps {
   projectPath: string
@@ -192,8 +192,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       return
     }
 
-    const separator = projectPath.includes('\\') ? '\\' : '/'
-    const fullPath = `${projectPath}${separator}${filePath}`.replace(/\/\//g, '/').replace(/\\\\/g, '\\')
+    const fullPath = normalizeFilePath(projectPath, filePath)
     const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
 
     console.log('[GitTab] Reading file from:', fullPath)

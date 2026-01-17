@@ -42,7 +42,7 @@ function App() {
   } = useTerminalStore()
   const restoringRef = useRef(false)
   const { projects } = useProjectStore()
-  const { connections: sshConnections, getConnection } = useSSHStore()
+  const { getConnection } = useSSHStore()
   const {
     addServer,
     removeServer,

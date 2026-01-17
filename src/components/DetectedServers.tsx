@@ -32,8 +32,8 @@ export function DetectedServers({ terminalId }: DetectedServersProps) {
   }
 
   const handleOpen = (url: string) => {
-    if (window.electron?.system?.openExternal) {
-      window.electron.system.openExternal(url)
+    if (window.electron?.system && 'openExternal' in window.electron.system) {
+      (window.electron.system as any).openExternal(url)
     } else {
       // Fallback for non-Electron environments
       window.open(url, '_blank')

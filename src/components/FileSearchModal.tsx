@@ -4,6 +4,7 @@ import { useFileSearchStore } from '../stores/file-search-store'
 import { useProjectStore } from '../stores/project-store'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { useTerminalStore } from '../stores/terminal-store'
+import { normalizeFilePath } from '../lib/utils'
 
 export function FileSearchModal() {
   const { isOpen, query, filteredFiles, selectedIndex, closeSearch, setQuery, selectNext, selectPrevious, setFiles } = useFileSearchStore()
@@ -123,12 +124,13 @@ export function FileSearchModal() {
     const activeProject = getActiveProject()
     if (!activeProject?.path) return
 
-    const fullPath = `${activeProject.path}/${relativePath}`.replace(/\\/g, '/')
+    const fullPath = normalizeFilePath(activeProject.path, relativePath)
+    const fileName = relativePath.split('/').pop() || relativePath.split('\\').pop() || relativePath
 
     try {
       const result = await window.electron?.fs.readFile(fullPath)
       if (result?.success && result.content !== undefined) {
-        openFile(fullPath, result.content)
+        openFile(fullPath, fileName, result.content, activeProject.path)
         closeSearch()
       } else {
         console.error('Failed to read file:', result?.error)
