@@ -1,4 +1,4 @@
-import { Terminal, Plus, Server, Play, Command, RefreshCw } from 'lucide-react'
+import { Terminal, Plus, Server, Play, Command, RefreshCw, Package } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
@@ -14,6 +14,13 @@ interface ShellInfo {
 interface ScriptInfo {
   name: string
   command: string
+}
+
+interface PackageScripts {
+  packagePath: string
+  packageName?: string
+  scripts: ScriptInfo[]
+  packageManager?: string
 }
 
 interface TerminalsTabProps {
@@ -52,8 +59,7 @@ export function TerminalsTab({
   // is determined by the project's sshConnectionId
   const isSSHProject = project.isSSHProject
   const [showServerMenu, setShowServerMenu] = useState(false)
-  const [scripts, setScripts] = useState<ScriptInfo[]>([])
-  const [packageManager, setPackageManager] = useState('npm')
+  const [packages, setPackages] = useState<PackageScripts[]>([])
   const [showCustomCommand, setShowCustomCommand] = useState(false)
   const [customCommand, setCustomCommand] = useState('')
   const [customName, setCustomName] = useState('')
@@ -68,9 +74,8 @@ export function TerminalsTab({
     if (!window.electron) return
 
     const result = await window.electron!.project.getScripts(projectPath)
-    if (result.hasPackageJson && result.scripts) {
-      setScripts(result.scripts)
-      setPackageManager(result.packageManager || 'npm')
+    if (result.hasPackageJson && result.packages) {
+      setPackages(result.packages)
     }
   }
 
@@ -106,9 +111,12 @@ export function TerminalsTab({
     }
   }
 
-  const handleScriptSelect = (script: ScriptInfo) => {
-    const command = `${packageManager} run ${script.name}`
-    onStartServer(projectId, script.name, command)
+  const handleScriptSelect = (script: ScriptInfo, packageInfo: PackageScripts) => {
+    const command = `${packageInfo.packageManager || 'npm'} run ${script.name}`
+    const displayName = packageInfo.packagePath === '.'
+      ? script.name
+      : `${packageInfo.packagePath}:${script.name}`
+    onStartServer(projectId, displayName, command)
     setShowServerMenu(false)
   }
 
@@ -208,22 +216,35 @@ export function TerminalsTab({
                 <Plus className="w-4 h-4" />
               </button>
               {showServerMenu && !showCustomCommand && (
-              <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[180px] max-h-[300px] overflow-y-auto">
-                {scripts.length > 0 ? (
+              <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[220px] max-h-[400px] overflow-y-auto">
+                {packages.length > 0 ? (
                   <>
-                    <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase">
-                      package.json scripts
-                    </div>
-                    {scripts.map((script) => (
-                      <button
-                        key={script.name}
-                        onClick={() => handleScriptSelect(script)}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
-                        title={script.command}
-                      >
-                        <Play className="w-3 h-3 text-green-500" />
-                        <span className="truncate">{script.name}</span>
-                      </button>
+                    {packages.map((pkg, pkgIndex) => (
+                      <div key={pkg.packagePath}>
+                        {pkgIndex > 0 && <div className="border-t border-zinc-700/50 my-1" />}
+                        <div className="px-3 py-1.5 text-[10px] text-zinc-400 uppercase flex items-center gap-1.5">
+                          <Package className="w-3 h-3" />
+                          {pkg.packagePath === '.' ? (
+                            <span>Root {pkg.packageName ? `(${pkg.packageName})` : ''}</span>
+                          ) : (
+                            <span title={pkg.packagePath}>
+                              {pkg.packagePath}
+                              {pkg.packageName && <span className="text-zinc-500 ml-1">({pkg.packageName})</span>}
+                            </span>
+                          )}
+                        </div>
+                        {pkg.scripts.map((script) => (
+                          <button
+                            key={`${pkg.packagePath}:${script.name}`}
+                            onClick={() => handleScriptSelect(script, pkg)}
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
+                            title={`${script.command} (${pkg.packageManager})`}
+                          >
+                            <Play className="w-3 h-3 text-green-500 flex-shrink-0" />
+                            <span className="truncate">{script.name}</span>
+                          </button>
+                        ))}
+                      </div>
                     ))}
                     <div className="border-t border-zinc-700 my-1" />
                   </>

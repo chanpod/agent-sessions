@@ -12,6 +12,7 @@ import {
 import { Terminal as TerminalIcon } from 'lucide-react'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
+import { UpdateNotification } from './components/UpdateNotification'
 import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
@@ -782,6 +783,7 @@ function App() {
           </div>
         ) : null}
       </DragOverlay>
+      <UpdateNotification />
     </DndContext>
   )
 }

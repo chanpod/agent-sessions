@@ -258,6 +258,25 @@ const electronAPI = {
       return () => ipcRenderer.removeListener('ssh:status-change', handler)
     },
   },
+  updater: {
+    install: (): Promise<void> =>
+      ipcRenderer.invoke('update:install'),
+    onUpdateAvailable: (callback: (info: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
+      ipcRenderer.on('update:available', handler)
+      return () => ipcRenderer.removeListener('update:available', handler)
+    },
+    onUpdateDownloaded: (callback: (info: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
+      ipcRenderer.on('update:downloaded', handler)
+      return () => ipcRenderer.removeListener('update:downloaded', handler)
+    },
+    onDownloadProgress: (callback: (progress: any) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: any) => callback(progress)
+      ipcRenderer.on('update:progress', handler)
+      return () => ipcRenderer.removeListener('update:progress', handler)
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('electron', electronAPI)

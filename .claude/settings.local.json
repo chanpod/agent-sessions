@@ -14,7 +14,8 @@
       "Bash(npm run build:*)",
       "Bash(pnpm run build:*)",
       "Bash(cat:*)",
-      "WebFetch(domain:code.claude.com)"
+      "WebFetch(domain:code.claude.com)",
+      "Bash(pgrep:*)"
     ]
   }
 }

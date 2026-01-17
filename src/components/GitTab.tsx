@@ -1,4 +1,4 @@
-import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown } from 'lucide-react'
+import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown, Search } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
@@ -37,6 +37,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
   const [remoteBranches, setRemoteBranches] = useState<string[]>([])
+  const [branchFilter, setBranchFilter] = useState('')
   const [isFetching, setIsFetching] = useState(false)
   const [isCheckingOut, setIsCheckingOut] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null)
@@ -75,6 +76,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
         !branchBtnRef.current.contains(event.target as Node)
       ) {
         setShowBranchMenu(false)
+        setBranchFilter('')
       }
     }
 
@@ -90,6 +92,9 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     if (newShowState && branchBtnRef.current) {
       const rect = branchBtnRef.current.getBoundingClientRect()
       setBranchMenuPos({ top: rect.bottom + 4, left: rect.left })
+    } else {
+      // Clear filter when closing menu
+      setBranchFilter('')
     }
   }
 
@@ -237,6 +242,15 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     }
   }
 
+  // Filter branches based on search input
+  const filterText = branchFilter.toLowerCase().trim()
+  const filteredLocalBranches = filterText
+    ? localBranches.filter(b => b.toLowerCase().includes(filterText))
+    : localBranches
+  const filteredRemoteBranches = filterText
+    ? remoteBranches.filter(b => b.toLowerCase().includes(filterText))
+    : remoteBranches
+
   // Group files by staged/unstaged
   const stagedFiles = changedFiles.filter(f => f.staged)
   const unstagedFiles = changedFiles.filter(f => !f.staged)
@@ -374,12 +388,27 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
                   {isFetching ? 'Fetching...' : 'Fetch from remote'}
                 </button>
 
-                {localBranches.length > 0 && (
+                {/* Filter Input */}
+                <div className="px-2 py-1.5 border-b border-zinc-700">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-500" />
+                    <input
+                      type="text"
+                      value={branchFilter}
+                      onChange={(e) => setBranchFilter(e.target.value)}
+                      placeholder="Filter branches..."
+                      className="w-full pl-7 pr-2 py-1 text-xs bg-zinc-900 border border-zinc-700 rounded text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-600"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                {filteredLocalBranches.length > 0 && (
                   <>
                     <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase">
                       Local branches
                     </div>
-                    {localBranches.map((branch) => (
+                    {filteredLocalBranches.map((branch) => (
                       <button
                         key={branch}
                         onClick={() => handleCheckout(branch)}
@@ -399,12 +428,12 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
                   </>
                 )}
 
-                {remoteBranches.length > 0 && (
+                {filteredRemoteBranches.length > 0 && (
                   <>
                     <div className="px-3 py-1 text-[10px] text-zinc-500 uppercase border-t border-zinc-700 mt-1 pt-2">
                       Remote branches
                     </div>
-                    {remoteBranches.map((branch) => {
+                    {filteredRemoteBranches.map((branch) => {
                       const hasLocal = localBranches.includes(branch)
                       return (
                         <button
@@ -427,9 +456,11 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
                   </>
                 )}
 
-                {localBranches.length === 0 && remoteBranches.length === 0 && (
+                {filteredLocalBranches.length === 0 && filteredRemoteBranches.length === 0 && (
                   <div className="px-3 py-2 text-xs text-zinc-500">
-                    No branches found
+                    {localBranches.length === 0 && remoteBranches.length === 0
+                      ? 'No branches found'
+                      : 'No branches match filter'}
                   </div>
                 )}
               </div>,

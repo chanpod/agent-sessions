@@ -150,30 +150,27 @@ function setupAutoUpdater() {
 
   autoUpdater.on('update-downloaded', (info) => {
     console.log('Update downloaded:', info.version)
+    // Send to renderer to show non-invasive notification
     mainWindow?.webContents.send('update:downloaded', info)
-
-    // Optionally show a dialog to prompt restart
-    dialog.showMessageBox(mainWindow!, {
-      type: 'info',
-      title: 'Update Ready',
-      message: `Version ${info.version} has been downloaded.`,
-      detail: 'The update will be installed when you restart the app.',
-      buttons: ['Restart Now', 'Later'],
-      defaultId: 0,
-    }).then((result) => {
-      if (result.response === 0) {
-        autoUpdater.quitAndInstall()
-      }
-    })
   })
 
   autoUpdater.on('error', (err) => {
     console.error('Auto-updater error:', err)
   })
 
-  // Check for updates
+  // Check for updates immediately
   autoUpdater.checkForUpdatesAndNotify()
+
+  // Poll for updates every 60 seconds
+  setInterval(() => {
+    autoUpdater.checkForUpdatesAndNotify()
+  }, 60000)
 }
+
+// IPC handler to install update when user clicks "Update Now"
+ipcMain.handle('update:install', async () => {
+  autoUpdater.quitAndInstall()
+})
 
 function createMenu() {
   const isMac = process.platform === 'darwin'

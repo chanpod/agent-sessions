@@ -414,7 +414,12 @@ export function ProjectItem({
           )}
         />
         <Folder className={cn('w-4 h-4 flex-shrink-0', hasFocusedTerminal ? 'text-green-400' : 'text-blue-400')} />
-        <span className="truncate font-semibold">{project.name}</span>
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="truncate font-semibold">{project.name}</span>
+          <span className="truncate text-xs text-zinc-500" title={project.isSSHProject ? project.remotePath : project.path}>
+            {project.isSSHProject ? project.remotePath : project.path}
+          </span>
+        </div>
         {sshConnection && (
           <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-400">
             <Cloud className="w-3 h-3" />

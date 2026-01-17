@@ -70,8 +70,17 @@ export interface ScriptInfo {
   command: string
 }
 
+export interface PackageScripts {
+  packagePath: string // relative path to the package.json from the project root (e.g., ".", "packages/app")
+  packageName?: string
+  scripts: ScriptInfo[]
+  packageManager?: string
+}
+
 export interface ProjectScripts {
   hasPackageJson: boolean
+  packages: PackageScripts[] // all package.json files found in the project
+  // Legacy fields for backward compatibility (deprecated)
   scripts: ScriptInfo[]
   packageManager?: string
   projectName?: string
@@ -204,6 +213,12 @@ export interface ElectronAPI {
     test: (config: SSHConnectionConfig) => Promise<SSHTestResult>
     getStatus: (connectionId: string) => Promise<{ connected: boolean; error?: string }>
     onStatusChange: (callback: (connectionId: string, connected: boolean, error?: string) => void) => () => void
+  }
+  updater: {
+    install: () => Promise<void>
+    onUpdateAvailable: (callback: (info: any) => void) => () => void
+    onUpdateDownloaded: (callback: (info: any) => void) => () => void
+    onDownloadProgress: (callback: (progress: any) => void) => () => void
   }
 }
 
