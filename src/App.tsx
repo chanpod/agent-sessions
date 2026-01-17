@@ -14,6 +14,7 @@ import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
 import { UpdateNotification } from './components/UpdateNotification'
 import { FileSearchModal } from './components/FileSearchModal'
+import { ReviewPanel } from './components/ReviewPanel'
 import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
@@ -59,7 +60,7 @@ function App() {
     setActiveGrid,
     getGridForTerminal,
   } = useGridStore()
-  const { setActiveProject } = useProjectStore()
+  const { setActiveProject, activeProjectId } = useProjectStore()
   const { openSearch } = useFileSearchStore()
 
   // Configure drag sensors with a distance threshold
@@ -795,6 +796,7 @@ function App() {
       </DragOverlay>
       <UpdateNotification />
       <FileSearchModal />
+      <ReviewPanel projectPath={projects.find(p => p.id === activeProjectId)?.path || ''} />
     </DndContext>
   )
 }

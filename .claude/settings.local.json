@@ -15,7 +15,9 @@
       "Bash(pnpm run build:*)",
       "Bash(cat:*)",
       "WebFetch(domain:code.claude.com)",
-      "Bash(pgrep:*)"
+      "Bash(pgrep:*)",
+      "Bash(git log:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

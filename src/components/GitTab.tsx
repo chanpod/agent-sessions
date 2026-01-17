@@ -1,8 +1,9 @@
-import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown, Search } from 'lucide-react'
+import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown, Search, Sparkles, Loader2 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
 import { useFileViewerStore } from '../stores/file-viewer-store'
+import { useReviewStore } from '../stores/review-store'
 import { cn } from '../lib/utils'
 
 interface GitTabProps {
@@ -33,6 +34,7 @@ function getFileStatusIcon(status: ChangedFile['status']) {
 
 export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
   const { openFile, setShowDiff } = useFileViewerStore()
+  const { startReview, completeReview, failReview, getConfig, reviews, setVisibility, activeReviewId } = useReviewStore()
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
@@ -46,6 +48,8 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const [isPushing, setIsPushing] = useState(false)
   const [isPulling, setIsPulling] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isReviewing, setIsReviewing] = useState(false)
+  const [currentReviewId, setCurrentReviewId] = useState<string | null>(null)
 
   const branchBtnRef = useRef<HTMLButtonElement>(null)
   const branchMenuRef = useRef<HTMLDivElement>(null)
@@ -58,8 +62,8 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     const fetchBranches = async () => {
       const result = await window.electron!.git.listBranches(projectPath)
       if (result.success) {
-        setLocalBranches(result.local || [])
-        setRemoteBranches(result.remote || [])
+        setLocalBranches(result.localBranches || [])
+        setRemoteBranches(result.remoteBranches || [])
       }
     }
 
@@ -84,6 +88,56 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Listen for review completion/failure events
+  useEffect(() => {
+    if (!window.electron) return
+
+    const unsubCompleted = window.electron.review.onCompleted((event) => {
+      console.log('[GitTab] Review completed:', event)
+      if (event.reviewId === currentReviewId) {
+        completeReview(event.reviewId, event.findings, event.summary)
+        setIsReviewing(false)
+      }
+    })
+
+    const unsubFailed = window.electron.review.onFailed((reviewId, error) => {
+      console.log('[GitTab] Review failed:', reviewId, error)
+      if (reviewId === currentReviewId) {
+        failReview(reviewId, error)
+        setIsReviewing(false)
+      }
+    })
+
+    return () => {
+      unsubCompleted()
+      unsubFailed()
+    }
+  }, [currentReviewId, completeReview, failReview])
+
+  const handleStartReview = async () => {
+    if (!window.electron || changedFiles.length === 0) return
+
+    setIsReviewing(true)
+
+    // Get files to review (all changed files)
+    const filesToReview = changedFiles.map(f => f.path)
+    const config = getConfig(projectPath)
+
+    // Start review via IPC first to get the backend's reviewId
+    const result = await window.electron.review.start(projectPath, filesToReview, config.promptTemplate)
+
+    if (!result.success || !result.reviewId) {
+      setIsReviewing(false)
+      console.error('Failed to start review:', result.error)
+      return
+    }
+
+    // Use the backend's reviewId for the store
+    const reviewId = result.reviewId
+    startReview(projectPath, filesToReview, reviewId)
+    setCurrentReviewId(reviewId)
+  }
+
   const handleBranchClick = (e: React.MouseEvent) => {
     e.stopPropagation()
     const newShowState = !showBranchMenu
@@ -105,8 +159,8 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       await window.electron.git.fetch(projectPath)
       const result = await window.electron.git.listBranches(projectPath)
       if (result.success) {
-        setLocalBranches(result.local || [])
-        setRemoteBranches(result.remote || [])
+        setLocalBranches(result.localBranches || [])
+        setRemoteBranches(result.remoteBranches || [])
       }
     } finally {
       setIsFetching(false)
@@ -486,6 +540,51 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       {/* Changes Section */}
       {gitBranch && changedFiles.length > 0 && (
         <div>
+          {/* Review Button */}
+          <div className="px-2 mb-3 flex gap-2">
+            <button
+              onClick={handleStartReview}
+              disabled={isReviewing || changedFiles.length === 0}
+              className={cn(
+                'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs rounded transition-colors',
+                isReviewing
+                  ? 'bg-purple-600/50 text-purple-300 cursor-wait'
+                  : 'bg-purple-600 hover:bg-purple-500 text-white'
+              )}
+            >
+              {isReviewing ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Reviewing...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Review ({changedFiles.length})
+                </>
+              )}
+            </button>
+            {/* Show Results button when there's a review */}
+            {activeReviewId && reviews.get(activeReviewId) && (
+              <button
+                onClick={() => setVisibility(true)}
+                className="px-3 py-2 text-xs rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors"
+                title="View review results"
+              >
+                {(() => {
+                  const review = reviews.get(activeReviewId)
+                  if (review?.status === 'completed') {
+                    const count = review.findings.length
+                    return count > 0 ? `${count} issues` : '✓ Clean'
+                  }
+                  if (review?.status === 'failed') return 'Failed'
+                  if (review?.status === 'running') return '...'
+                  return 'View'
+                })()}
+              </button>
+            )}
+          </div>
+
           {/* Staged Changes */}
           {stagedFiles.length > 0 && (
             <div className="mb-3">

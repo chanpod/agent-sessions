@@ -2,7 +2,7 @@ import { BrowserWindow } from 'electron'
 import * as pty from 'node-pty'
 import { randomUUID } from 'crypto'
 import os from 'os'
-import { exec } from 'child_process'
+import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
 import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
@@ -16,13 +16,13 @@ export interface TerminalInfo {
   cwd: string
   title: string
   createdAt: number
+  hidden?: boolean
 }
 
 interface TerminalInstance {
   info: TerminalInfo
   ptyProcess: pty.IPty
-  processMonitorInterval?: NodeJS.Timeout
-  lastLogTime?: number
+  hidden?: boolean
 }
 
 // WSL path detection for pty-manager
@@ -55,38 +55,76 @@ function getLinuxPathFromWslPath(inputPath: string): string {
 }
 
 /**
- * Check if a process has child processes running (async, non-blocking)
- * Returns true if there ARE child processes (terminal is busy)
- * Returns false if there are NO child processes (terminal is idle at shell prompt)
+ * Batch check which PIDs have child processes (async, non-blocking)
+ * Returns a Set of PIDs that have children
+ * This is MUCH more efficient than calling WMIC once per terminal
  */
-async function hasChildProcesses(pid: number): Promise<boolean> {
+async function getPidsWithChildren(pids: number[]): Promise<Set<number>> {
+  if (pids.length === 0) return new Set()
+
   try {
     if (process.platform === 'win32') {
-      // Use WMIC to check for child processes on Windows
-      const { stdout } = await execAsync(`wmic process where (ParentProcessId=${pid}) get ProcessId`, {
-        timeout: 2000,
+      // Single WMIC call to get ALL parent-child relationships
+      // This is dramatically faster than one call per PID
+      const { stdout } = await execAsync(`wmic process get ParentProcessId,ProcessId /format:csv`, {
+        timeout: 5000,
         windowsHide: true,
       })
-      // Parse output - if there are children, there will be PIDs listed
-      const lines = stdout.split('\n').map(l => l.trim()).filter(l => l && l !== 'ProcessId')
-      return lines.length > 0
+
+      const pidSet = new Set(pids)
+      const pidsWithChildren = new Set<number>()
+
+      // Parse CSV output: Node,ParentProcessId,ProcessId
+      const lines = stdout.split('\n').slice(1) // Skip header
+      for (const line of lines) {
+        const parts = line.trim().split(',')
+        if (parts.length >= 3) {
+          const parentPid = parseInt(parts[1], 10)
+          if (pidSet.has(parentPid)) {
+            pidsWithChildren.add(parentPid)
+          }
+        }
+      }
+
+      return pidsWithChildren
     } else {
-      // On Unix, use ps to check for child processes
-      const { stdout } = await execAsync(`ps -o pid= --ppid ${pid}`, {
-        timeout: 2000,
+      // On Unix, single ps call to get all processes with their parents
+      const { stdout } = await execAsync(`ps -eo ppid=,pid=`, {
+        timeout: 5000,
       })
-      return stdout.trim().length > 0
+
+      const pidSet = new Set(pids)
+      const pidsWithChildren = new Set<number>()
+
+      const lines = stdout.split('\n')
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/)
+        if (parts.length >= 2) {
+          const parentPid = parseInt(parts[0], 10)
+          if (pidSet.has(parentPid)) {
+            pidsWithChildren.add(parentPid)
+          }
+        }
+      }
+
+      return pidsWithChildren
     }
   } catch (error) {
-    // If command fails, assume there are children (safer to not trigger false positives)
-    return true
+    // If command fails, assume all have children (safer)
+    return new Set(pids)
   }
 }
+
+// Process monitoring interval - 10 seconds is plenty responsive
+const PROCESS_MONITOR_INTERVAL_MS = 10000
 
 export class PtyManager {
   private terminals: Map<string, TerminalInstance> = new Map()
   private window: BrowserWindow
   private detectorManager: DetectorManager
+  private globalMonitorInterval?: NodeJS.Timeout
+  private lastChildState: Map<string, boolean> = new Map() // Track previous state per terminal
+  private monitorCheckInProgress = false
 
   constructor(window: BrowserWindow) {
     this.window = window
@@ -101,56 +139,53 @@ export class PtyManager {
         this.window.webContents.send('detector:event', event)
       }
     })
+
+    // Start single global process monitor (ONE wmic call for ALL terminals)
+    this.startGlobalProcessMonitor()
   }
 
   /**
-   * Start monitoring process changes for a terminal
-   * Detects when a foreground process exits back to the shell (no child processes)
-   * Uses async non-blocking calls and longer intervals for performance
+   * Single global monitor that checks ALL terminals in ONE system call
+   * This replaces per-terminal polling which was spawning N wmic processes
    */
-  private startProcessMonitoring(id: string, ptyProcess: pty.IPty): void {
-    console.log(`[PtyManager] Starting process monitoring for terminal ${id}, PID: ${ptyProcess.pid}`)
-    const instance = this.terminals.get(id)
-    if (!instance) {
-      console.error(`[PtyManager] Cannot start monitoring - instance not found for terminal ${id}`)
-      return
-    }
-
-    // Track if there were children in the last check
-    let hadChildrenLastCheck: boolean | undefined = undefined
-    let checkInProgress = false
-
-    // Poll every 3 seconds (longer interval to reduce load)
-    instance.processMonitorInterval = setInterval(async () => {
-      // Skip if previous check still running
-      if (checkInProgress) return
+  private startGlobalProcessMonitor(): void {
+    this.globalMonitorInterval = setInterval(async () => {
+      if (this.monitorCheckInProgress) return
+      if (this.terminals.size === 0) return
 
       try {
-        checkInProgress = true
-        const hasChildren = await hasChildProcesses(ptyProcess.pid)
+        this.monitorCheckInProgress = true
 
-        // Log status periodically for debugging (every 15 seconds)
-        const now = Date.now()
-        if (!instance.lastLogTime || now - instance.lastLogTime > 15000) {
-          console.log(`[PtyManager] Terminal ${id} has child processes: ${hasChildren}`)
-          instance.lastLogTime = now
+        // Collect all terminal PIDs
+        const terminalPids: Array<{ id: string; pid: number }> = []
+        for (const [id, instance] of this.terminals) {
+          terminalPids.push({ id, pid: instance.ptyProcess.pid })
         }
 
-        // Detect transition from "has children" to "no children" (process finished)
-        if (hadChildrenLastCheck === true && hasChildren === false) {
-          console.log(`[PtyManager] Process finished in terminal ${id} - no more child processes`)
-          // Notify detectors that a process has finished
-          this.detectorManager.handleTerminalExit(id, 0)
-        }
+        // Single system call for ALL terminals
+        const pidsWithChildren = await getPidsWithChildren(terminalPids.map(t => t.pid))
 
-        hadChildrenLastCheck = hasChildren
+        // Check each terminal for state transitions
+        for (const { id, pid } of terminalPids) {
+          const hasChildren = pidsWithChildren.has(pid)
+          const hadChildren = this.lastChildState.get(id)
+
+          // Detect transition from "has children" to "no children"
+          if (hadChildren === true && hasChildren === false) {
+            console.log(`[PtyManager] Process finished in terminal ${id}`)
+            this.detectorManager.handleTerminalExit(id, 0)
+          }
+
+          this.lastChildState.set(id, hasChildren)
+        }
       } catch (error) {
-        console.error(`[PtyManager] Error monitoring process for terminal ${id}:`, error)
+        console.error('[PtyManager] Error in global process monitor:', error)
       } finally {
-        checkInProgress = false
+        this.monitorCheckInProgress = false
       }
-    }, 3000) // Check every 3 seconds instead of every second
+    }, PROCESS_MONITOR_INTERVAL_MS)
   }
+
 
   /**
    * Create terminal with custom command (used for SSH)
@@ -199,10 +234,8 @@ export class PtyManager {
     })
 
     ptyProcess.onExit(({ exitCode }) => {
-      // Stop process monitoring
-      if (instance.processMonitorInterval) {
-        clearInterval(instance.processMonitorInterval)
-      }
+      // Clean up state tracking
+      this.lastChildState.delete(terminalId)
 
       // Notify detectors of exit
       this.detectorManager.handleTerminalExit(terminalId, exitCode)
@@ -213,13 +246,10 @@ export class PtyManager {
       this.terminals.delete(terminalId)
     })
 
-    // Start monitoring for process changes
-    this.startProcessMonitoring(terminalId, ptyProcess)
-
     return info
   }
 
-  createTerminal(options: { cwd?: string; shell?: string; id?: string } = {}): TerminalInfo {
+  createTerminal(options: { cwd?: string; shell?: string; id?: string; hidden?: boolean } = {}): TerminalInfo {
     const id = options.id || randomUUID()
     let shell = options.shell || this.getDefaultShell()
     const originalCwd = options.cwd || process.cwd()
@@ -263,9 +293,10 @@ export class PtyManager {
       cwd: originalCwd, // Store original cwd for display
       title: shell.split('/').pop() || shell,
       createdAt: Date.now(),
+      hidden: options.hidden,
     }
 
-    const instance: TerminalInstance = { info, ptyProcess }
+    const instance: TerminalInstance = { info, ptyProcess, hidden: options.hidden }
     this.terminals.set(id, instance)
 
     // Forward PTY data to renderer
@@ -273,28 +304,23 @@ export class PtyManager {
       // Process through detectors
       this.detectorManager.processOutput(id, data)
 
-      if (!this.window.isDestroyed()) {
+      if (!options.hidden && !this.window.isDestroyed()) {
         this.window.webContents.send('pty:data', id, data)
       }
     })
 
     ptyProcess.onExit(({ exitCode }) => {
-      // Stop process monitoring
-      if (instance.processMonitorInterval) {
-        clearInterval(instance.processMonitorInterval)
-      }
+      // Clean up state tracking
+      this.lastChildState.delete(id)
 
       // Notify detectors of exit
       this.detectorManager.handleTerminalExit(id, exitCode)
 
-      if (!this.window.isDestroyed()) {
+      if (!options.hidden && !this.window.isDestroyed()) {
         this.window.webContents.send('pty:exit', id, exitCode)
       }
       this.terminals.delete(id)
     })
-
-    // Start monitoring for process changes
-    this.startProcessMonitoring(id, ptyProcess)
 
     return info
   }
@@ -316,10 +342,7 @@ export class PtyManager {
   kill(id: string): void {
     const instance = this.terminals.get(id)
     if (instance) {
-      // Stop process monitoring
-      if (instance.processMonitorInterval) {
-        clearInterval(instance.processMonitorInterval)
-      }
+      this.lastChildState.delete(id)
       instance.ptyProcess.kill()
       this.terminals.delete(id)
       this.detectorManager.cleanupTerminal(id)
@@ -331,6 +354,12 @@ export class PtyManager {
   }
 
   dispose(): void {
+    // Stop global process monitor
+    if (this.globalMonitorInterval) {
+      clearInterval(this.globalMonitorInterval)
+    }
+    this.lastChildState.clear()
+
     for (const [id] of this.terminals) {
       this.kill(id)
     }
@@ -341,5 +370,12 @@ export class PtyManager {
       return process.env.COMSPEC || 'powershell.exe'
     }
     return process.env.SHELL || '/bin/bash'
+  }
+
+  /**
+   * Get the detector manager (for registering custom detectors like ReviewDetector)
+   */
+  getDetectorManager(): DetectorManager {
+    return this.detectorManager
   }
 }

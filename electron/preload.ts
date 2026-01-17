@@ -136,6 +136,38 @@ export interface DirListResult {
   error?: string
 }
 
+export interface ReviewFinding {
+  id: string
+  file: string
+  line?: number
+  endLine?: number
+  severity: 'critical' | 'warning' | 'info' | 'suggestion'
+  category: string
+  title: string
+  description: string
+  suggestion?: string
+}
+
+export interface ReviewResult {
+  success: boolean
+  reviewId?: string
+  error?: string
+}
+
+export interface ReviewCompletedEvent {
+  reviewId: string
+  findings: ReviewFinding[]
+  summary?: string
+}
+
+export interface ReviewProgressEvent {
+  reviewId: string
+  currentFile?: string
+  fileIndex: number
+  totalFiles: number
+  message: string
+}
+
 const electronAPI = {
   pty: {
     create: (options: PtyOptions): Promise<TerminalInfo> =>
@@ -222,6 +254,29 @@ const electronAPI = {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)
       return () => ipcRenderer.removeListener('git:changed', handler)
+    },
+  },
+  review: {
+    start: (projectPath: string, files: string[], prompt: string): Promise<ReviewResult> =>
+      ipcRenderer.invoke('review:start', projectPath, files, prompt),
+    cancel: (reviewId: string): Promise<void> =>
+      ipcRenderer.invoke('review:cancel', reviewId),
+    getBuffer: (reviewId: string): Promise<{ success: boolean; buffer?: string; error?: string }> =>
+      ipcRenderer.invoke('review:getBuffer', reviewId),
+    onCompleted: (callback: (event: ReviewCompletedEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: ReviewCompletedEvent) => callback(data)
+      ipcRenderer.on('review:completed', handler)
+      return () => ipcRenderer.removeListener('review:completed', handler)
+    },
+    onFailed: (callback: (reviewId: string, error: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, reviewId: string, error: string) => callback(reviewId, error)
+      ipcRenderer.on('review:failed', handler)
+      return () => ipcRenderer.removeListener('review:failed', handler)
+    },
+    onProgress: (callback: (event: ReviewProgressEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: ReviewProgressEvent) => callback(data)
+      ipcRenderer.on('review:progress', handler)
+      return () => ipcRenderer.removeListener('review:progress', handler)
     },
   },
   store: {

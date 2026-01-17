@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url'
 import { PtyManager } from './pty-manager.js'
 import { SSHManager } from './ssh-manager.js'
 import { ToolChainDB } from './database.js'
+import { ReviewDetector } from './output-monitors/review-detector.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -287,13 +288,18 @@ function createMenu() {
 let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
 let sshManager: SSHManager | null = null
+let reviewDetector: ReviewDetector | null = null
 
-// Git watchers for detecting branch and file changes
-interface GitWatcherSet {
-  watchers: fs.FSWatcher[]
-  debounceTimer: NodeJS.Timeout | null
+// Track active reviews
+const activeReviews = new Map<string, { terminalId: string; projectPath: string }>()
+
+// Git polling for detecting branch and file changes
+interface GitPollerSet {
+  pollInterval: NodeJS.Timeout
+  lastNotifyTime: number
 }
-const gitWatchers = new Map<string, GitWatcherSet>()
+const gitPollers = new Map<string, GitPollerSet>()
+const GIT_POLL_INTERVAL_MS = 3000 // Poll every 3 seconds
 
 function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js')
@@ -321,6 +327,51 @@ function createWindow() {
   ptyManager = new PtyManager(mainWindow)
   sshManager = new SSHManager()
 
+  // Register ReviewDetector for code review functionality
+  reviewDetector = new ReviewDetector()
+  ptyManager.getDetectorManager().registerDetector(reviewDetector)
+
+  // Listen for review detector events
+  ptyManager.getDetectorManager().onEvent((event) => {
+    if (event.type === 'review-completed') {
+      const { reviewId, findings } = event.data
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:completed', {
+          reviewId,
+          findings: findings.map((f: any, index: number) => ({
+            ...f,
+            id: `${reviewId}-finding-${index}`,
+          })),
+        })
+      }
+
+      // Cleanup
+      const review = activeReviews.get(reviewId)
+      if (review) {
+        ptyManager?.kill(review.terminalId)
+        activeReviews.delete(reviewId)
+      }
+
+      console.log(`[Review] Completed review ${reviewId} with ${findings.length} findings`)
+    } else if (event.type === 'review-failed') {
+      const { reviewId, error } = event.data
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:failed', reviewId, error)
+      }
+
+      // Cleanup
+      const review = activeReviews.get(reviewId)
+      if (review) {
+        ptyManager?.kill(review.terminalId)
+        activeReviews.delete(reviewId)
+      }
+
+      console.log(`[Review] Failed review ${reviewId}: ${error}`)
+    }
+  })
+
   // Forward SSH status changes to renderer
   sshManager.on('status-change', (connectionId: string, connected: boolean, error?: string) => {
     if (!mainWindow.isDestroyed()) {
@@ -341,16 +392,11 @@ function createWindow() {
     ptyManager = null
     sshManager?.disposeAll()
     sshManager = null
-    // Clean up all git watchers
-    for (const watcherSet of gitWatchers.values()) {
-      if (watcherSet.debounceTimer) {
-        clearTimeout(watcherSet.debounceTimer)
-      }
-      for (const watcher of watcherSet.watchers) {
-        watcher.close()
-      }
+    // Clean up all git pollers
+    for (const pollerSet of gitPollers.values()) {
+      clearInterval(pollerSet.pollInterval)
     }
-    gitWatchers.clear()
+    gitPollers.clear()
   })
 }
 
@@ -507,7 +553,7 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
   }
 
   // Recursively find all package.json files, excluding node_modules and other common directories
-  function findPackageJsonFiles(dir: string, rootDir: string, depth: number = 0): string[] {
+  async function findPackageJsonFiles(dir: string, rootDir: string, depth: number = 0): Promise<string[]> {
     if (depth > 10) return [] // Prevent infinite recursion
 
     const results: string[] = []
@@ -515,17 +561,26 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
 
     try {
       const packageJsonPath = path.join(dir, 'package.json')
-      if (fs.existsSync(packageJsonPath)) {
+      try {
+        await fs.promises.access(packageJsonPath)
         const relativePath = path.relative(rootDir, dir)
         results.push(relativePath || '.')
+      } catch {
+        // package.json doesn't exist in this directory
       }
 
-      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+      // Process subdirectories in parallel for better performance
+      const subdirPromises: Promise<string[]>[] = []
       for (const entry of entries) {
         if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
           const subdirPath = path.join(dir, entry.name)
-          results.push(...findPackageJsonFiles(subdirPath, rootDir, depth + 1))
+          subdirPromises.push(findPackageJsonFiles(subdirPath, rootDir, depth + 1))
         }
+      }
+      const subdirResults = await Promise.all(subdirPromises)
+      for (const subResults of subdirResults) {
+        results.push(...subResults)
       }
     } catch (err) {
       // Ignore errors for directories we can't read
@@ -535,14 +590,26 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
   }
 
   // Detect package manager for a given directory
-  function detectPackageManager(dir: string): string {
-    if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
-      return 'pnpm'
-    } else if (fs.existsSync(path.join(dir, 'yarn.lock'))) {
-      return 'yarn'
-    } else if (fs.existsSync(path.join(dir, 'bun.lockb'))) {
-      return 'bun'
+  async function detectPackageManager(dir: string): Promise<string> {
+    const checkFile = async (filename: string): Promise<boolean> => {
+      try {
+        await fs.promises.access(path.join(dir, filename))
+        return true
+      } catch {
+        return false
+      }
     }
+
+    // Check all lock files in parallel
+    const [hasPnpm, hasYarn, hasBun] = await Promise.all([
+      checkFile('pnpm-lock.yaml'),
+      checkFile('yarn.lock'),
+      checkFile('bun.lockb'),
+    ])
+
+    if (hasPnpm) return 'pnpm'
+    if (hasYarn) return 'yarn'
+    if (hasBun) return 'bun'
     return 'npm'
   }
 
@@ -550,20 +617,23 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
     const fsPath = resolvePathForFs(projectPath)
     const rootPackageJsonPath = path.join(fsPath, 'package.json')
 
-    if (!fs.existsSync(rootPackageJsonPath)) {
+    // Check if root package.json exists
+    try {
+      await fs.promises.access(rootPackageJsonPath)
+    } catch {
       return { hasPackageJson: false, packages: [], scripts: [] }
     }
 
-    // Find all package.json files in the project
-    const packagePaths = findPackageJsonFiles(fsPath, fsPath)
+    // Find all package.json files in the project (async)
+    const packagePaths = await findPackageJsonFiles(fsPath, fsPath)
     const packages: PackageScripts[] = []
 
-    // Read and process each package.json
-    for (const relativePath of packagePaths) {
+    // Read and process each package.json in parallel
+    const packagePromises = packagePaths.map(async (relativePath) => {
       try {
         const packageDir = path.join(fsPath, relativePath)
         const packageJsonPath = path.join(packageDir, 'package.json')
-        const content = fs.readFileSync(packageJsonPath, 'utf-8')
+        const content = await fs.promises.readFile(packageJsonPath, 'utf-8')
         const packageJson = JSON.parse(content)
 
         const scripts: ScriptInfo[] = []
@@ -577,20 +647,27 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
 
         // Only include packages that have scripts
         if (scripts.length > 0) {
-          packages.push({
+          return {
             packagePath: relativePath,
             packageName: packageJson.name,
             scripts,
-            packageManager: detectPackageManager(packageDir),
-          })
+            packageManager: await detectPackageManager(packageDir),
+          }
         }
+        return null
       } catch (err) {
         console.error(`Failed to read package.json at ${relativePath}:`, err)
+        return null
       }
+    })
+
+    const packageResults = await Promise.all(packagePromises)
+    for (const pkg of packageResults) {
+      if (pkg) packages.push(pkg)
     }
 
     // Get legacy fields from root package.json for backward compatibility
-    const rootContent = fs.readFileSync(rootPackageJsonPath, 'utf-8')
+    const rootContent = await fs.promises.readFile(rootPackageJsonPath, 'utf-8')
     const rootPackageJson = JSON.parse(rootContent)
     const rootScripts: ScriptInfo[] = []
     if (rootPackageJson.scripts && typeof rootPackageJson.scripts === 'object') {
@@ -606,7 +683,7 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
       packages,
       // Keep legacy fields for backward compatibility
       scripts: rootScripts,
-      packageManager: detectPackageManager(fsPath),
+      packageManager: await detectPackageManager(fsPath),
       projectName: rootPackageJson.name || path.basename(projectPath),
     }
   } catch (err) {
@@ -775,84 +852,60 @@ ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
   }
 })
 
-// Watch a project's git directory for changes (branch switches, commits, staging, file edits)
+// Poll a project's git directory for changes (branch switches, commits, staging, file edits)
 ipcMain.handle('git:watch', async (_event, projectPath: string) => {
-  // Don't double-watch
-  if (gitWatchers.has(projectPath)) {
+  // Don't double-poll
+  if (gitPollers.has(projectPath)) {
     return { success: true }
   }
 
   const fsPath = resolvePathForFs(projectPath)
   const gitDir = path.join(fsPath, '.git')
   const headPath = path.join(gitDir, 'HEAD')
-  const indexPath = path.join(gitDir, 'index')
 
   if (!fs.existsSync(headPath)) {
     return { success: false, error: 'Not a git repository' }
   }
 
   try {
-    const watcherSet: GitWatcherSet = {
-      watchers: [],
-      debounceTimer: null,
-    }
-
-    // Debounce to avoid multiple rapid notifications
-    const notifyChange = () => {
-      if (watcherSet.debounceTimer) clearTimeout(watcherSet.debounceTimer)
-      watcherSet.debounceTimer = setTimeout(() => {
-        if (mainWindow) {
-          mainWindow.webContents.send('git:changed', projectPath)
-        }
-      }, 200)
-    }
-
-    // Watch HEAD for branch changes
-    const headWatcher = fs.watch(headPath, { persistent: false }, (eventType) => {
-      if (eventType === 'change') {
-        notifyChange()
+    // Set up interval-based polling instead of file watching
+    const pollInterval = setInterval(() => {
+      const pollerSet = gitPollers.get(projectPath)
+      if (!pollerSet) {
+        clearInterval(pollInterval)
+        return
       }
+
+      // Throttle notifications to avoid spamming (minimum 1 second between notifications)
+      const now = Date.now()
+      if (now - pollerSet.lastNotifyTime < 1000) {
+        return
+      }
+
+      pollerSet.lastNotifyTime = now
+      if (mainWindow) {
+        mainWindow.webContents.send('git:changed', projectPath)
+      }
+    }, GIT_POLL_INTERVAL_MS)
+
+    gitPollers.set(projectPath, {
+      pollInterval,
+      lastNotifyTime: 0,
     })
-    watcherSet.watchers.push(headWatcher)
 
-    // Watch index for commits and staging changes
-    if (fs.existsSync(indexPath)) {
-      const indexWatcher = fs.watch(indexPath, { persistent: false }, (eventType) => {
-        if (eventType === 'change') {
-          notifyChange()
-        }
-      })
-      watcherSet.watchers.push(indexWatcher)
-    }
-
-    // Watch refs directory for pushes and fetches
-    const refsDir = path.join(gitDir, 'refs')
-    if (fs.existsSync(refsDir)) {
-      const refsWatcher = fs.watch(refsDir, { persistent: false }, () => {
-        notifyChange()
-      })
-      watcherSet.watchers.push(refsWatcher)
-    }
-
-    gitWatchers.set(projectPath, watcherSet)
     return { success: true }
   } catch (err) {
-    console.error('Failed to watch git:', err)
+    console.error('Failed to start git polling:', err)
     return { success: false, error: String(err) }
   }
 })
 
-// Stop watching a project's git directory
+// Stop polling a project's git directory
 ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
-  const watcherSet = gitWatchers.get(projectPath)
-  if (watcherSet) {
-    if (watcherSet.debounceTimer) {
-      clearTimeout(watcherSet.debounceTimer)
-    }
-    for (const watcher of watcherSet.watchers) {
-      watcher.close()
-    }
-    gitWatchers.delete(projectPath)
+  const pollerSet = gitPollers.get(projectPath)
+  if (pollerSet) {
+    clearInterval(pollerSet.pollInterval)
+    gitPollers.delete(projectPath)
   }
   return { success: true }
 })
@@ -1102,20 +1155,8 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
     const fsPath = resolvePathForFs(filePath)
     fs.writeFileSync(fsPath, content, 'utf-8')
 
-    // Notify git watchers if this file is in a watched project
-    // This ensures the changed files list updates when files are edited through the app
-    for (const [projectPath, watcherSet] of gitWatchers.entries()) {
-      if (filePath.startsWith(projectPath)) {
-        // Debounce the notification
-        if (watcherSet.debounceTimer) clearTimeout(watcherSet.debounceTimer)
-        watcherSet.debounceTimer = setTimeout(() => {
-          if (mainWindow) {
-            mainWindow.webContents.send('git:changed', projectPath)
-          }
-        }, 200)
-        break
-      }
-    }
+    // Git status updates are now handled by interval-based polling
+    // No need to manually trigger notifications here
 
     return { success: true }
   } catch (err) {
@@ -1287,6 +1328,80 @@ ipcMain.handle('ssh:get-status', async (_event, connectionId: string) => {
     return { connected: false, error: 'SSH manager not initialized' }
   }
   return sshManager.getStatus(connectionId)
+})
+
+// Review IPC Handlers
+ipcMain.handle('review:start', async (_event, projectPath: string, files: string[], prompt: string) => {
+  if (!ptyManager || !reviewDetector) {
+    return { success: false, error: 'Review system not initialized' }
+  }
+
+  try {
+    const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+
+    // Create hidden terminal
+    const terminalInfo = ptyManager.createTerminal({
+      cwd: projectPath,
+      hidden: true,
+    })
+
+    // Register this terminal with the review detector
+    reviewDetector.registerReview(terminalInfo.id, reviewId)
+
+    // Track active review
+    activeReviews.set(reviewId, {
+      terminalId: terminalInfo.id,
+      projectPath,
+    })
+
+    // Build the prompt with file list
+    const fileList = files.map(f => `- ${f}`).join('\n')
+    const fullPrompt = prompt.replace('{{files}}', fileList)
+
+    // Send the command to terminal
+    // Escape quotes in prompt for shell
+    const escapedPrompt = fullPrompt.replace(/"/g, '\\"')
+    ptyManager.write(terminalInfo.id, `claude "${escapedPrompt}"\n`)
+
+    console.log(`[Review] Started review ${reviewId} in terminal ${terminalInfo.id}`)
+
+    return { success: true, reviewId }
+  } catch (error: any) {
+    console.error('[Review] Failed to start review:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('review:cancel', async (_event, reviewId: string) => {
+  const review = activeReviews.get(reviewId)
+  if (review) {
+    ptyManager?.kill(review.terminalId)
+    activeReviews.delete(reviewId)
+    console.log(`[Review] Cancelled review ${reviewId}`)
+  }
+})
+
+// Get the raw output buffer for a review (for debugging)
+ipcMain.handle('review:getBuffer', async (_event, reviewId: string) => {
+  if (!reviewDetector) {
+    return { success: false, error: 'Review detector not initialized' }
+  }
+
+  const buffer = reviewDetector.getBuffer(reviewId)
+  if (buffer !== null) {
+    return { success: true, buffer }
+  }
+
+  // Try to get from active reviews
+  const review = activeReviews.get(reviewId)
+  if (review && reviewDetector) {
+    const terminalBuffer = reviewDetector.getBufferByTerminalId(review.terminalId)
+    if (terminalBuffer !== null) {
+      return { success: true, buffer: terminalBuffer }
+    }
+  }
+
+  return { success: false, error: 'Buffer not found' }
 })
 
 app.whenReady().then(() => {
