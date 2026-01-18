@@ -1330,6 +1330,37 @@ ipcMain.handle('ssh:get-status', async (_event, connectionId: string) => {
   return sshManager.getStatus(connectionId)
 })
 
+// Helper function to extract findings from Claude output
+function extractFindingsFromOutput(output: string): any[] {
+  try {
+    // Try to parse as JSON directly
+    const trimmed = output.trim()
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      return JSON.parse(trimmed)
+    }
+
+    // Try to extract from markdown code block
+    const codeBlockMatch = output.match(/```json\s*\n([\s\S]*?)\n```/)
+    if (codeBlockMatch) {
+      return JSON.parse(codeBlockMatch[1])
+    }
+
+    // Try to find any JSON array in the output
+    const arrayMatch = output.match(/\[[\s\S]*\]/)
+    if (arrayMatch) {
+      return JSON.parse(arrayMatch[0])
+    }
+
+    // No valid JSON found, return empty array
+    console.warn('[Review] No valid JSON found in output')
+    return []
+  } catch (e) {
+    console.error('[Review] Failed to parse output as JSON:', e)
+    console.error('[Review] Output was:', output.slice(0, 500))
+    return []
+  }
+}
+
 // Review IPC Handlers
 ipcMain.handle('review:start', async (_event, projectPath: string, files: string[], prompt: string) => {
   if (!ptyManager || !reviewDetector) {
@@ -1354,14 +1385,126 @@ ipcMain.handle('review:start', async (_event, projectPath: string, files: string
       projectPath,
     })
 
-    // Build the prompt with file list
-    const fileList = files.map(f => `- ${f}`).join('\n')
-    const fullPrompt = prompt.replace('{{files}}', fileList)
+    // Detect shell type to determine command syntax
+    const shell = terminalInfo.shell.toLowerCase()
+    const isCmd = shell.includes('cmd.exe') || shell.includes('comspec')
+    const isPowerShell = shell.includes('powershell') || shell.includes('pwsh')
+    const isWsl = shell.includes('wsl')
+    const isGitBash = shell.includes('bash.exe') || shell.includes('git\\bin\\bash') || shell.includes('git/bin/bash')
+    const isUnixLike = isWsl || isGitBash || (!isCmd && !isPowerShell)
 
-    // Send the command to terminal
-    // Escape quotes in prompt for shell
-    const escapedPrompt = fullPrompt.replace(/"/g, '\\"')
-    ptyManager.write(terminalInfo.id, `claude "${escapedPrompt}"\n`)
+    // Build the prompt with file list and add JSON enforcement at the end
+    const fileList = files.map(f => `- ${f}`).join('\n')
+    const promptWithFiles = prompt.replace('{{files}}', fileList)
+
+    // Add strict JSON output instructions at the end
+    const fullPrompt = `${promptWithFiles}
+
+IMPORTANT: You must output ONLY valid JSON. No explanatory text before or after. No markdown code blocks. Just the raw JSON array. If you use markdown, the parsing will fail.`
+
+    // Write prompt to temp file to avoid command-line length limits and escaping issues
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const os = await import('os')
+    const tmpDir = os.tmpdir()
+    const promptFile = path.join(tmpDir, `claude-review-${reviewId}-prompt.txt`)
+    const outputFile = path.join(tmpDir, `claude-review-${reviewId}-output.json`)
+
+    await fs.writeFile(promptFile, fullPrompt, 'utf-8')
+    console.log(`[Review] Wrote prompt to ${promptFile} (${fullPrompt.length} chars)`)
+    console.log(`[Review] Output will be written to ${outputFile}`)
+    console.log(`[Review] Detected shell: ${terminalInfo.shell}`)
+
+    // Build command based on shell type
+    let command: string
+    if (isCmd) {
+      // Windows cmd.exe - use type and > for redirection
+      command = `type "${promptFile}" | claude -p --dangerously-skip-permissions > "${outputFile}"\r\n`
+    } else if (isPowerShell) {
+      // PowerShell - use Get-Content (alias cat) and > for redirection
+      command = `Get-Content "${promptFile}" | claude -p --dangerously-skip-permissions > "${outputFile}"\r\n`
+    } else if (isWsl) {
+      // WSL - convert Windows paths to WSL paths and use Unix commands
+      const wslPromptFile = promptFile.replace(/^([A-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`).replace(/\\/g, '/')
+      const wslOutputFile = outputFile.replace(/^([A-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`).replace(/\\/g, '/')
+      command = `cat "${wslPromptFile}" | claude -p --dangerously-skip-permissions > "${wslOutputFile}"\r\n`
+    } else {
+      // Unix/Mac - use cat and < for redirection
+      command = `cat "${promptFile}" | claude -p --dangerously-skip-permissions > "${outputFile}"\r\n`
+    }
+
+    console.log(`[Review] Shell detected: ${terminalInfo.shell}`)
+    console.log(`[Review] Shell flags: isCmd=${isCmd}, isPowerShell=${isPowerShell}, isWsl=${isWsl}, isGitBash=${isGitBash}, isUnixLike=${isUnixLike}`)
+    console.log(`[Review] Running command:`, command.trim())
+    ptyManager.write(terminalInfo.id, command)
+
+    // Poll the output file to detect when review is complete
+    const pollInterval = setInterval(async () => {
+      try {
+        const stats = await fs.stat(outputFile)
+        if (stats.size > 0) {
+          // File has content, wait a bit more to ensure it's fully written
+          setTimeout(async () => {
+            try {
+              const output = await fs.readFile(outputFile, 'utf-8')
+              clearInterval(pollInterval)
+
+              // Parse and emit the results
+              console.log(`[Review] Got output (${output.length} chars)`)
+
+              // Try to extract findings from the output
+              const findings = extractFindingsFromOutput(output)
+
+              // Send completion event to renderer
+              if (mainWindow) {
+                mainWindow.webContents.send('review:completed', {
+                  reviewId,
+                  findings,
+                  summary: findings.length > 0 ? `Found ${findings.length} issue(s)` : 'No issues found',
+                })
+              }
+
+              // Kill the terminal
+              if (ptyManager) {
+                ptyManager.kill(terminalInfo.id)
+              }
+
+              // Clean up from active reviews
+              activeReviews.delete(reviewId)
+
+              // Clean up temp files
+              await fs.unlink(promptFile).catch(() => {})
+              await fs.unlink(outputFile).catch(() => {})
+              console.log(`[Review] Completed review ${reviewId} with ${findings.length} findings`)
+            } catch (e) {
+              console.error(`[Review] Error reading output file:`, e)
+              clearInterval(pollInterval)
+            }
+          }, 500) // Wait 500ms to ensure file is fully written
+        }
+      } catch (e) {
+        // File doesn't exist yet, keep polling
+      }
+    }, 1000) // Poll every second
+
+    // Timeout after 2 minutes - send failure event and clean up
+    setTimeout(async () => {
+      clearInterval(pollInterval)
+      console.log(`[Review] Review ${reviewId} timed out after 2 minutes`)
+
+      // Send failure event
+      if (mainWindow) {
+        mainWindow.webContents.send('review:failed', reviewId, 'Review timed out after 2 minutes')
+      }
+
+      // Kill terminal and clean up
+      if (ptyManager) {
+        ptyManager.kill(terminalInfo.id)
+      }
+      activeReviews.delete(reviewId)
+      await fs.unlink(promptFile).catch(() => {})
+      await fs.unlink(outputFile).catch(() => {})
+    }, 120000)
 
     console.log(`[Review] Started review ${reviewId} in terminal ${terminalInfo.id}`)
 

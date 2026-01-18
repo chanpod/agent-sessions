@@ -70,6 +70,7 @@ interface ReviewState {
 
   // Actions
   startReview: (projectId: string, files: string[], reviewId?: string) => string // Returns review ID
+  setReviewRunning: (reviewId: string) => void
   updateProgress: (progress: ReviewProgress) => void
   completeReview: (reviewId: string, findings: ReviewFinding[], summary?: string) => void
   failReview: (reviewId: string, error: string) => void
@@ -130,7 +131,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const review: ReviewResult = {
       id: reviewId,
       projectId,
-      status: 'pending',
+      status: 'running',
       startedAt: Date.now(),
       files,
       findings: [],
@@ -146,12 +147,26 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
         progress: {
           fileIndex: 0,
           totalFiles: files.length,
-          message: 'Starting review...',
+          message: 'Analyzing code...',
         },
       }
     })
 
     return reviewId
+  },
+
+  setReviewRunning: (reviewId) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review && review.status === 'pending') {
+        newReviews.set(reviewId, {
+          ...review,
+          status: 'running',
+        })
+      }
+      return { reviews: newReviews }
+    })
   },
 
   updateProgress: (progress) => {
