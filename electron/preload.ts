@@ -289,6 +289,11 @@ const electronAPI = {
       ipcRenderer.on('review:high-risk-findings', handler)
       return () => ipcRenderer.removeListener('review:high-risk-findings', handler)
     },
+    onFailed: (callback: (reviewId: string, error: string) => void) => {
+      const handler = (_: any, reviewId: string, error: string) => callback(reviewId, error)
+      ipcRenderer.on('review:failed', handler)
+      return () => ipcRenderer.removeListener('review:failed', handler)
+    },
   },
   store: {
     get: (key: string): Promise<unknown> =>

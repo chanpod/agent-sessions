@@ -1787,6 +1787,19 @@ ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, 
   review.inconsequentialFiles = inconsequentialFiles
   review.highRiskFiles = highRiskFiles
 
+  // Handle case where all files were cached (0 files to review)
+  if (inconsequentialFiles.length === 0) {
+    console.log('[Review] No files to review (all cached), sending empty findings')
+    const mainWindow = BrowserWindow.getAllWindows()[0]
+    if (mainWindow) {
+      mainWindow.webContents.send('review:inconsequential-findings', {
+        reviewId,
+        findings: []
+      })
+    }
+    return { success: true }
+  }
+
   try {
     // Split files into batches for parallel review
     const batchSize = 5
@@ -1833,6 +1846,12 @@ ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, 
     return { success: true, findingCount: findingsWithIds.length }
   } catch (error: any) {
     console.error(`[Review] Inconsequential review failed:`, error)
+
+    // Send failure event to frontend
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:failed', reviewId, error.message || 'Inconsequential review failed')
+    }
+
     return { success: false, error: error.message }
   }
 })
@@ -1976,6 +1995,12 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
     }
   } catch (error: any) {
     console.error(`[Review] High-risk file review failed:`, error)
+
+    // Send failure event to frontend
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:failed', reviewId, error.message || 'High-risk file review failed')
+    }
+
     return { success: false, error: error.message }
   }
 })

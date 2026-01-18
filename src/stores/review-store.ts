@@ -430,9 +430,48 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       return { reviews: newReviews }
     })
 
-    // Trigger inconsequential review via IPC
-    if (window.electron) {
-      window.electron.review.startInconsequentialReview(reviewId, inconsequentialFiles, highRiskFiles)
+    // Check if we already have findings (from cache)
+    const alreadyHasInconsequentialFindings = review.inconsequentialFindings.length > 0
+    const filesNeedingReview = inconsequentialFiles.filter((file) =>
+      !review.inconsequentialFindings.some((f) => f.file === file)
+    )
+
+    // If all inconsequential files already have cached findings, skip backend and show results
+    if (filesNeedingReview.length === 0 && alreadyHasInconsequentialFindings) {
+      console.log('[ReviewStore] All inconsequential files already have cached findings, skipping backend review')
+      // Already in 'reviewing-inconsequential' stage, findings are already set, UI will show results
+      return
+    }
+
+    // Only trigger backend review for files that need it
+    if (window.electron && filesNeedingReview.length > 0) {
+      console.log(`[ReviewStore] Triggering inconsequential review for ${filesNeedingReview.length} uncached files`)
+      window.electron.review.startInconsequentialReview(reviewId, filesNeedingReview, highRiskFiles)
+        .then((result) => {
+          if (!result.success) {
+            console.error('[ReviewStore] Inconsequential review failed:', result.error)
+            get().failReview(reviewId, result.error || 'Inconsequential review failed')
+          }
+        })
+        .catch((error) => {
+          console.error('[ReviewStore] Inconsequential review error:', error)
+          get().failReview(reviewId, error.message || 'Inconsequential review failed')
+        })
+    } else if (window.electron && filesNeedingReview.length === 0 && highRiskFiles.length > 0) {
+      // All inconsequential files were cached, move directly to high-risk
+      console.log('[ReviewStore] All inconsequential files cached, moving to high-risk review')
+      get().setReviewStage(reviewId, 'reviewing-high-risk')
+      window.electron.review.reviewHighRiskFile(reviewId)
+        .then((result) => {
+          if (!result.success) {
+            console.error('[ReviewStore] High-risk review failed:', result.error)
+            get().failReview(reviewId, result.error || 'High-risk review failed')
+          }
+        })
+        .catch((error) => {
+          console.error('[ReviewStore] High-risk review error:', error)
+          get().failReview(reviewId, error.message || 'High-risk review failed')
+        })
     }
   },
 
@@ -462,6 +501,33 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       }
       return { reviews: newReviews }
     })
+
+    // Auto-advance: If no findings and there are high-risk files, move to high-risk stage
+    const review = get().reviews.get(reviewId)
+    if (review && findings.length === 0 && review.highRiskFiles && review.highRiskFiles.length > 0) {
+      console.log('[ReviewStore] No inconsequential findings, auto-advancing to high-risk review')
+      get().setReviewStage(reviewId, 'reviewing-high-risk')
+      // Trigger first high-risk file review
+      if (window.electron) {
+        window.electron.review.reviewHighRiskFile(reviewId)
+      }
+    } else if (review && findings.length === 0 && (!review.highRiskFiles || review.highRiskFiles.length === 0)) {
+      // No findings and no high-risk files = completed
+      console.log('[ReviewStore] No findings at all, marking review as completed')
+      get().setReviewStage(reviewId, 'completed')
+      set((state) => {
+        const newReviews = new Map(state.reviews)
+        const rev = newReviews.get(reviewId)
+        if (rev) {
+          newReviews.set(reviewId, {
+            ...rev,
+            status: 'completed',
+            completedAt: Date.now(),
+          })
+        }
+        return { reviews: newReviews }
+      })
+    }
   },
 
   addHighRiskFindings: (reviewId, findings) => {
@@ -651,6 +717,16 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       // Trigger next high-risk file review via IPC
       if (window.electron) {
         window.electron.review.reviewHighRiskFile(reviewId)
+          .then((result) => {
+            if (!result.success) {
+              console.error('[ReviewStore] High-risk file review failed:', result.error)
+              get().failReview(reviewId, result.error || 'High-risk file review failed')
+            }
+          })
+          .catch((error) => {
+            console.error('[ReviewStore] High-risk file review error:', error)
+            get().failReview(reviewId, error.message || 'High-risk file review failed')
+          })
       }
     }
   },

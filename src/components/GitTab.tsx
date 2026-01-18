@@ -51,6 +51,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const setCachedFileReview = useReviewStore((state) => state.setCachedFileReview)
   const loadCacheFromStorage = useReviewStore((state) => state.loadCacheFromStorage)
   const setReviewStage = useReviewStore((state) => state.setReviewStage)
+  const failReview = useReviewStore((state) => state.failReview)
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
@@ -116,9 +117,15 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     const unsubClassifications = window.electron.review.onClassifications((event) => {
       console.log('[GitTab] Classifications received:', event)
-      setClassifications(event.reviewId, event.classifications)
 
-      // Cache each classification
+      // IMPORTANT: Merge new classifications with existing cached ones
+      const existingReview = useReviewStore.getState().reviews.get(event.reviewId)
+      const existingClassifications = existingReview?.classifications || []
+      const mergedClassifications = [...existingClassifications, ...event.classifications]
+
+      setClassifications(event.reviewId, mergedClassifications)
+
+      // Cache each new classification
       event.classifications.forEach((classification: any) => {
         const hash = currentFileHashes[classification.file]
         if (hash) {
@@ -197,13 +204,20 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       })
     })
 
+    const unsubFailed = window.electron.review.onFailed((reviewId: string, error: string) => {
+      console.error('[GitTab] Review failed:', reviewId, error)
+      failReview(reviewId, error)
+      setIsReviewing(false)
+    })
+
     return () => {
       unsubClassifications()
       unsubInconseq()
       unsubHighRiskStatus()
       unsubHighRiskFindings()
+      unsubFailed()
     }
-  }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings, currentFileHashes, projectPath, getCachedFileReview, setCachedFileReview])
+  }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings, failReview, currentFileHashes, projectPath, getCachedFileReview, setCachedFileReview])
 
   const handleStartReview = async () => {
     if (!window.electron || changedFiles.length === 0) return

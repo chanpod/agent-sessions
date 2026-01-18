@@ -15,8 +15,21 @@ export function ReviewPanel({ projectPath }: ReviewPanelProps) {
 
   // IMPORTANT: Select the specific review object, not the entire Map
   // This ensures re-renders when the review updates
-  const review = useReviewStore((state) =>
-    state.activeReviewId ? state.reviews.get(state.activeReviewId) : null
+  // We need to use a custom equality function to ensure Zustand detects changes
+  const review = useReviewStore(
+    (state) => (state.activeReviewId ? state.reviews.get(state.activeReviewId) : null),
+    (a, b) => {
+      // Custom equality: force re-render if either is null or if they're different objects
+      if (a === null || b === null) return a === b
+      // Deep comparison of key properties that change during the review
+      return (
+        a.stage === b.stage &&
+        a.status === b.status &&
+        a.inconsequentialFindings.length === b.inconsequentialFindings.length &&
+        a.highRiskFindings.length === b.highRiskFindings.length &&
+        a.currentHighRiskFileIndex === b.currentHighRiskFileIndex
+      )
+    }
   )
 
   const setVisibility = useReviewStore((state) => state.setVisibility)
