@@ -5,7 +5,7 @@ import { SSHConnectionModal } from './SSHConnectionModal'
 import type { SSHConnection } from '../stores/ssh-store'
 
 export function SSHConnectionsList() {
-  const { connections, removeConnection, connectionStatuses, setConnectionStatus } = useSSHStore()
+  const { connections, removeConnection } = useSSHStore()
   const [showModal, setShowModal] = useState(false)
   const [editingConnection, setEditingConnection] = useState<SSHConnection | undefined>()
   const [connectionStatusMap, setConnectionStatusMap] = useState<Map<string, boolean>>(new Map())

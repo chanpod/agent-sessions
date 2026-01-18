@@ -29,7 +29,7 @@ export function Terminal({ sessionId, gridId }: TerminalProps) {
     if (!containerRef.current) return
 
     // Get or create terminal instance from registry
-    const { terminal, isNew } = getOrCreateTerminal(sessionId, containerRef.current)
+    const { isNew } = getOrCreateTerminal(sessionId, containerRef.current)
 
     // Only set up resize observer once per mount
     if (!initializedRef.current) {

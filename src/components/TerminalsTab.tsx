@@ -1,7 +1,7 @@
 import { Terminal, Plus, Server, Play, Command, RefreshCw, Package } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
-import { useServerStore, ServerInstance } from '../stores/server-store'
+import { useServerStore } from '../stores/server-store'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem, ServerItem } from './ProjectItem'
 import { Project } from '../stores/project-store'

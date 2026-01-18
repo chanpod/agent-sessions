@@ -13,16 +13,10 @@ import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
-import { useFileViewerStore } from '../stores/file-viewer-store'
 
 interface ShellInfo {
   name: string
   path: string
-}
-
-interface ScriptInfo {
-  name: string
-  command: string
 }
 
 interface ProjectItemProps {

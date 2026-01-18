@@ -5,6 +5,8 @@ export function UpdateNotification() {
   const [isVisible, setIsVisible] = useState(false)
 
   useEffect(() => {
+    if (!window.electron) return
+
     // Listen for update downloaded event
     const cleanup = window.electron.updater.onUpdateDownloaded((info) => {
       console.log('Update downloaded:', info)
@@ -16,6 +18,7 @@ export function UpdateNotification() {
   }, [])
 
   const handleUpdate = async () => {
+    if (!window.electron) return
     await window.electron.updater.install()
   }
 
