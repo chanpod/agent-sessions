@@ -265,6 +265,8 @@ const electronAPI = {
       ipcRenderer.invoke('review:review-high-risk-file', reviewId),
     cancel: (reviewId: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('review:cancel', reviewId),
+    generateFileHashes: (projectPath: string, files: string[]): Promise<{ success: boolean; hashes?: Record<string, string>; error?: string }> =>
+      ipcRenderer.invoke('review:generateFileHashes', projectPath, files),
 
     // Events
     onClassifications: (callback: (event: any) => void) => {

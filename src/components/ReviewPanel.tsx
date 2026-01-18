@@ -214,10 +214,12 @@ function ClassificationReviewStage({
       </div>
 
       <div className="px-6 py-4 border-t border-zinc-700 bg-zinc-800/50 flex items-center justify-between">
-        <p className="text-xs text-zinc-500">
-          {classifications.length} files classified • {inconsequentialFiles.length} low-risk • {highRiskFiles.length}{' '}
-          high-risk
-        </p>
+        <div className="flex items-center gap-4">
+          <p className="text-xs text-zinc-500">
+            {classifications.length} files classified • {inconsequentialFiles.length} low-risk • {highRiskFiles.length}{' '}
+            high-risk
+          </p>
+        </div>
         <button
           onClick={onConfirm}
           className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded font-medium transition-colors flex items-center gap-2"
@@ -295,6 +297,7 @@ function InconsequentialResultsStage({
   const visibleFindings = findings.filter((f) => !f.isApplied && !f.isDismissed)
   const selectedCount = visibleFindings.filter((f) => f.isSelected).length
   const allSelected = visibleFindings.length > 0 && selectedCount === visibleFindings.length
+  const cachedCount = visibleFindings.filter((f) => f.isCached).length
 
   return (
     <div className="flex flex-col h-full">
@@ -344,6 +347,11 @@ function InconsequentialResultsStage({
               Apply Selected ({selectedCount})
             </button>
           )}
+          {cachedCount > 0 && (
+            <span className="text-xs text-blue-400">
+              {cachedCount} cached
+            </span>
+          )}
         </div>
         <button
           onClick={onContinue}
@@ -380,7 +388,14 @@ function InconsequentialFindingCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2 mb-2">
             <div>
-              <h4 className="text-sm font-medium text-zinc-200">{finding.title}</h4>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-medium text-zinc-200">{finding.title}</h4>
+                {finding.isCached && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                    Cached
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2 mt-1">
                 <FileCode className="w-3 h-3 text-zinc-500" />
                 <span className="text-xs text-zinc-500">
@@ -391,7 +406,7 @@ function InconsequentialFindingCard({
             </div>
             <span
               className={cn(
-                'text-xs px-2 py-0.5 rounded',
+                'text-xs px-2 py-0.5 rounded flex-shrink-0',
                 finding.severity === 'critical' && 'bg-red-500/20 text-red-400',
                 finding.severity === 'warning' && 'bg-yellow-500/20 text-yellow-400',
                 finding.severity === 'info' && 'bg-blue-500/20 text-blue-400',
@@ -542,13 +557,22 @@ function HighRiskFindingCard({ finding }: { finding: ReviewFinding }) {
     <div className="bg-zinc-800/50 border-2 border-orange-500/30 rounded-lg p-4">
       <div className="flex items-start justify-between gap-2 mb-3">
         <div className="flex-1">
-          <h4 className="text-base font-medium text-zinc-200 mb-1">{finding.title}</h4>
+          <div className="flex items-center gap-2 mb-1">
+            <h4 className="text-base font-medium text-zinc-200">{finding.title}</h4>
+            {finding.isCached && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                Cached
+              </span>
+            )}
+          </div>
           {/* Verification Badge */}
           <div className="flex items-center gap-2">
-            <span className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 flex items-center gap-1">
-              <Check className="w-3 h-3" />
-              Verified
-            </span>
+            {!finding.isCached && (
+              <span className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 flex items-center gap-1">
+                <Check className="w-3 h-3" />
+                Verified
+              </span>
+            )}
             {finding.confidence && (
               <span className="text-xs text-zinc-500">
                 {confidencePercent}% confidence

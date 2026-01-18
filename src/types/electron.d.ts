@@ -232,6 +232,7 @@ export interface ElectronAPI {
     start: (projectPath: string, files: string[], prompt: string) => Promise<ReviewResult>
     cancel: (reviewId: string) => Promise<void>
     getBuffer: (reviewId: string) => Promise<{ success: boolean; buffer?: string; error?: string }>
+    generateFileHashes: (projectPath: string, files: string[]) => Promise<{ success: boolean; hashes?: Record<string, string>; error?: string }>
     onCompleted: (callback: (event: ReviewCompletedEvent) => void) => () => void
     onFailed: (callback: (reviewId: string, error: string) => void) => () => void
     onProgress: (callback: (event: ReviewProgressEvent) => void) => () => void

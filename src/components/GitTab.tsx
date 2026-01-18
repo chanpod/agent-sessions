@@ -47,6 +47,10 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const addHighRiskFindings = useReviewStore((state) => state.addHighRiskFindings)
   const updateHighRiskStatus = useReviewStore((state) => state.updateHighRiskStatus)
   const setVisibility = useReviewStore((state) => state.setVisibility)
+  const getCachedFileReview = useReviewStore((state) => state.getCachedFileReview)
+  const setCachedFileReview = useReviewStore((state) => state.setCachedFileReview)
+  const loadCacheFromStorage = useReviewStore((state) => state.loadCacheFromStorage)
+  const setReviewStage = useReviewStore((state) => state.setReviewStage)
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
@@ -62,10 +66,16 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isReviewing, setIsReviewing] = useState(false)
   const [currentReviewId, setCurrentReviewId] = useState<string | null>(null)
+  const [currentFileHashes, setCurrentFileHashes] = useState<Record<string, string>>({})
 
   const branchBtnRef = useRef<HTMLButtonElement>(null)
   const branchMenuRef = useRef<HTMLDivElement>(null)
   const [branchMenuPos, setBranchMenuPos] = useState<{ top: number; left: number } | null>(null)
+
+  // Load cache from storage on mount
+  useEffect(() => {
+    loadCacheFromStorage()
+  }, [loadCacheFromStorage])
 
   // Fetch branches when branch menu opens
   useEffect(() => {
@@ -106,17 +116,51 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     const unsubClassifications = window.electron.review.onClassifications((event) => {
       console.log('[GitTab] Classifications received:', event)
-      console.log('[GitTab] Current review state:', reviews.get(event.reviewId))
       setClassifications(event.reviewId, event.classifications)
-      // Log after update
-      setTimeout(() => {
-        console.log('[GitTab] Review state after setClassifications:', reviews.get(event.reviewId))
-      }, 100)
+
+      // Cache each classification
+      event.classifications.forEach((classification: any) => {
+        const hash = currentFileHashes[classification.file]
+        if (hash) {
+          setCachedFileReview({
+            file: classification.file,
+            diffHash: hash,
+            classification,
+            findings: [], // Findings will be added later
+            reviewedAt: Date.now(),
+            projectId: projectPath,
+          })
+        }
+      })
     })
 
     const unsubInconseq = window.electron.review.onInconsequentialFindings((event) => {
       console.log('[GitTab] Inconsequential findings received:', event)
       setInconsequentialFindings(event.reviewId, event.findings)
+
+      // Cache each finding with its file
+      const findingsByFile = new Map<string, any[]>()
+      event.findings.forEach((finding: any) => {
+        const existing = findingsByFile.get(finding.file) || []
+        existing.push(finding)
+        findingsByFile.set(finding.file, existing)
+      })
+
+      findingsByFile.forEach((findings, file) => {
+        const hash = currentFileHashes[file]
+        if (hash) {
+          // Get existing cache or create new
+          const existing = getCachedFileReview(projectPath, file, hash)
+          setCachedFileReview({
+            file,
+            diffHash: hash,
+            classification: existing?.classification,
+            findings,
+            reviewedAt: Date.now(),
+            projectId: projectPath,
+          })
+        }
+      })
     })
 
     const unsubHighRiskStatus = window.electron.review.onHighRiskStatus((event) => {
@@ -127,6 +171,30 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     const unsubHighRiskFindings = window.electron.review.onHighRiskFindings((event) => {
       console.log('[GitTab] High-risk findings:', event)
       addHighRiskFindings(event.reviewId, event.findings)
+
+      // Cache each finding with its file
+      const findingsByFile = new Map<string, any[]>()
+      event.findings.forEach((finding: any) => {
+        const existing = findingsByFile.get(finding.file) || []
+        existing.push(finding)
+        findingsByFile.set(finding.file, existing)
+      })
+
+      findingsByFile.forEach((findings, file) => {
+        const hash = currentFileHashes[file]
+        if (hash) {
+          // Get existing cache or create new
+          const existing = getCachedFileReview(projectPath, file, hash)
+          setCachedFileReview({
+            file,
+            diffHash: hash,
+            classification: existing?.classification,
+            findings,
+            reviewedAt: Date.now(),
+            projectId: projectPath,
+          })
+        }
+      })
     })
 
     return () => {
@@ -135,7 +203,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       unsubHighRiskStatus()
       unsubHighRiskFindings()
     }
-  }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings])
+  }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings, currentFileHashes, projectPath, getCachedFileReview, setCachedFileReview])
 
   const handleStartReview = async () => {
     if (!window.electron || changedFiles.length === 0) return
@@ -148,22 +216,111 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     // Generate reviewId on frontend
     const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
+    console.log('[GitTab] Starting review with cache checking for', filesToReview.length, 'files')
+
+    // Step 1: Generate hashes for all files
+    const hashResult = await window.electron.review.generateFileHashes(projectPath, filesToReview)
+    if (!hashResult.success || !hashResult.hashes) {
+      console.error('[GitTab] Failed to generate file hashes:', hashResult.error)
+      setIsReviewing(false)
+      return
+    }
+
+    const fileHashes = hashResult.hashes
+    console.log('[GitTab] Generated hashes for', Object.keys(fileHashes).length, 'files')
+
+    // Store hashes in state so event listeners can use them for caching
+    setCurrentFileHashes(fileHashes)
+
+    // Step 2: Check cache for each file
+    const cachedFiles: string[] = []
+    const uncachedFiles: string[] = []
+    const cachedClassifications: any[] = []
+    const cachedFindings: any[] = []
+
+    for (const file of filesToReview) {
+      const hash = fileHashes[file]
+      if (!hash) {
+        uncachedFiles.push(file)
+        continue
+      }
+
+      const cached = getCachedFileReview(projectPath, file, hash)
+      if (cached) {
+        console.log(`[GitTab] Cache HIT for ${file} (hash: ${hash.slice(0, 8)}...)`)
+        cachedFiles.push(file)
+
+        // Collect cached classification
+        if (cached.classification) {
+          cachedClassifications.push(cached.classification)
+        }
+
+        // Collect cached findings (mark as cached)
+        const findingsWithCacheFlag = cached.findings.map(f => ({ ...f, isCached: true }))
+        cachedFindings.push(...findingsWithCacheFlag)
+      } else {
+        console.log(`[GitTab] Cache MISS for ${file} (hash: ${hash.slice(0, 8)}...)`)
+        uncachedFiles.push(file)
+      }
+    }
+
+    console.log(`[GitTab] Cache summary: ${cachedFiles.length} cached, ${uncachedFiles.length} need review`)
+
     // Start review in store FIRST (this opens the dialog immediately)
     startReview(projectPath, filesToReview, reviewId)
     setCurrentReviewId(reviewId)
 
-    // Open review panel immediately to show "Classifying" stage
+    // Open review panel immediately
     setVisibility(true)
 
-    // Now start the backend classification with our reviewId
-    // This happens in the background while UI shows "Classifying..."
-    const result = await window.electron.review.start(projectPath, filesToReview, reviewId)
+    // Step 3: If all files are cached, skip classification and go straight to results
+    if (uncachedFiles.length === 0) {
+      console.log('[GitTab] All files cached! Showing cached results')
+
+      // Immediately set classifications from cache
+      setClassifications(reviewId, cachedClassifications)
+
+      // Skip to results stage with cached findings
+      const inconsequentialClassifications = cachedClassifications.filter(c => c.riskLevel === 'inconsequential')
+      const highRiskClassifications = cachedClassifications.filter(c => c.riskLevel === 'high-risk')
+
+      const inconsequentialFindings = cachedFindings.filter(f =>
+        inconsequentialClassifications.some(c => c.file === f.file)
+      )
+      const highRiskFindings = cachedFindings.filter(f =>
+        highRiskClassifications.some(c => c.file === f.file)
+      )
+
+      setInconsequentialFindings(reviewId, inconsequentialFindings)
+      highRiskFindings.forEach(f => addHighRiskFindings(reviewId, [f]))
+
+      // Move to appropriate stage
+      if (inconsequentialFindings.length > 0) {
+        setReviewStage(reviewId, 'reviewing-inconsequential')
+      } else if (highRiskFindings.length > 0) {
+        setReviewStage(reviewId, 'reviewing-high-risk')
+      } else {
+        setReviewStage(reviewId, 'completed')
+      }
+
+      setIsReviewing(false)
+      return
+    }
+
+    // Step 4: Only review uncached files
+    console.log('[GitTab] Reviewing uncached files:', uncachedFiles)
+    const result = await window.electron.review.start(projectPath, uncachedFiles, reviewId)
 
     if (!result.success) {
       console.error('Failed to start review:', result.error)
       setIsReviewing(false)
       // TODO: Show error in UI
+      return
     }
+
+    // Step 5: Merge cached classifications with new ones when they arrive
+    // This will be handled by the event listeners below
+    console.log('[GitTab] Review started, will merge cached data with new results')
   }
 
   const handleBranchClick = (e: React.MouseEvent) => {

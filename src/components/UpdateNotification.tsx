@@ -22,7 +22,12 @@ export function UpdateNotification() {
     await window.electron.updater.install()
   }
 
-  const handleDismiss = () => {
+  const handleDismiss = async () => {
+    if (!window.electron || !updateInfo) return
+
+    // Dismiss the update in the database so we don't show it again for 24 hours
+    await window.electron.updater.dismiss(updateInfo.version)
+
     setIsVisible(false)
   }
 

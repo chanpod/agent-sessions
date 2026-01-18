@@ -29,6 +29,21 @@ export interface ReviewFinding {
     oldCode: string
     newCode: string
   }
+
+  // Cache metadata
+  isCached?: boolean // Whether this finding came from cache
+}
+
+/**
+ * Per-File Review Cache
+ */
+export interface FileReviewCache {
+  file: string // File path
+  diffHash: string // Hash of this file's git diff
+  classification?: FileClassification // Risk classification
+  findings: ReviewFinding[] // Findings for this file
+  reviewedAt: number // Timestamp when reviewed
+  projectId: string // Which project this belongs to
 }
 
 /**
@@ -118,6 +133,9 @@ interface ReviewState {
   // Review configurations by project ID
   configs: Map<string, ReviewConfig>
 
+  // Per-file review cache: key is "projectId:file:diffHash"
+  fileReviewCache: Map<string, FileReviewCache>
+
   // Actions
   startReview: (projectId: string, files: string[], reviewId?: string) => string // Returns review ID
   setReviewRunning: (reviewId: string) => void
@@ -149,6 +167,13 @@ interface ReviewState {
   // Config actions
   getConfig: (projectId: string) => ReviewConfig
   updateConfig: (projectId: string, config: Partial<ReviewConfig>) => void
+
+  // Cache actions
+  getCachedFileReview: (projectId: string, file: string, diffHash: string) => FileReviewCache | null
+  setCachedFileReview: (cache: FileReviewCache) => void
+  clearExpiredCache: (maxAgeMs: number) => void
+  loadCacheFromStorage: () => void
+  saveCacheToStorage: () => void
 }
 
 // Default configuration
@@ -182,6 +207,10 @@ Output ONLY a JSON array. If no issues, output: []`,
   maxFiles: 50,
 }
 
+// Cache storage key
+const CACHE_STORAGE_KEY = 'review-file-cache'
+const CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000 // 7 days
+
 export const useReviewStore = create<ReviewState>((set, get) => ({
   reviews: new Map(),
   progress: null,
@@ -189,6 +218,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   activeReviewId: null,
   selectedFindingId: null,
   configs: new Map(),
+  fileReviewCache: new Map(),
 
   startReview: (projectId, files, existingReviewId) => {
     const reviewId = existingReviewId || `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -637,5 +667,95 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       }
       return { reviews: newReviews }
     })
+  },
+
+  // Cache actions
+  getCachedFileReview: (projectId, file, diffHash) => {
+    const { fileReviewCache } = get()
+    const key = `${projectId}:${file}:${diffHash}`
+    const cached = fileReviewCache.get(key)
+
+    if (!cached) return null
+
+    // Check if cache is expired
+    if (Date.now() - cached.reviewedAt > CACHE_MAX_AGE) {
+      // Remove expired cache
+      set((state) => {
+        const newCache = new Map(state.fileReviewCache)
+        newCache.delete(key)
+        return { fileReviewCache: newCache }
+      })
+      return null
+    }
+
+    console.log('[ReviewStore] Cache hit for', file, 'hash:', diffHash.slice(0, 8))
+    return cached
+  },
+
+  setCachedFileReview: (cache) => {
+    const key = `${cache.projectId}:${cache.file}:${cache.diffHash}`
+    console.log('[ReviewStore] Caching review for', cache.file, 'hash:', cache.diffHash.slice(0, 8))
+
+    set((state) => {
+      const newCache = new Map(state.fileReviewCache)
+      newCache.set(key, cache)
+      return { fileReviewCache: newCache }
+    })
+
+    // Auto-save to storage
+    get().saveCacheToStorage()
+  },
+
+  clearExpiredCache: (maxAgeMs) => {
+    const now = Date.now()
+    set((state) => {
+      const newCache = new Map(state.fileReviewCache)
+      let removed = 0
+
+      for (const [key, cache] of newCache.entries()) {
+        if (now - cache.reviewedAt > maxAgeMs) {
+          newCache.delete(key)
+          removed++
+        }
+      }
+
+      if (removed > 0) {
+        console.log('[ReviewStore] Cleared', removed, 'expired cache entries')
+      }
+
+      return { fileReviewCache: newCache }
+    })
+
+    // Auto-save after cleanup
+    get().saveCacheToStorage()
+  },
+
+  loadCacheFromStorage: () => {
+    try {
+      const stored = localStorage.getItem(CACHE_STORAGE_KEY)
+      if (!stored) return
+
+      const parsed = JSON.parse(stored) as Array<[string, FileReviewCache]>
+      const newCache = new Map(parsed)
+
+      console.log('[ReviewStore] Loaded', newCache.size, 'cached reviews from storage')
+      set({ fileReviewCache: newCache })
+
+      // Clean up expired entries on load
+      get().clearExpiredCache(CACHE_MAX_AGE)
+    } catch (error) {
+      console.error('[ReviewStore] Failed to load cache from storage:', error)
+    }
+  },
+
+  saveCacheToStorage: () => {
+    try {
+      const { fileReviewCache } = get()
+      const serialized = JSON.stringify(Array.from(fileReviewCache.entries()))
+      localStorage.setItem(CACHE_STORAGE_KEY, serialized)
+      console.log('[ReviewStore] Saved', fileReviewCache.size, 'cached reviews to storage')
+    } catch (error) {
+      console.error('[ReviewStore] Failed to save cache to storage:', error)
+    }
   },
 }))

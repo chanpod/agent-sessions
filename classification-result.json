@@ -1,0 +1,67 @@
+[
+  {
+    "file": "electron/main.ts",
+    "riskLevel": "HIGH-RISK",
+    "reasoning": "Significant business logic changes including multi-stage review system, IPC handler modifications, update dismissal logic with database operations, and complex review orchestration with parallel task execution"
+  },
+  {
+    "file": "electron/preload.ts",
+    "riskLevel": "HIGH-RISK",
+    "reasoning": "API contract changes that modify IPC communication signatures - breaking changes to review API that frontend depends on"
+  },
+  {
+    "file": "src/components/GitTab.tsx",
+    "riskLevel": "HIGH-RISK",
+    "reasoning": "Modified review initialization flow and event handling logic that changes user-facing behavior and control flow"
+  },
+  {
+    "file": "src/components/UpdateNotification.tsx",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Simple addition of async call to dismiss function - minimal logic change, no complex conditions"
+  },
+  {
+    "file": "src/types/electron.d.ts",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Type definition updates only - no runtime logic, just TypeScript interface changes"
+  },
+  {
+    "file": "BACKEND_INTEGRATION.md",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Documentation file - no code changes"
+  },
+  {
+    "file": "IMPLEMENTATION_STATUS.md",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Documentation file - no code changes"
+  },
+  {
+    "file": "MIGRATION_PLAN.md",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Documentation file - no code changes"
+  },
+  {
+    "file": "MULTI_AGENT_VERIFICATION.md",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Documentation file - no code changes"
+  },
+  {
+    "file": "MULTI_STAGE_REVIEW.md",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Documentation file - no code changes"
+  },
+  {
+    "file": "REVIEW_PROMPTS.md",
+    "riskLevel": "INCONSEQUENTIAL",
+    "reasoning": "Documentation file - no code changes"
+  },
+  {
+    "file": "electron/background-claude-manager.ts",
+    "riskLevel": "HIGH-RISK",
+    "reasoning": "New file - without seeing the diff cannot verify, but based on usage in main.ts this manages background task execution which is critical business logic"
+  },
+  {
+    "file": "src/components/ReviewPanel.new.tsx",
+    "riskLevel": "HIGH-RISK",
+    "reasoning": "New file - without seeing the diff cannot verify, but likely contains UI logic for displaying review results and user interactions"
+  }
+]

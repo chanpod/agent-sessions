@@ -12,6 +12,7 @@ import { ReviewDetector } from './output-monitors/review-detector.js'
 import { BackgroundClaudeManager } from './background-claude-manager.js'
 import { readFileSync } from 'fs'
 import { join, basename } from 'path'
+import { createHash } from 'crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -504,6 +505,29 @@ function getFileImports(file: string, projectPath: string): string {
   const content = getFileContent(file, projectPath)
   const imports = content.match(/^import .* from .*/gm) || []
   return imports.join('\n')
+}
+
+/**
+ * Generate hash from file's git diff
+ */
+function hashFileDiff(file: string, projectPath: string): string {
+  const diff = getFileDiff(file, projectPath)
+  return createHash('sha256').update(diff).digest('hex')
+}
+
+/**
+ * Generate per-file diff hashes for all files
+ */
+function generatePerFileDiffHashes(files: string[], projectPath: string): Map<string, string> {
+  const hashes = new Map<string, string>()
+
+  for (const file of files) {
+    const hash = hashFileDiff(file, projectPath)
+    hashes.set(file, hash)
+    console.log(`[Review] Hash for ${file}: ${hash.slice(0, 8)}...`)
+  }
+
+  return hashes
 }
 
 /**
@@ -1498,6 +1522,24 @@ ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
   } catch (err) {
     console.error('Failed to list directory:', err)
     return { success: false, error: String(err) }
+  }
+})
+
+/**
+ * Generate per-file diff hashes
+ */
+ipcMain.handle('review:generateFileHashes', async (_event, projectPath: string, files: string[]) => {
+  try {
+    const hashes = generatePerFileDiffHashes(files, projectPath)
+    // Convert Map to object for IPC
+    const hashesObj: Record<string, string> = {}
+    hashes.forEach((hash, file) => {
+      hashesObj[file] = hash
+    })
+    return { success: true, hashes: hashesObj }
+  } catch (error: any) {
+    console.error('[Review] Failed to generate file hashes:', error)
+    return { success: false, error: error.message }
   }
 })
 
