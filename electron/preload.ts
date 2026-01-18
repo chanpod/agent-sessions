@@ -257,26 +257,35 @@ const electronAPI = {
     },
   },
   review: {
-    start: (projectPath: string, files: string[], prompt: string): Promise<ReviewResult> =>
-      ipcRenderer.invoke('review:start', projectPath, files, prompt),
-    cancel: (reviewId: string): Promise<void> =>
+    start: (projectPath: string, files: string[], reviewId?: string): Promise<ReviewResult> =>
+      ipcRenderer.invoke('review:start', projectPath, files, reviewId),
+    startInconsequentialReview: (reviewId: string, inconsequentialFiles: string[], highRiskFiles: string[]): Promise<{ success: boolean; findingCount?: number; error?: string }> =>
+      ipcRenderer.invoke('review:start-inconsequential', reviewId, inconsequentialFiles, highRiskFiles),
+    reviewHighRiskFile: (reviewId: string): Promise<{ success: boolean; complete?: boolean; findingCount?: number; error?: string }> =>
+      ipcRenderer.invoke('review:review-high-risk-file', reviewId),
+    cancel: (reviewId: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('review:cancel', reviewId),
-    getBuffer: (reviewId: string): Promise<{ success: boolean; buffer?: string; error?: string }> =>
-      ipcRenderer.invoke('review:getBuffer', reviewId),
-    onCompleted: (callback: (event: ReviewCompletedEvent) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: ReviewCompletedEvent) => callback(data)
-      ipcRenderer.on('review:completed', handler)
-      return () => ipcRenderer.removeListener('review:completed', handler)
+
+    // Events
+    onClassifications: (callback: (event: any) => void) => {
+      const handler = (_: any, event: any) => callback(event)
+      ipcRenderer.on('review:classifications', handler)
+      return () => ipcRenderer.removeListener('review:classifications', handler)
     },
-    onFailed: (callback: (reviewId: string, error: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, reviewId: string, error: string) => callback(reviewId, error)
-      ipcRenderer.on('review:failed', handler)
-      return () => ipcRenderer.removeListener('review:failed', handler)
+    onInconsequentialFindings: (callback: (event: any) => void) => {
+      const handler = (_: any, event: any) => callback(event)
+      ipcRenderer.on('review:inconsequential-findings', handler)
+      return () => ipcRenderer.removeListener('review:inconsequential-findings', handler)
     },
-    onProgress: (callback: (event: ReviewProgressEvent) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: ReviewProgressEvent) => callback(data)
-      ipcRenderer.on('review:progress', handler)
-      return () => ipcRenderer.removeListener('review:progress', handler)
+    onHighRiskStatus: (callback: (event: any) => void) => {
+      const handler = (_: any, event: any) => callback(event)
+      ipcRenderer.on('review:high-risk-status', handler)
+      return () => ipcRenderer.removeListener('review:high-risk-status', handler)
+    },
+    onHighRiskFindings: (callback: (event: any) => void) => {
+      const handler = (_: any, event: any) => callback(event)
+      ipcRenderer.on('review:high-risk-findings', handler)
+      return () => ipcRenderer.removeListener('review:high-risk-findings', handler)
     },
   },
   store: {
@@ -316,6 +325,8 @@ const electronAPI = {
   updater: {
     install: (): Promise<void> =>
       ipcRenderer.invoke('update:install'),
+    dismiss: (version: string): Promise<void> =>
+      ipcRenderer.invoke('update:dismiss', version),
     onUpdateAvailable: (callback: (info: any) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
       ipcRenderer.on('update:available', handler)

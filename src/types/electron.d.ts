@@ -256,6 +256,7 @@ export interface ElectronAPI {
   }
   updater: {
     install: () => Promise<void>
+    dismiss: (version: string) => Promise<void>
     onUpdateAvailable: (callback: (info: any) => void) => () => void
     onUpdateDownloaded: (callback: (info: any) => void) => () => void
     onDownloadProgress: (callback: (progress: any) => void) => () => void

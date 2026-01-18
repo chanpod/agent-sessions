@@ -34,7 +34,19 @@ function getFileStatusIcon(status: ChangedFile['status']) {
 
 export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
   const { openFile, setShowDiff } = useFileViewerStore()
-  const { startReview, completeReview, failReview, getConfig, reviews, setVisibility, activeReviewId } = useReviewStore()
+
+  // Use selectors to properly track changes
+  const activeReviewId = useReviewStore((state) => state.activeReviewId)
+  const activeReview = useReviewStore((state) =>
+    state.activeReviewId ? state.reviews.get(state.activeReviewId) : null
+  )
+
+  const startReview = useReviewStore((state) => state.startReview)
+  const setClassifications = useReviewStore((state) => state.setClassifications)
+  const setInconsequentialFindings = useReviewStore((state) => state.setInconsequentialFindings)
+  const addHighRiskFindings = useReviewStore((state) => state.addHighRiskFindings)
+  const updateHighRiskStatus = useReviewStore((state) => state.updateHighRiskStatus)
+  const setVisibility = useReviewStore((state) => state.setVisibility)
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
@@ -88,31 +100,42 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Listen for review completion/failure events
+  // Listen for review events (multi-stage review)
   useEffect(() => {
     if (!window.electron) return
 
-    const unsubCompleted = window.electron.review.onCompleted((event) => {
-      console.log('[GitTab] Review completed:', event)
-      if (event.reviewId === currentReviewId) {
-        completeReview(event.reviewId, event.findings, event.summary)
-        setIsReviewing(false)
-      }
+    const unsubClassifications = window.electron.review.onClassifications((event) => {
+      console.log('[GitTab] Classifications received:', event)
+      console.log('[GitTab] Current review state:', reviews.get(event.reviewId))
+      setClassifications(event.reviewId, event.classifications)
+      // Log after update
+      setTimeout(() => {
+        console.log('[GitTab] Review state after setClassifications:', reviews.get(event.reviewId))
+      }, 100)
     })
 
-    const unsubFailed = window.electron.review.onFailed((reviewId, error) => {
-      console.log('[GitTab] Review failed:', reviewId, error)
-      if (reviewId === currentReviewId) {
-        failReview(reviewId, error)
-        setIsReviewing(false)
-      }
+    const unsubInconseq = window.electron.review.onInconsequentialFindings((event) => {
+      console.log('[GitTab] Inconsequential findings received:', event)
+      setInconsequentialFindings(event.reviewId, event.findings)
+    })
+
+    const unsubHighRiskStatus = window.electron.review.onHighRiskStatus((event) => {
+      console.log('[GitTab] High-risk status:', event)
+      updateHighRiskStatus(event.reviewId, event.status)
+    })
+
+    const unsubHighRiskFindings = window.electron.review.onHighRiskFindings((event) => {
+      console.log('[GitTab] High-risk findings:', event)
+      addHighRiskFindings(event.reviewId, event.findings)
     })
 
     return () => {
-      unsubCompleted()
-      unsubFailed()
+      unsubClassifications()
+      unsubInconseq()
+      unsubHighRiskStatus()
+      unsubHighRiskFindings()
     }
-  }, [currentReviewId, completeReview, failReview])
+  }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings])
 
   const handleStartReview = async () => {
     if (!window.electron || changedFiles.length === 0) return
@@ -121,21 +144,26 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     // Get files to review (all changed files)
     const filesToReview = changedFiles.map(f => f.path)
-    const config = getConfig(projectPath)
 
-    // Start review via IPC first to get the backend's reviewId
-    const result = await window.electron.review.start(projectPath, filesToReview, config.promptTemplate)
+    // Generate reviewId on frontend
+    const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
-    if (!result.success || !result.reviewId) {
-      setIsReviewing(false)
-      console.error('Failed to start review:', result.error)
-      return
-    }
-
-    // Use the backend's reviewId for the store
-    const reviewId = result.reviewId
+    // Start review in store FIRST (this opens the dialog immediately)
     startReview(projectPath, filesToReview, reviewId)
     setCurrentReviewId(reviewId)
+
+    // Open review panel immediately to show "Classifying" stage
+    setVisibility(true)
+
+    // Now start the backend classification with our reviewId
+    // This happens in the background while UI shows "Classifying..."
+    const result = await window.electron.review.start(projectPath, filesToReview, reviewId)
+
+    if (!result.success) {
+      console.error('Failed to start review:', result.error)
+      setIsReviewing(false)
+      // TODO: Show error in UI
+    }
   }
 
   const handleBranchClick = (e: React.MouseEvent) => {
@@ -564,14 +592,14 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
               )}
             </button>
             {/* Show Results button when there's a review */}
-            {activeReviewId && reviews.get(activeReviewId) && (
+            {activeReviewId && activeReview && (
               <button
                 onClick={() => setVisibility(true)}
                 className="px-3 py-2 text-xs rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors"
                 title="View review results"
               >
                 {(() => {
-                  const review = reviews.get(activeReviewId)
+                  const review = activeReview
                   if (review?.status === 'completed') {
                     const count = review.findings.length
                     return count > 0 ? `${count} issues` : '✓ Clean'

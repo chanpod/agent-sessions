@@ -9,6 +9,9 @@ import { PtyManager } from './pty-manager.js'
 import { SSHManager } from './ssh-manager.js'
 import { ToolChainDB } from './database.js'
 import { ReviewDetector } from './output-monitors/review-detector.js'
+import { BackgroundClaudeManager } from './background-claude-manager.js'
+import { readFileSync } from 'fs'
+import { join, basename } from 'path'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -125,6 +128,30 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+// Helper to check if an update was recently dismissed
+async function isUpdateDismissed(version: string): Promise<boolean> {
+  await waitForDb()
+  if (!dbReady) return false
+
+  const dismissalKey = `update-dismissed-${version}`
+  const dismissalData = db.get(dismissalKey) as { dismissedAt: number } | undefined
+
+  if (!dismissalData) return false
+
+  const dismissedAt = dismissalData.dismissedAt
+  const now = Date.now()
+  const twentyFourHours = 24 * 60 * 60 * 1000
+
+  // If dismissed within the last 24 hours, don't show it
+  const isDismissed = now - dismissedAt < twentyFourHours
+
+  if (isDismissed) {
+    console.log(`[Update] Version ${version} was dismissed ${Math.floor((now - dismissedAt) / (60 * 60 * 1000))} hours ago, skipping notification`)
+  }
+
+  return isDismissed
+}
+
 function setupAutoUpdater() {
   if (isDev) {
     // Skip auto-updates in development
@@ -149,8 +176,16 @@ function setupAutoUpdater() {
     mainWindow?.webContents.send('update:progress', progress)
   })
 
-  autoUpdater.on('update-downloaded', (info) => {
+  autoUpdater.on('update-downloaded', async (info) => {
     console.log('Update downloaded:', info.version)
+
+    // Check if user has dismissed this version recently
+    const isDismissed = await isUpdateDismissed(info.version)
+    if (isDismissed) {
+      console.log(`[Update] Not showing notification for ${info.version} - recently dismissed`)
+      return
+    }
+
     // Send to renderer to show non-invasive notification
     mainWindow?.webContents.send('update:downloaded', info)
   })
@@ -162,15 +197,34 @@ function setupAutoUpdater() {
   // Check for updates immediately
   autoUpdater.checkForUpdatesAndNotify()
 
-  // Poll for updates every 60 seconds
+  // Poll for updates every 5 minutes for active development
+  const FIVE_MINUTES = 5 * 60 * 1000
   setInterval(() => {
     autoUpdater.checkForUpdatesAndNotify()
-  }, 60000)
+  }, FIVE_MINUTES)
 }
 
 // IPC handler to install update when user clicks "Update Now"
 ipcMain.handle('update:install', async () => {
   autoUpdater.quitAndInstall()
+})
+
+// IPC handler to dismiss an update (user clicked "Later")
+ipcMain.handle('update:dismiss', async (_event, version: string) => {
+  await waitForDb()
+  if (!dbReady) {
+    console.error('[Update] Cannot dismiss update - database not ready')
+    return
+  }
+
+  const dismissalKey = `update-dismissed-${version}`
+  const dismissalData = {
+    dismissedAt: Date.now(),
+    version,
+  }
+
+  db.set(dismissalKey, dismissalData)
+  console.log(`[Update] Dismissed version ${version} for 24 hours`)
 })
 
 function createMenu() {
@@ -289,9 +343,20 @@ let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
 let sshManager: SSHManager | null = null
 let reviewDetector: ReviewDetector | null = null
+let backgroundClaude: BackgroundClaudeManager | null = null
 
 // Track active reviews
-const activeReviews = new Map<string, { terminalId: string; projectPath: string }>()
+interface ActiveReview {
+  reviewId: string
+  projectPath: string
+  files: string[]
+  classifications?: any[]
+  inconsequentialFiles?: string[]
+  highRiskFiles?: string[]
+  currentHighRiskIndex: number
+}
+
+const activeReviews = new Map<string, ActiveReview>()
 
 // Git polling for detecting branch and file changes
 interface GitPollerSet {
@@ -301,7 +366,7 @@ interface GitPollerSet {
 const gitPollers = new Map<string, GitPollerSet>()
 const GIT_POLL_INTERVAL_MS = 3000 // Poll every 3 seconds
 
-function createWindow() {
+async function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js')
   console.log('[Main] __dirname:', __dirname)
   console.log('[Main] Preload path:', preloadPath)
@@ -326,6 +391,11 @@ function createWindow() {
 
   ptyManager = new PtyManager(mainWindow)
   sshManager = new SSHManager()
+
+  // Initialize BackgroundClaudeManager
+  backgroundClaude = new BackgroundClaudeManager(ptyManager)
+  await backgroundClaude.initialize()
+  console.log('[Main] BackgroundClaudeManager initialized')
 
   // Register ReviewDetector for code review functionality
   reviewDetector = new ReviewDetector()
@@ -400,7 +470,238 @@ function createWindow() {
   })
 }
 
+// ============================================================================
+// Code Review Helper Functions
+// ============================================================================
+
+/**
+ * Get git diff for a file
+ */
+function getFileDiff(file: string, projectPath: string): string {
+  try {
+    return execInContext(`git diff HEAD -- "${file}"`, projectPath)
+  } catch (error) {
+    return ''
+  }
+}
+
+/**
+ * Get file contents
+ */
+function getFileContent(file: string, projectPath: string): string {
+  try {
+    const fsPath = resolvePathForFs(projectPath)
+    return readFileSync(join(fsPath, file), 'utf-8')
+  } catch (error) {
+    return ''
+  }
+}
+
+/**
+ * Get imports from a file
+ */
+function getFileImports(file: string, projectPath: string): string {
+  const content = getFileContent(file, projectPath)
+  const imports = content.match(/^import .* from .*/gm) || []
+  return imports.join('\n')
+}
+
+/**
+ * Build classification prompt
+ */
+function buildClassificationPrompt(files: string[], projectPath: string): string {
+  const fileList = files.map(f => `- ${f}`).join('\n')
+  const diffs = files.map(f => {
+    const diff = getFileDiff(f, projectPath)
+    return `=== ${f} ===\n${diff}\n`
+  }).join('\n')
+
+  return `You are analyzing code changes to classify files by risk level.
+
+Classify each file as INCONSEQUENTIAL or HIGH-RISK based on these criteria:
+
+INCONSEQUENTIAL (low risk):
+- Configuration files, docs, type definitions, formatting changes
+- Comments, simple refactoring, test files
+
+HIGH-RISK (potential bugs/security):
+- Business logic, auth, database queries, API handlers
+- Security code, payment processing, user data handling
+
+Files to classify:
+${fileList}
+
+Diffs:
+${diffs}
+
+Output ONLY valid JSON:
+[
+  {
+    "file": "src/config.ts",
+    "riskLevel": "inconsequential",
+    "reasoning": "Only config values changed"
+  }
+]`
+}
+
+/**
+ * Build inconsequential review prompt
+ */
+function buildInconsequentialPrompt(files: string[], projectPath: string): string {
+  const filesWithDiffs = files.map(f => {
+    const diff = getFileDiff(f, projectPath)
+    return `=== ${f} ===\n${diff}\n`
+  }).join('\n')
+
+  return `You are reviewing LOW-RISK code changes for simple issues.
+
+Focus ONLY on:
+- Typos, unused imports/variables
+- Console.log statements, commented code
+- Missing null checks, simple style issues
+
+DO NOT report: Complex logic, architecture, pre-existing issues
+
+Files:
+${filesWithDiffs}
+
+Output ONLY valid JSON array with codeChange field:
+[
+  {
+    "file": "src/utils.ts",
+    "line": 42,
+    "severity": "suggestion",
+    "category": "Code Quality",
+    "title": "Unused import",
+    "description": "Import 'fs' is never used",
+    "suggestion": "Remove unused import",
+    "codeChange": {
+      "oldCode": "import fs from 'fs'",
+      "newCode": ""
+    }
+  }
+]`
+}
+
+/**
+ * Build sub-agent reviewer prompt
+ */
+function buildSubAgentPrompt(file: string, projectPath: string, agentNumber: number, riskReasoning: string): string {
+  const diff = getFileDiff(file, projectPath)
+  const content = getFileContent(file, projectPath)
+  const imports = getFileImports(file, projectPath)
+
+  return `You are REVIEWER-${agentNumber} conducting independent review of HIGH-RISK file.
+
+⚠️ ONLY analyze MODIFIED code (in the diff)
+⚠️ DO NOT report issues in unchanged code
+
+File: ${file}
+Risk reason: ${riskReasoning}
+
+=== CHANGES (diff) ===
+${diff}
+
+=== FULL FILE ===
+${content}
+
+=== IMPORTS ===
+${imports}
+
+Check for: Logic errors, security flaws, data integrity issues, error handling, breaking changes
+
+Output ONLY valid JSON:
+[
+  {
+    "file": "${file}",
+    "line": 42,
+    "severity": "critical",
+    "category": "Security",
+    "title": "SQL injection",
+    "description": "User input concatenated in query",
+    "suggestion": "Use parameterized queries"
+  }
+]`
+}
+
+/**
+ * Build coordinator prompt
+ */
+function buildCoordinatorPrompt(subAgentReviews: any[], file: string, projectPath: string): string {
+  const diff = getFileDiff(file, projectPath)
+  const reviewsJson = JSON.stringify(subAgentReviews, null, 2)
+
+  return `You are coordinating findings from 3 independent reviewers.
+
+Tasks:
+1. Deduplicate similar findings
+2. Consolidate descriptions
+3. Calculate confidence (3 agents=1.0, 2=0.85, 1=0.65)
+4. Filter out false positives
+
+File: ${file}
+
+Diff:
+${diff}
+
+Sub-agent reviews:
+${reviewsJson}
+
+Output consolidated findings:
+[
+  {
+    "file": "${file}",
+    "line": 42,
+    "severity": "critical",
+    "category": "Security",
+    "title": "SQL injection",
+    "description": "Found by all 3 agents...",
+    "suggestion": "Use parameterized queries",
+    "sourceAgents": ["reviewer-1", "reviewer-2", "reviewer-3"],
+    "confidence": 1.0
+  }
+]`
+}
+
+/**
+ * Build accuracy checker prompt
+ */
+function buildAccuracyPrompt(finding: any, file: string, projectPath: string): string {
+  const diff = getFileDiff(file, projectPath)
+  const content = getFileContent(file, projectPath)
+  const findingJson = JSON.stringify(finding, null, 2)
+
+  return `You are verifying the accuracy of a code review finding.
+
+Verify:
+1. Issue exists in MODIFIED code (not pre-existing)
+2. Severity is appropriate
+3. Suggested fix is valid
+
+Finding:
+${findingJson}
+
+File: ${file}
+
+Diff:
+${diff}
+
+Full file:
+${content}
+
+Output verification:
+{
+  "findingId": "${finding.id}",
+  "isAccurate": true,
+  "confidence": 0.95,
+  "reasoning": "Confirmed issue in modified code..."
+}`
+}
+
+// ============================================================================
 // IPC Handlers
+// ============================================================================
+
 ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string }) => {
   if (!ptyManager) return null
 
@@ -1361,190 +1662,290 @@ function extractFindingsFromOutput(output: string): any[] {
   }
 }
 
-// Review IPC Handlers
-ipcMain.handle('review:start', async (_event, projectPath: string, files: string[], prompt: string) => {
-  if (!ptyManager || !reviewDetector) {
-    return { success: false, error: 'Review system not initialized' }
-  }
+// ============================================================================
+// Review IPC Handlers - Multi-Stage with Multi-Agent Verification
+// ============================================================================
+
+/**
+ * Stage 1: Start review with classification
+ */
+ipcMain.handle('review:start', async (_event, projectPath: string, files: string[], providedReviewId?: string) => {
+  const reviewId = providedReviewId || `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+
+  console.log(`[Review] Starting review ${reviewId} for ${files.length} files`)
 
   try {
-    const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-
-    // Create hidden terminal
-    const terminalInfo = ptyManager.createTerminal({
-      cwd: projectPath,
-      hidden: true,
-    })
-
-    // Register this terminal with the review detector
-    reviewDetector.registerReview(terminalInfo.id, reviewId)
-
-    // Track active review
+    // Store review
     activeReviews.set(reviewId, {
-      terminalId: terminalInfo.id,
+      reviewId,
       projectPath,
+      files,
+      currentHighRiskIndex: 0
     })
 
-    // Detect shell type to determine command syntax
-    const shell = terminalInfo.shell.toLowerCase()
-    const isCmd = shell.includes('cmd.exe') || shell.includes('comspec')
-    const isPowerShell = shell.includes('powershell') || shell.includes('pwsh')
-    const isWsl = shell.includes('wsl')
-    const isGitBash = shell.includes('bash.exe') || shell.includes('git\\bin\\bash') || shell.includes('git/bin/bash')
-    const isUnixLike = isWsl || isGitBash || (!isCmd && !isPowerShell)
+    // Run classification
+    const classificationPrompt = buildClassificationPrompt(files, projectPath)
 
-    // Build the prompt with file list and add JSON enforcement at the end
-    const fileList = files.map(f => `- ${f}`).join('\n')
-    const promptWithFiles = prompt.replace('{{files}}', fileList)
+    const result = await backgroundClaude!.runTask({
+      taskId: `${reviewId}-classify`,
+      prompt: classificationPrompt,
+      projectPath,
+      timeout: 60000 // 1 minute
+    })
 
-    // Add strict JSON output instructions at the end
-    const fullPrompt = `${promptWithFiles}
+    console.log(`[Review] Classification result:`, {
+      success: result.success,
+      hasParsed: !!result.parsed,
+      outputLength: result.output?.length,
+      error: result.error
+    })
 
-IMPORTANT: You must output ONLY valid JSON. No explanatory text before or after. No markdown code blocks. Just the raw JSON array. If you use markdown, the parsing will fail.`
+    if (result.success && result.parsed) {
+      const classifications = result.parsed
 
-    // Write prompt to temp file to avoid command-line length limits and escaping issues
-    const fs = await import('fs/promises')
-    const path = await import('path')
-    const os = await import('os')
-    const tmpDir = os.tmpdir()
-    const promptFile = path.join(tmpDir, `claude-review-${reviewId}-prompt.txt`)
-    const outputFile = path.join(tmpDir, `claude-review-${reviewId}-output.json`)
+      console.log(`[Review] Sending ${classifications.length} classifications to frontend`)
 
-    await fs.writeFile(promptFile, fullPrompt, 'utf-8')
-    console.log(`[Review] Wrote prompt to ${promptFile} (${fullPrompt.length} chars)`)
-    console.log(`[Review] Output will be written to ${outputFile}`)
-    console.log(`[Review] Detected shell: ${terminalInfo.shell}`)
+      // Send to frontend
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:classifications', {
+          reviewId,
+          classifications
+        })
+      }
 
-    // Build command based on shell type
-    let command: string
-    if (isCmd) {
-      // Windows cmd.exe - use type and > for redirection
-      command = `type "${promptFile}" | claude -p --dangerously-skip-permissions > "${outputFile}"\r\n`
-    } else if (isPowerShell) {
-      // PowerShell - use Get-Content (alias cat) and > for redirection
-      command = `Get-Content "${promptFile}" | claude -p --dangerously-skip-permissions > "${outputFile}"\r\n`
-    } else if (isWsl) {
-      // WSL - convert Windows paths to WSL paths and use Unix commands
-      const wslPromptFile = promptFile.replace(/^([A-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`).replace(/\\/g, '/')
-      const wslOutputFile = outputFile.replace(/^([A-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`).replace(/\\/g, '/')
-      command = `cat "${wslPromptFile}" | claude -p --dangerously-skip-permissions > "${wslOutputFile}"\r\n`
+      // Update active review
+      const review = activeReviews.get(reviewId)
+      if (review) {
+        review.classifications = classifications
+      }
+
+      return { success: true, reviewId }
     } else {
-      // Unix/Mac - use cat and < for redirection
-      command = `cat "${promptFile}" | claude -p --dangerously-skip-permissions > "${outputFile}"\r\n`
+      // Log the raw output to help debug
+      console.error(`[Review] Classification failed to parse. Raw output:`, result.output?.substring(0, 500))
+      throw new Error('Classification failed: Could not parse JSON from Claude output')
     }
-
-    console.log(`[Review] Shell detected: ${terminalInfo.shell}`)
-    console.log(`[Review] Shell flags: isCmd=${isCmd}, isPowerShell=${isPowerShell}, isWsl=${isWsl}, isGitBash=${isGitBash}, isUnixLike=${isUnixLike}`)
-    console.log(`[Review] Running command:`, command.trim())
-    ptyManager.write(terminalInfo.id, command)
-
-    // Poll the output file to detect when review is complete
-    const pollInterval = setInterval(async () => {
-      try {
-        const stats = await fs.stat(outputFile)
-        if (stats.size > 0) {
-          // File has content, wait a bit more to ensure it's fully written
-          setTimeout(async () => {
-            try {
-              const output = await fs.readFile(outputFile, 'utf-8')
-              clearInterval(pollInterval)
-
-              // Parse and emit the results
-              console.log(`[Review] Got output (${output.length} chars)`)
-
-              // Try to extract findings from the output
-              const findings = extractFindingsFromOutput(output)
-
-              // Send completion event to renderer
-              if (mainWindow) {
-                mainWindow.webContents.send('review:completed', {
-                  reviewId,
-                  findings,
-                  summary: findings.length > 0 ? `Found ${findings.length} issue(s)` : 'No issues found',
-                })
-              }
-
-              // Kill the terminal
-              if (ptyManager) {
-                ptyManager.kill(terminalInfo.id)
-              }
-
-              // Clean up from active reviews
-              activeReviews.delete(reviewId)
-
-              // Clean up temp files
-              await fs.unlink(promptFile).catch(() => {})
-              await fs.unlink(outputFile).catch(() => {})
-              console.log(`[Review] Completed review ${reviewId} with ${findings.length} findings`)
-            } catch (e) {
-              console.error(`[Review] Error reading output file:`, e)
-              clearInterval(pollInterval)
-            }
-          }, 500) // Wait 500ms to ensure file is fully written
-        }
-      } catch (e) {
-        // File doesn't exist yet, keep polling
-      }
-    }, 1000) // Poll every second
-
-    // Timeout after 2 minutes - send failure event and clean up
-    setTimeout(async () => {
-      clearInterval(pollInterval)
-      console.log(`[Review] Review ${reviewId} timed out after 2 minutes`)
-
-      // Send failure event
-      if (mainWindow) {
-        mainWindow.webContents.send('review:failed', reviewId, 'Review timed out after 2 minutes')
-      }
-
-      // Kill terminal and clean up
-      if (ptyManager) {
-        ptyManager.kill(terminalInfo.id)
-      }
-      activeReviews.delete(reviewId)
-      await fs.unlink(promptFile).catch(() => {})
-      await fs.unlink(outputFile).catch(() => {})
-    }, 120000)
-
-    console.log(`[Review] Started review ${reviewId} in terminal ${terminalInfo.id}`)
-
-    return { success: true, reviewId }
   } catch (error: any) {
-    console.error('[Review] Failed to start review:', error)
+    console.error(`[Review] Failed to start review:`, error)
     return { success: false, error: error.message }
   }
 })
 
-ipcMain.handle('review:cancel', async (_event, reviewId: string) => {
+/**
+ * Stage 2: User confirmed classifications, start inconsequential review
+ */
+ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, inconsequentialFiles: string[], highRiskFiles: string[]) => {
   const review = activeReviews.get(reviewId)
-  if (review) {
-    ptyManager?.kill(review.terminalId)
-    activeReviews.delete(reviewId)
-    console.log(`[Review] Cancelled review ${reviewId}`)
+  if (!review) {
+    return { success: false, error: 'Review not found' }
+  }
+
+  console.log(`[Review] Starting inconsequential review: ${inconsequentialFiles.length} files`)
+
+  review.inconsequentialFiles = inconsequentialFiles
+  review.highRiskFiles = highRiskFiles
+
+  try {
+    // Split files into batches for parallel review
+    const batchSize = 5
+    const batches: string[][] = []
+    for (let i = 0; i < inconsequentialFiles.length; i += batchSize) {
+      batches.push(inconsequentialFiles.slice(i, i + batchSize))
+    }
+
+    // Run batches in parallel
+    const batchPromises = batches.map((batch, idx) => {
+      const prompt = buildInconsequentialPrompt(batch, review.projectPath)
+      return backgroundClaude!.runTask({
+        taskId: `${reviewId}-batch-${idx}`,
+        prompt,
+        projectPath: review.projectPath,
+        timeout: 90000 // 1.5 minutes per batch
+      })
+    })
+
+    const results = await Promise.all(batchPromises)
+
+    // Aggregate findings
+    const allFindings: any[] = []
+    for (const result of results) {
+      if (result.success && result.parsed) {
+        allFindings.push(...result.parsed)
+      }
+    }
+
+    // Add unique IDs
+    const findingsWithIds = allFindings.map((f, idx) => ({
+      ...f,
+      id: `${reviewId}-inconseq-${idx}`
+    }))
+
+    // Send to frontend
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:inconsequential-findings', {
+        reviewId,
+        findings: findingsWithIds
+      })
+    }
+
+    return { success: true, findingCount: findingsWithIds.length }
+  } catch (error: any) {
+    console.error(`[Review] Inconsequential review failed:`, error)
+    return { success: false, error: error.message }
   }
 })
 
-// Get the raw output buffer for a review (for debugging)
-ipcMain.handle('review:getBuffer', async (_event, reviewId: string) => {
-  if (!reviewDetector) {
-    return { success: false, error: 'Review detector not initialized' }
-  }
-
-  const buffer = reviewDetector.getBuffer(reviewId)
-  if (buffer !== null) {
-    return { success: true, buffer }
-  }
-
-  // Try to get from active reviews
+/**
+ * Stage 3: Review next high-risk file with multi-agent verification
+ */
+ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) => {
   const review = activeReviews.get(reviewId)
-  if (review && reviewDetector) {
-    const terminalBuffer = reviewDetector.getBufferByTerminalId(review.terminalId)
-    if (terminalBuffer !== null) {
-      return { success: true, buffer: terminalBuffer }
-    }
+  if (!review || !review.highRiskFiles || !review.classifications) {
+    return { success: false, error: 'Review not found or not ready' }
   }
 
-  return { success: false, error: 'Buffer not found' }
+  const fileIndex = review.currentHighRiskIndex
+  if (fileIndex >= review.highRiskFiles.length) {
+    return { success: true, complete: true }
+  }
+
+  const file = review.highRiskFiles[fileIndex]
+  console.log(`[Review] Reviewing high-risk file ${fileIndex + 1}/${review.highRiskFiles.length}: ${file}`)
+
+  try {
+    // Get classification reasoning
+    const classification = review.classifications.find((c: any) => c.file === file)
+    const riskReasoning = classification?.reasoning || 'High-risk file'
+
+    // Update status
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:high-risk-status', {
+        reviewId,
+        file,
+        status: 'reviewing'
+      })
+    }
+
+    // Step 1: Run 3 sub-agents in parallel
+    const subAgentPromises = [1, 2, 3].map(agentNum => {
+      const prompt = buildSubAgentPrompt(file, review.projectPath, agentNum, riskReasoning)
+      return backgroundClaude!.runTask({
+        taskId: `${reviewId}-file${fileIndex}-agent${agentNum}`,
+        prompt,
+        projectPath: review.projectPath,
+        timeout: 120000 // 2 minutes per agent
+      })
+    })
+
+    const subAgentResults = await Promise.all(subAgentPromises)
+
+    // Extract findings from each agent
+    const subAgentReviews = subAgentResults.map((result, idx) => ({
+      agentId: `reviewer-${idx + 1}`,
+      findings: result.success && result.parsed ? result.parsed : [],
+      timestamp: Date.now()
+    }))
+
+    // Update status
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:high-risk-status', {
+        reviewId,
+        file,
+        status: 'coordinating'
+      })
+    }
+
+    // Step 2: Coordinator consolidates findings
+    const coordinatorPrompt = buildCoordinatorPrompt(subAgentReviews, file, review.projectPath)
+    const coordinatorResult = await backgroundClaude!.runTask({
+      taskId: `${reviewId}-file${fileIndex}-coordinator`,
+      prompt: coordinatorPrompt,
+      projectPath: review.projectPath,
+      timeout: 60000
+    })
+
+    if (!coordinatorResult.success || !coordinatorResult.parsed) {
+      throw new Error('Coordinator failed')
+    }
+
+    const consolidatedFindings = coordinatorResult.parsed
+
+    // Update status
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:high-risk-status', {
+        reviewId,
+        file,
+        status: 'verifying'
+      })
+    }
+
+    // Step 3: Accuracy checkers verify each finding
+    const verificationPromises = consolidatedFindings.map((finding: any, idx: number) => {
+      finding.id = `${reviewId}-highrisk-${fileIndex}-${idx}`
+      const prompt = buildAccuracyPrompt(finding, file, review.projectPath)
+      return backgroundClaude!.runTask({
+        taskId: `${reviewId}-file${fileIndex}-verify-${idx}`,
+        prompt,
+        projectPath: review.projectPath,
+        timeout: 60000
+      })
+    })
+
+    const verificationResults = await Promise.all(verificationPromises)
+
+    // Filter to verified findings
+    const verifiedFindings = consolidatedFindings
+      .map((finding: any, idx: number) => {
+        const verification = verificationResults[idx]
+        const verificationData = verification.success && verification.parsed ? verification.parsed : null
+
+        return {
+          ...finding,
+          verificationStatus: verificationData?.isAccurate ? 'verified' : 'rejected',
+          verificationResult: verificationData,
+          confidence: verificationData?.confidence || 0
+        }
+      })
+      .filter((f: any) => f.verificationStatus === 'verified')
+
+    // Update status
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('review:high-risk-status', {
+        reviewId,
+        file,
+        status: 'complete'
+      })
+
+      // Send findings
+      mainWindow.webContents.send('review:high-risk-findings', {
+        reviewId,
+        file,
+        findings: verifiedFindings
+      })
+    }
+
+    // Advance to next file
+    review.currentHighRiskIndex++
+
+    return {
+      success: true,
+      complete: review.currentHighRiskIndex >= review.highRiskFiles.length,
+      findingCount: verifiedFindings.length
+    }
+  } catch (error: any) {
+    console.error(`[Review] High-risk file review failed:`, error)
+    return { success: false, error: error.message }
+  }
+})
+
+/**
+ * Cancel review
+ */
+ipcMain.handle('review:cancel', async (_event, reviewId: string) => {
+  activeReviews.delete(reviewId)
+  // Cancel any active background tasks for this review
+  // (BackgroundClaudeManager will handle cleanup)
+  return { success: true }
 })
 
 app.whenReady().then(() => {

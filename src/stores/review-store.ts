@@ -13,7 +13,47 @@ export interface ReviewFinding {
   title: string // Short title
   description: string // Detailed description
   suggestion?: string // Optional fix suggestion
+
+  // UI state
+  isSelected?: boolean // For checkbox selection
+  isApplied?: boolean // Already applied to code
+  isDismissed?: boolean // User dismissed this finding
+
+  // Multi-agent specific
+  sourceAgents?: string[] // Which agents found this (multi-agent)
+  confidence?: number // Confidence score (multi-agent)
+  verificationStatus?: 'verified' | 'rejected' // Accuracy verification
+
+  // For code changes
+  codeChange?: {
+    oldCode: string
+    newCode: string
+  }
 }
+
+/**
+ * File Risk Level
+ */
+export type FileRiskLevel = 'inconsequential' | 'high-risk'
+
+/**
+ * File Classification
+ */
+export interface FileClassification {
+  file: string
+  riskLevel: FileRiskLevel
+  reasoning: string
+}
+
+/**
+ * Review Stage
+ */
+export type ReviewStage =
+  | 'classifying'
+  | 'classification-review'
+  | 'reviewing-inconsequential'
+  | 'reviewing-high-risk'
+  | 'completed'
 
 /**
  * Review Result - Full result of a code review
@@ -22,6 +62,7 @@ export interface ReviewResult {
   id: string // Review session ID
   projectId: string // Project being reviewed
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  stage: ReviewStage // Current stage in multi-stage review
   startedAt: number // Timestamp
   completedAt?: number // Timestamp when finished
   files: string[] // Files that were reviewed
@@ -29,6 +70,15 @@ export interface ReviewResult {
   summary?: string // Overall summary from AI
   error?: string // Error message if failed
   terminalId?: string // Hidden terminal ID running the review
+
+  // Multi-stage specific
+  classifications?: FileClassification[] // Risk classifications
+  inconsequentialFiles: string[] // Low-risk files
+  highRiskFiles: string[] // High-risk files
+  inconsequentialFindings: ReviewFinding[] // Findings from low-risk review
+  highRiskFindings: ReviewFinding[] // Findings from high-risk review
+  currentHighRiskFileIndex: number // Which high-risk file we're on
+  currentFileCoordinatorStatus?: 'reviewing' | 'coordinating' | 'verifying' | 'complete'
 }
 
 /**
@@ -81,6 +131,21 @@ interface ReviewState {
   setVisibility: (visible: boolean) => void
   clearReview: (reviewId: string) => void
 
+  // Multi-stage actions
+  setClassifications: (reviewId: string, classifications: FileClassification[]) => void
+  updateClassification: (reviewId: string, file: string, riskLevel: FileRiskLevel) => void
+  confirmClassifications: (reviewId: string) => void
+  setReviewStage: (reviewId: string, stage: ReviewStage) => void
+  setInconsequentialFindings: (reviewId: string, findings: ReviewFinding[]) => void
+  addHighRiskFindings: (reviewId: string, findings: ReviewFinding[]) => void
+  toggleFindingSelection: (reviewId: string, findingId: string) => void
+  selectAllFindings: (reviewId: string) => void
+  applySelectedFindings: (reviewId: string) => void
+  applyFinding: (reviewId: string, findingId: string) => void
+  dismissFinding: (reviewId: string, findingId: string) => void
+  advanceToNextHighRiskFile: (reviewId: string) => void
+  updateHighRiskStatus: (reviewId: string, status: string) => void
+
   // Config actions
   getConfig: (projectId: string) => ReviewConfig
   updateConfig: (projectId: string, config: Partial<ReviewConfig>) => void
@@ -132,9 +197,15 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       id: reviewId,
       projectId,
       status: 'running',
+      stage: 'classifying',
       startedAt: Date.now(),
       files,
       findings: [],
+      inconsequentialFiles: [],
+      highRiskFiles: [],
+      inconsequentialFindings: [],
+      highRiskFindings: [],
+      currentHighRiskFileIndex: 0,
     }
 
     set((state) => {
@@ -147,7 +218,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
         progress: {
           fileIndex: 0,
           totalFiles: files.length,
-          message: 'Analyzing code...',
+          message: 'Classifying files by risk level...',
         },
       }
     })
@@ -269,6 +340,302 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const currentConfig = newConfigs.get(projectId) || DEFAULT_CONFIG
       newConfigs.set(projectId, { ...currentConfig, ...configUpdate })
       return { configs: newConfigs }
+    })
+  },
+
+  // Multi-stage implementation
+  setClassifications: (reviewId, classifications) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        newReviews.set(reviewId, {
+          ...review,
+          classifications,
+          stage: 'classification-review',
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  updateClassification: (reviewId, file, riskLevel) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review && review.classifications) {
+        const newClassifications = review.classifications.map((c) =>
+          c.file === file ? { ...c, riskLevel } : c
+        )
+        newReviews.set(reviewId, {
+          ...review,
+          classifications: newClassifications,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  confirmClassifications: (reviewId) => {
+    const { reviews } = get()
+    const review = reviews.get(reviewId)
+    if (!review || !review.classifications) return
+
+    // Split files into inconsequential and high-risk
+    const inconsequentialFiles = review.classifications
+      .filter((c) => c.riskLevel === 'inconsequential')
+      .map((c) => c.file)
+    const highRiskFiles = review.classifications
+      .filter((c) => c.riskLevel === 'high-risk')
+      .map((c) => c.file)
+
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      newReviews.set(reviewId, {
+        ...review,
+        stage: 'reviewing-inconsequential',
+        inconsequentialFiles,
+        highRiskFiles,
+      })
+      return { reviews: newReviews }
+    })
+
+    // Trigger inconsequential review via IPC
+    if (window.electron) {
+      window.electron.review.startInconsequentialReview(reviewId, inconsequentialFiles, highRiskFiles)
+    }
+  },
+
+  setReviewStage: (reviewId, stage) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        newReviews.set(reviewId, {
+          ...review,
+          stage,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  setInconsequentialFindings: (reviewId, findings) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        newReviews.set(reviewId, {
+          ...review,
+          inconsequentialFindings: findings,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  addHighRiskFindings: (reviewId, findings) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        newReviews.set(reviewId, {
+          ...review,
+          highRiskFindings: [...review.highRiskFindings, ...findings],
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  toggleFindingSelection: (reviewId, findingId) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        const newFindings = review.inconsequentialFindings.map((f) =>
+          f.id === findingId ? { ...f, isSelected: !f.isSelected } : f
+        )
+        newReviews.set(reviewId, {
+          ...review,
+          inconsequentialFindings: newFindings,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  selectAllFindings: (reviewId) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        const allSelected = review.inconsequentialFindings.every((f) => f.isSelected)
+        const newFindings = review.inconsequentialFindings.map((f) => ({
+          ...f,
+          isSelected: !allSelected,
+        }))
+        newReviews.set(reviewId, {
+          ...review,
+          inconsequentialFindings: newFindings,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  applySelectedFindings: async (reviewId) => {
+    const { reviews } = get()
+    const review = reviews.get(reviewId)
+    if (!review) return
+
+    const selectedFindings = review.inconsequentialFindings.filter((f) => f.isSelected && !f.isApplied)
+
+    // Apply each finding via IPC
+    for (const finding of selectedFindings) {
+      if (finding.codeChange && window.electron) {
+        try {
+          // Use BackgroundClaudeManager to apply the code change
+          const projectPath = review.projectId
+          const fullPath = `${projectPath}/${finding.file}`
+
+          // Read current file content
+          const result = await window.electron.fs.readFile(fullPath)
+          if (result.success && result.content) {
+            // Replace old code with new code
+            const newContent = result.content.replace(finding.codeChange.oldCode, finding.codeChange.newCode)
+
+            // Write back to file
+            await window.electron.fs.writeFile(fullPath, newContent)
+            console.log('[ReviewStore] Applied finding:', finding.id)
+          }
+        } catch (error) {
+          console.error('[ReviewStore] Failed to apply finding:', finding.id, error)
+        }
+      }
+    }
+
+    // Mark applied findings
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const newFindings = review.inconsequentialFindings.map((f) =>
+        f.isSelected && !f.isApplied ? { ...f, isApplied: true, isSelected: false } : f
+      )
+      newReviews.set(reviewId, {
+        ...review,
+        inconsequentialFindings: newFindings,
+      })
+      return { reviews: newReviews }
+    })
+  },
+
+  applyFinding: async (reviewId, findingId) => {
+    const { reviews } = get()
+    const review = reviews.get(reviewId)
+    if (!review) return
+
+    const finding = review.inconsequentialFindings.find((f) => f.id === findingId)
+    if (!finding || finding.isApplied || !finding.codeChange) return
+
+    // Apply the fix to the file
+    if (window.electron) {
+      try {
+        const projectPath = review.projectId
+        const fullPath = `${projectPath}/${finding.file}`
+
+        // Read current file content
+        const result = await window.electron.fs.readFile(fullPath)
+        if (result.success && result.content) {
+          // Replace old code with new code
+          const newContent = result.content.replace(finding.codeChange.oldCode, finding.codeChange.newCode)
+
+          // Write back to file
+          await window.electron.fs.writeFile(fullPath, newContent)
+          console.log('[ReviewStore] Applied finding:', finding.id)
+        }
+      } catch (error) {
+        console.error('[ReviewStore] Failed to apply finding:', finding.id, error)
+      }
+    }
+
+    // Mark finding as applied
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const newFindings = review.inconsequentialFindings.map((f) =>
+        f.id === findingId ? { ...f, isApplied: true } : f
+      )
+      newReviews.set(reviewId, {
+        ...review,
+        inconsequentialFindings: newFindings,
+      })
+      return { reviews: newReviews }
+    })
+  },
+
+  dismissFinding: (reviewId, findingId) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        const newFindings = review.inconsequentialFindings.map((f) =>
+          f.id === findingId ? { ...f, isDismissed: true } : f
+        )
+        newReviews.set(reviewId, {
+          ...review,
+          inconsequentialFindings: newFindings,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  advanceToNextHighRiskFile: (reviewId) => {
+    const { reviews } = get()
+    const review = reviews.get(reviewId)
+    if (!review) return
+
+    const nextIndex = review.currentHighRiskFileIndex + 1
+    if (nextIndex >= review.highRiskFiles.length) {
+      // All high-risk files reviewed, mark as complete
+      set((state) => {
+        const newReviews = new Map(state.reviews)
+        newReviews.set(reviewId, {
+          ...review,
+          stage: 'completed',
+          status: 'completed',
+          completedAt: Date.now(),
+        })
+        return { reviews: newReviews }
+      })
+    } else {
+      // Move to next file
+      set((state) => {
+        const newReviews = new Map(state.reviews)
+        newReviews.set(reviewId, {
+          ...review,
+          currentHighRiskFileIndex: nextIndex,
+        })
+        return { reviews: newReviews }
+      })
+
+      // Trigger next high-risk file review via IPC
+      if (window.electron) {
+        window.electron.review.reviewHighRiskFile(reviewId)
+      }
+    }
+  },
+
+  updateHighRiskStatus: (reviewId, status) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review) {
+        newReviews.set(reviewId, {
+          ...review,
+          currentFileCoordinatorStatus: status as any,
+        })
+      }
+      return { reviews: newReviews }
     })
   },
 }))
