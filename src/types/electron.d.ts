@@ -189,6 +189,7 @@ export interface ReviewProgressEvent {
 export interface ElectronAPI {
   pty: {
     create: (options: PtyOptions) => Promise<TerminalInfo>
+    createWithCommand: (shell: string, args: string[], displayCwd: string) => Promise<TerminalInfo>
     write: (id: string, data: string) => Promise<void>
     resize: (id: string, cols: number, rows: number) => Promise<void>
     kill: (id: string) => Promise<void>
@@ -254,6 +255,11 @@ export interface ElectronAPI {
     test: (config: SSHConnectionConfig) => Promise<SSHTestResult>
     getStatus: (connectionId: string) => Promise<{ connected: boolean; error?: string }>
     onStatusChange: (callback: (connectionId: string, connected: boolean, error?: string) => void) => () => void
+    // Project-level SSH connections
+    connectProject: (projectId: string, sshConnectionId: string) => Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }>
+    disconnectProject: (projectId: string) => Promise<{ success: boolean; error?: string }>
+    getInteractiveMasterCommand: (projectId: string) => Promise<{ shell: string; args: string[] } | null>
+    markProjectConnected: (projectId: string) => Promise<{ success: boolean }>
   }
   updater: {
     install: () => Promise<void>

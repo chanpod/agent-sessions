@@ -172,6 +172,8 @@ const electronAPI = {
   pty: {
     create: (options: PtyOptions): Promise<TerminalInfo> =>
       ipcRenderer.invoke('pty:create', options),
+    createWithCommand: (shell: string, args: string[], displayCwd: string): Promise<TerminalInfo> =>
+      ipcRenderer.invoke('pty:create-with-command', shell, args, displayCwd),
     write: (id: string, data: string): Promise<void> =>
       ipcRenderer.invoke('pty:write', id, data),
     resize: (id: string, cols: number, rows: number): Promise<void> =>
@@ -328,6 +330,15 @@ const electronAPI = {
       ipcRenderer.on('ssh:status-change', handler)
       return () => ipcRenderer.removeListener('ssh:status-change', handler)
     },
+    // Project-level SSH connections
+    connectProject: (projectId: string, sshConnectionId: string): Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }> =>
+      ipcRenderer.invoke('ssh:connect-project', projectId, sshConnectionId),
+    disconnectProject: (projectId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('ssh:disconnect-project', projectId),
+    getInteractiveMasterCommand: (projectId: string): Promise<{ shell: string; args: string[] } | null> =>
+      ipcRenderer.invoke('ssh:get-interactive-master-command', projectId),
+    markProjectConnected: (projectId: string): Promise<{ success: boolean }> =>
+      ipcRenderer.invoke('ssh:mark-project-connected', projectId),
   },
   updater: {
     install: (): Promise<void> =>

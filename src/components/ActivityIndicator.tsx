@@ -1,9 +1,11 @@
 import { useSyncExternalStore, useEffect, useRef } from 'react'
-import { useTerminalStore } from '../stores/terminal-store'
+import { useTerminalStore, type ActivityLevel } from '../stores/terminal-store'
 import { useToastStore } from '../stores/toast-store'
 import { useProjectStore } from '../stores/project-store'
 
 const IDLE_THRESHOLD_MS = 5000
+const MINOR_ACTIVITY_THRESHOLD_MS = 5000 // Yellow goes to grey after 5s
+const NEW_TERMINAL_GRACE_PERIOD_MS = 10000 // Don't notify for 10s after terminal creation
 
 interface ActivityIndicatorProps {
   sessionId: string
@@ -35,7 +37,7 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
   const projects = useProjectStore((state) => state.projects)
   const activeProjectId = useProjectStore((state) => state.activeProjectId)
   const triggerProjectFlash = useProjectStore((state) => state.triggerProjectFlash)
-  const previousActivityRef = useRef<boolean | null>(null)
+  const previousDisplayStateRef = useRef<'green' | 'yellow' | 'grey' | null>(null)
 
   if (!session) return null
 
@@ -49,37 +51,60 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
     )
   }
 
-  // Calculate activity status on each render
-  const lastActivity = session.lastActivityTime ?? 0
-  const elapsed = Date.now() - lastActivity
-  const isActive = elapsed < IDLE_THRESHOLD_MS
+  // Calculate current display state based on activity
+  const now = Date.now()
+  const timeSinceLastActivity = now - session.lastActivityTime
+  const timeSinceSubstantialActivity = now - session.lastSubstantialActivityTime
 
-  // Detect activity state change (active -> idle transition)
+  let displayState: 'green' | 'yellow' | 'grey' = 'grey'
+
+  // Determine color based on recent activity
+  if (timeSinceSubstantialActivity < IDLE_THRESHOLD_MS) {
+    // Had substantial activity recently -> green
+    displayState = 'green'
+  } else if (timeSinceLastActivity < MINOR_ACTIVITY_THRESHOLD_MS && session.lastActivityLevel === 'minor') {
+    // Had minor activity recently (no substantial activity) -> yellow
+    displayState = 'yellow'
+  } else {
+    // No recent activity -> grey
+    displayState = 'grey'
+  }
+
+  // Detect green -> grey transition (ignoring yellow)
   useEffect(() => {
-    if (previousActivityRef.current !== null && previousActivityRef.current && !isActive) {
-      // Terminal went from active to idle
-      const project = projects.find(p => p.id === session.projectId)
-      if (project) {
-        addToast(`Terminal "${session.title}" in project "${project.name}" is now idle`, 'info', 5000)
+    if (previousDisplayStateRef.current === 'green' && displayState === 'grey') {
+      // Check if terminal is still in grace period (newly created)
+      const terminalAge = now - session.createdAt
+      const isInGracePeriod = terminalAge < NEW_TERMINAL_GRACE_PERIOD_MS
 
-        // Trigger project flash if this project is not currently active
-        if (session.projectId !== activeProjectId) {
-          triggerProjectFlash(session.projectId)
-        }
+      if (!isInGracePeriod) {
+        // Terminal went from substantial activity (green) to idle (grey)
+        const project = projects.find(p => p.id === session.projectId)
+        if (project) {
+          addToast(`Terminal "${session.title}" in project "${project.name}" is now idle`, 'info', 5000)
 
-        // Call the callback if provided
-        if (onActivityChange) {
-          onActivityChange(false, sessionId, session.projectId)
+          // Trigger project flash if this project is not currently active
+          if (session.projectId !== activeProjectId) {
+            triggerProjectFlash(session.projectId)
+          }
+
+          // Call the callback if provided
+          if (onActivityChange) {
+            onActivityChange(false, sessionId, session.projectId)
+          }
         }
       }
     }
-    previousActivityRef.current = isActive
-  }, [isActive, sessionId, session.projectId, session.title, projects, addToast, onActivityChange, activeProjectId, triggerProjectFlash])
+    previousDisplayStateRef.current = displayState
+  }, [displayState, sessionId, session.projectId, session.title, session.createdAt, now, projects, addToast, onActivityChange, activeProjectId, triggerProjectFlash])
+
+  const colorClass = displayState === 'green' ? 'bg-green-500' : displayState === 'yellow' ? 'bg-yellow-500' : 'bg-zinc-400'
+  const title = displayState === 'green' ? 'Active' : displayState === 'yellow' ? 'Minor Activity' : 'Idle'
 
   return (
     <span
-      className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-zinc-400'} ${className}`}
-      title={isActive ? 'Active' : 'Idle'}
+      className={`w-2 h-2 rounded-full ${colorClass} ${className}`}
+      title={title}
     />
   )
 }

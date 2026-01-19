@@ -857,6 +857,11 @@ ipcMain.handle('pty:list', async () => {
   return ptyManager?.list() ?? []
 })
 
+ipcMain.handle('pty:create-with-command', async (_event, shell: string, args: string[], displayCwd: string) => {
+  if (!ptyManager) return null
+  return ptyManager.createTerminalWithCommand(shell, args, displayCwd)
+})
+
 ipcMain.handle('system:get-shells', async () => {
   interface ShellInfo {
     name: string
@@ -1847,6 +1852,45 @@ ipcMain.handle('ssh:get-status', async (_event, connectionId: string) => {
     return { connected: false, error: 'SSH manager not initialized' }
   }
   return sshManager.getStatus(connectionId)
+})
+
+// Project-level SSH connection IPC handlers
+ipcMain.handle('ssh:connect-project', async (_event, projectId: string, sshConnectionId: string) => {
+  if (!sshManager) {
+    return { success: false, error: 'SSH manager not initialized' }
+  }
+
+  // First ensure the SSH connection itself is established
+  const connections = sshManager.getConnectionIds()
+  if (!connections.includes(sshConnectionId)) {
+    // Need to get the SSH config from the store
+    // For now, return error - the frontend should establish SSH connection first
+    return { success: false, error: 'SSH connection not established. Please connect to SSH first.' }
+  }
+
+  return await sshManager.connectProjectMaster(projectId, sshConnectionId)
+})
+
+ipcMain.handle('ssh:disconnect-project', async (_event, projectId: string) => {
+  if (!sshManager) {
+    return { success: false, error: 'SSH manager not initialized' }
+  }
+  return await sshManager.disconnectProjectMaster(projectId)
+})
+
+ipcMain.handle('ssh:get-interactive-master-command', async (_event, projectId: string) => {
+  if (!sshManager) {
+    return null
+  }
+  return sshManager.getInteractiveMasterCommand(projectId)
+})
+
+ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) => {
+  if (!sshManager) {
+    return { success: false }
+  }
+  sshManager.markProjectMasterConnected(projectId)
+  return { success: true }
 })
 
 // Helper function to extract findings from Claude output

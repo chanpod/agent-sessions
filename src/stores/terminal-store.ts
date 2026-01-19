@@ -13,6 +13,8 @@ export interface SavedTerminalConfig {
   sshConnectionId?: string // For SSH terminals
 }
 
+export type ActivityLevel = 'substantial' | 'minor' | 'idle'
+
 // Full runtime session (includes pid, status, etc.)
 export interface TerminalSession extends SavedTerminalConfig {
   pid: number
@@ -22,6 +24,8 @@ export interface TerminalSession extends SavedTerminalConfig {
   status: 'running' | 'exited'
   exitCode?: number
   lastActivityTime: number
+  lastActivityLevel: ActivityLevel // Current activity level
+  lastSubstantialActivityTime: number // Last time we had substantial (green) activity
 }
 
 interface TerminalStore {
@@ -42,15 +46,15 @@ interface TerminalStore {
   markRestored: () => void
 
   // Actions for runtime sessions
-  addSession: (session: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime'>) => void
-  addSessionsBatch: (sessions: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime'>[]) => void
+  addSession: (session: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime' | 'lastActivityLevel' | 'lastSubstantialActivityTime'>) => void
+  addSessionsBatch: (sessions: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime' | 'lastActivityLevel' | 'lastSubstantialActivityTime'>[]) => void
   removeSession: (id: string) => void
   removeSessionsByProject: (projectId: string) => void
   setActiveSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
   updateSessionPid: (id: string, pid: number) => void
   markSessionExited: (id: string, exitCode: number) => void
-  updateSessionActivity: (id: string) => void
+  updateSessionActivity: (id: string, level: ActivityLevel) => void
 
   // Selectors
   getSessionsByProject: (projectId: string) => TerminalSession[]
@@ -82,11 +86,14 @@ export const useTerminalStore = create<TerminalStore>()(
       // Runtime session actions
       addSession: (session) =>
         set((state) => {
+          const now = Date.now()
           const newSession: TerminalSession = {
             ...session,
             isActive: true,
             status: 'running',
-            lastActivityTime: Date.now(),
+            lastActivityTime: now,
+            lastActivityLevel: 'idle',
+            lastSubstantialActivityTime: now,
           }
           return {
             sessions: [...state.sessions, newSession],
@@ -96,11 +103,14 @@ export const useTerminalStore = create<TerminalStore>()(
 
       addSessionsBatch: (sessions) =>
         set((state) => {
+          const now = Date.now()
           const newSessions = sessions.map((session) => ({
             ...session,
             isActive: true,
             status: 'running' as const,
-            lastActivityTime: Date.now(),
+            lastActivityTime: now,
+            lastActivityLevel: 'idle' as const,
+            lastSubstantialActivityTime: now,
           }))
           return {
             sessions: [...state.sessions, ...newSessions],
@@ -174,7 +184,7 @@ export const useTerminalStore = create<TerminalStore>()(
           ),
         })),
 
-      updateSessionActivity: (id) => {
+      updateSessionActivity: (id, level) => {
         const now = Date.now()
         const state = get()
         const session = state.sessions.find((s) => s.id === id)
@@ -185,9 +195,18 @@ export const useTerminalStore = create<TerminalStore>()(
         }
 
         set((state) => ({
-          sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, lastActivityTime: now } : s
-          ),
+          sessions: state.sessions.map((s) => {
+            if (s.id === id) {
+              return {
+                ...s,
+                lastActivityTime: now,
+                lastActivityLevel: level,
+                // Update lastSubstantialActivityTime only if this is substantial activity
+                lastSubstantialActivityTime: level === 'substantial' ? now : s.lastSubstantialActivityTime,
+              }
+            }
+            return s
+          }),
         }))
       },
 

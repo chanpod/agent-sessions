@@ -123,12 +123,18 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
             <div
               key={project.id}
               className={cn(
-                'relative flex items-center gap-2 px-3 min-w-[160px] max-w-[280px] border-r border-gray-800 cursor-pointer transition-colors group',
+                'relative flex items-center gap-2 px-3 border-r border-gray-800 cursor-pointer group',
+                'transition-[background-color,width] duration-300 ease-out',
                 activeProjectId === project.id
                   ? 'bg-[#252526] text-gray-200'
                   : 'bg-[#1e1e1e] text-gray-400 hover:bg-[#2a2a2b]',
                 isFlashing && 'animate-pulse bg-blue-500/20'
               )}
+              style={{
+                width: 'fit-content',
+                minWidth: '160px',
+                maxWidth: '280px'
+              }}
               onClick={() => {
                 setActiveProject(project.id)
                 if (isFlashing) {
@@ -157,20 +163,21 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
                 </button>
               )}
 
-              {/* Close button - shows on hover */}
-              {hoveredProjectId === project.id && !projectGitInfo?.branch && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    // TODO: Show confirmation dialog before deleting
-                    // For now, just prevent accidental clicks
-                  }}
-                  className="p-0.5 hover:bg-gray-700 rounded opacity-70 hover:opacity-100"
-                  title="Close project"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
+              {/* Close button - always reserve space to prevent layout shift */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  // TODO: Show confirmation dialog before deleting
+                  // For now, just prevent accidental clicks
+                }}
+                className={cn(
+                  'p-0.5 hover:bg-gray-700 rounded transition-opacity flex-shrink-0',
+                  hoveredProjectId === project.id ? 'opacity-70 hover:opacity-100' : 'opacity-0 pointer-events-none'
+                )}
+                title="Close project"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           )
         })}

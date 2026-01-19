@@ -17,18 +17,11 @@ export function cn(...inputs: ClassValue[]) {
  * @returns Normalized full path with correct separators and preserved UNC format
  */
 export function normalizeFilePath(basePath: string, relativePath: string): string {
-  // Debug logging
-  console.log('[normalizeFilePath] basePath:', JSON.stringify(basePath))
-  console.log('[normalizeFilePath] relativePath:', JSON.stringify(relativePath))
-  console.log('[normalizeFilePath] basePath starts with \\\\wsl:', /^\\\\wsl/.test(basePath))
-
   // Check if basePath is a UNC path BEFORE any manipulation
   const isUncPath = /^\\\\wsl(?:\$|\.localhost)\\/i.test(basePath)
-  console.log('[normalizeFilePath] isUncPath:', isUncPath)
 
   const separator = basePath.includes('\\') ? '\\' : '/'
   let fullPath = `${basePath}${separator}${relativePath}`
-  console.log('[normalizeFilePath] fullPath after join:', JSON.stringify(fullPath))
 
   // Normalize path separators to match the basePath format
   if (separator === '\\') {
@@ -36,7 +29,6 @@ export function normalizeFilePath(basePath: string, relativePath: string): strin
   } else {
     fullPath = fullPath.replace(/\\/g, '/')
   }
-  console.log('[normalizeFilePath] fullPath after separator normalization:', JSON.stringify(fullPath))
 
   // Remove duplicate separators, but preserve UNC path prefix (\\wsl.localhost or \\wsl$)
   if (isUncPath) {
@@ -47,6 +39,5 @@ export function normalizeFilePath(basePath: string, relativePath: string): strin
     fullPath = fullPath.replace(/\/\/+/g, '/').replace(/\\\\+/g, '\\')
   }
 
-  console.log('[normalizeFilePath] Final fullPath:', JSON.stringify(fullPath))
   return fullPath
 }

@@ -115,6 +115,17 @@ export const useGitStore = create<GitStore>((set, get) => ({
   refreshGitInfo: async (projectId: string, projectPath: string) => {
     if (!window.electron || !projectPath) return
 
+    // Check if this is an SSH project and if it's connected
+    const projects = (window as any).__project_store__?.getState?.()?.projects
+    const project = projects?.find((p: any) => p.id === projectId)
+    if (project?.isSSHProject) {
+      const connectionStatus = project.connectionStatus || 'disconnected'
+      if (connectionStatus !== 'connected') {
+        console.log(`[GitStore] Skipping git refresh for SSH project ${projectId} - not connected (${connectionStatus})`)
+        return
+      }
+    }
+
     try {
       const result = await window.electron.git.getInfo(projectPath)
 
