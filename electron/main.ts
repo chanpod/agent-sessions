@@ -130,11 +130,25 @@ function execInContextAsync(command: string, projectPath: string): Promise<strin
 function resolvePathForFs(inputPath: string): string {
   if (process.platform !== 'win32') return inputPath
 
-  const wslInfo = detectWslPath(inputPath)
-  if (wslInfo.isWslPath && wslInfo.linuxPath && !inputPath.startsWith('\\\\')) {
-    return convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
+  // Already a valid UNC path, return as-is
+  if (inputPath.startsWith('\\\\wsl')) {
+    return inputPath
   }
 
+  // Already a Windows path (e.g., C:\...), return as-is
+  if (/^[a-zA-Z]:\\/.test(inputPath)) {
+    return inputPath
+  }
+
+  // Detect WSL paths and convert them
+  const wslInfo = detectWslPath(inputPath)
+  if (wslInfo.isWslPath && wslInfo.linuxPath) {
+    const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
+    console.log(`[resolvePathForFs] Converted Linux path to UNC: ${inputPath} -> ${uncPath}`)
+    return uncPath
+  }
+
+  // Fallback: return original path
   return inputPath
 }
 
@@ -1600,9 +1614,14 @@ ipcMain.handle(
 // File system IPC handlers
 ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
   try {
+    console.log('[fs:readFile] Original path:', filePath)
     const fsPath = resolvePathForFs(filePath)
+    console.log('[fs:readFile] Resolved path:', fsPath)
+    console.log('[fs:readFile] Path exists:', fs.existsSync(fsPath))
+
     if (!fs.existsSync(fsPath)) {
-      return { success: false, error: 'File not found' }
+      console.error('[fs:readFile] File not found:', fsPath)
+      return { success: false, error: `File not found: ${fsPath}` }
     }
 
     const stats = fs.statSync(fsPath)
@@ -1645,9 +1664,13 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
 
 ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
   try {
+    console.log('[fs:listDir] Original path:', dirPath)
     const fsPath = resolvePathForFs(dirPath)
+    console.log('[fs:listDir] Resolved path:', fsPath)
+
     if (!fs.existsSync(fsPath)) {
-      return { success: false, error: 'Directory not found' }
+      console.error('[fs:listDir] Directory not found:', fsPath)
+      return { success: false, error: `Directory not found: ${fsPath}` }
     }
 
     const stats = fs.statSync(fsPath)

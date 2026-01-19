@@ -20,6 +20,7 @@ export interface Project {
 interface ProjectStore {
   projects: Project[]
   activeProjectId: string | null
+  flashingProjects: Set<string>
 
   // Actions
   addProject: (project: Omit<Project, 'id' | 'createdAt' | 'isExpanded' | 'activeTab'>) => string
@@ -28,6 +29,8 @@ interface ProjectStore {
   toggleProjectExpanded: (id: string) => void
   setProjectTab: (id: string, tab: ProjectTab) => void
   updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath'>>) => void
+  triggerProjectFlash: (id: string) => void
+  clearProjectFlash: (id: string) => void
 }
 
 function generateId(): string {
@@ -36,9 +39,10 @@ function generateId(): string {
 
 export const useProjectStore = create<ProjectStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       projects: [],
       activeProjectId: null,
+      flashingProjects: new Set<string>(),
 
       addProject: (project) => {
         const id = generateId()
@@ -70,7 +74,17 @@ export const useProjectStore = create<ProjectStore>()(
         }),
 
       setActiveProject: (id) =>
-        set({ activeProjectId: id }),
+        set((state) => {
+          // Clear flash when project becomes active
+          const newFlashingProjects = new Set(state.flashingProjects)
+          if (id) {
+            newFlashingProjects.delete(id)
+          }
+          return {
+            activeProjectId: id,
+            flashingProjects: newFlashingProjects,
+          }
+        }),
 
       toggleProjectExpanded: (id) =>
         set((state) => ({
@@ -92,10 +106,27 @@ export const useProjectStore = create<ProjectStore>()(
             p.id === id ? { ...p, ...updates } : p
           ),
         })),
+
+      triggerProjectFlash: (id) =>
+        set((state) => ({
+          flashingProjects: new Set(state.flashingProjects).add(id),
+        })),
+
+      clearProjectFlash: (id) =>
+        set((state) => {
+          const newFlashingProjects = new Set(state.flashingProjects)
+          newFlashingProjects.delete(id)
+          return { flashingProjects: newFlashingProjects }
+        }),
     }),
     {
       name: 'toolchain-projects',
       storage: createJSONStorage(() => electronStorage),
+      // Don't persist flashingProjects (runtime state only)
+      partialize: (state) => ({
+        projects: state.projects,
+        activeProjectId: state.activeProjectId,
+      }),
       onRehydrateStorage: () => {
         console.log('[ProjectStore] Starting hydration...')
         return (state, error) => {
@@ -103,6 +134,10 @@ export const useProjectStore = create<ProjectStore>()(
             console.error('[ProjectStore] Hydration error:', error)
           } else {
             console.log('[ProjectStore] Hydrated with state:', state)
+            // Initialize flashingProjects if not present
+            if (state && !state.flashingProjects) {
+              state.flashingProjects = new Set<string>()
+            }
             // Migration: Add activeTab to existing projects (only if missing)
             if (state) {
               const needsMigration = state.projects.some((p) => !(p as any).activeTab)

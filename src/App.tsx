@@ -17,6 +17,7 @@ import { TerminalArea } from './components/TerminalArea'
 import { UpdateNotification } from './components/UpdateNotification'
 import { FileSearchModal } from './components/FileSearchModal'
 import { ReviewPanel } from './components/ReviewPanel'
+import { ToastContainer } from './components/ToastContainer'
 import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
@@ -825,6 +826,7 @@ function App() {
       <UpdateNotification />
       <FileSearchModal />
       <ReviewPanel projectPath={projects.find(p => p.id === activeProjectId)?.path || ''} />
+      <ToastContainer />
     </DndContext>
   )
 }

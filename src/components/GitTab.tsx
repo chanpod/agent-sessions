@@ -8,6 +8,7 @@ import { cn, normalizeFilePath } from '../lib/utils'
 import { generateFileId, generateCacheKey } from '../lib/file-id'
 
 interface GitTabProps {
+  projectId: string
   projectPath: string
   gitBranch: string | null
   gitHasChanges: boolean
@@ -33,7 +34,7 @@ function getFileStatusIcon(status: ChangedFile['status']) {
   }
 }
 
-export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
+export function GitTab({ projectId, projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
   const { openFile, setShowDiff } = useFileViewerStore()
 
   // Use selectors to properly track changes
@@ -456,6 +457,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
   const handleOpenChangedFile = async (filePath: string) => {
     console.log('[GitTab] Opening file:', filePath)
+    console.log('[GitTab] Project path:', projectPath)
     console.log('[GitTab] window.electron available:', !!window.electron)
 
     if (!window.electron) {
@@ -466,6 +468,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     const fullPath = normalizeFilePath(projectPath, filePath)
     const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
 
+    console.log('[GitTab] Normalized full path:', fullPath)
     console.log('[GitTab] Reading file from:', fullPath)
     const result = await window.electron.fs.readFile(fullPath)
     console.log('[GitTab] Read result:', result)

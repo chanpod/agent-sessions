@@ -3,7 +3,10 @@
     "allow": [
       "Bash(claude:*)",
       "Read(//tmp/**)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(npm run build:*)",
+      "Bash(wsl -l:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

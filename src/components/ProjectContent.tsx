@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore } from '../stores/server-store'
+import { useGitStore } from '../stores/git-store'
 import { ProjectTabBar } from './ProjectTabBar'
 import { TerminalsTab } from './TerminalsTab'
 import { FilesTab } from './FilesTab'
 import { GitTab } from './GitTab'
-import type { ChangedFile } from '../types/electron'
 
 interface ShellInfo {
   name: string
@@ -39,64 +39,29 @@ export function ProjectContent({
   const { setProjectTab } = useProjectStore()
   const { sessions } = useTerminalStore()
   const { servers } = useServerStore()
-  const [gitBranch, setGitBranch] = useState<string | null>(null)
-  const [gitHasChanges, setGitHasChanges] = useState(false)
-  const [gitAhead, setGitAhead] = useState(0)
-  const [gitBehind, setGitBehind] = useState(0)
-  const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([])
+  const { gitInfo, refreshGitInfo } = useGitStore()
+
+  // Get git info for this specific project
+  const projectGitInfo = gitInfo[project.id] || {
+    branch: null,
+    branches: [],
+    isGitRepo: false,
+    hasChanges: false,
+    ahead: 0,
+    behind: 0,
+    changedFiles: [],
+  }
 
   // Filter out server terminals from regular terminal list
   const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
   const projectServers = servers.filter((s) => s.projectId === project.id)
 
-  // Fetch git info
-  const refreshGitInfo = async () => {
-    if (!window.electron || !project.path) return
-
-    try {
-      const gitInfo = await window.electron.git.getInfo(project.path)
-      if (gitInfo.isGitRepo) {
-        setGitBranch(gitInfo.branch || null)
-        setGitHasChanges(gitInfo.hasChanges || false)
-        setGitAhead(gitInfo.ahead || 0)
-        setGitBehind(gitInfo.behind || 0)
-
-        // Fetch changed files if there are changes
-        if (gitInfo.hasChanges) {
-          const filesResult = await window.electron.git.getChangedFiles(project.path)
-          if (filesResult.success && filesResult.files) {
-            setChangedFiles(filesResult.files)
-          }
-        } else {
-          setChangedFiles([])
-        }
-      } else {
-        setGitBranch(null)
-        setGitHasChanges(false)
-        setGitAhead(0)
-        setGitBehind(0)
-        setChangedFiles([])
-      }
-    } catch (err) {
-      console.error('Failed to get git status:', err)
+  // Wrapper for refreshing this project's git info
+  const handleRefreshGitInfo = async () => {
+    if (project.path) {
+      await refreshGitInfo(project.id, project.path)
     }
   }
-
-  useEffect(() => {
-    refreshGitInfo()
-
-    // Subscribe to git events for this project
-    const handleGitChange = (projectPath: string) => {
-      if (projectPath === project.path) {
-        refreshGitInfo()
-      }
-    }
-
-    if (window.electron) {
-      const unsubscribe = window.electron.git.onChanged(handleGitChange)
-      return unsubscribe
-    }
-  }, [project.path])
 
   return (
     <div className="bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
@@ -104,7 +69,7 @@ export function ProjectContent({
         activeTab={project.activeTab}
         onTabChange={(tab) => setProjectTab(project.id, tab)}
         terminalCount={projectSessions.length + projectServers.length}
-        changedFilesCount={changedFiles.length}
+        changedFilesCount={projectGitInfo.changedFiles.length}
       />
 
       <div className="mt-2 space-y-1">
@@ -130,13 +95,14 @@ export function ProjectContent({
 
         {project.activeTab === 'git' && (
           <GitTab
+            projectId={project.id}
             projectPath={project.path}
-            gitBranch={gitBranch}
-            gitHasChanges={gitHasChanges}
-            changedFiles={changedFiles}
-            ahead={gitAhead}
-            behind={gitBehind}
-            onRefreshGitInfo={refreshGitInfo}
+            gitBranch={projectGitInfo.branch}
+            gitHasChanges={projectGitInfo.hasChanges}
+            changedFiles={projectGitInfo.changedFiles}
+            ahead={projectGitInfo.ahead}
+            behind={projectGitInfo.behind}
+            onRefreshGitInfo={handleRefreshGitInfo}
           />
         )}
       </div>
