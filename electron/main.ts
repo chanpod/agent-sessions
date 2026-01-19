@@ -653,6 +653,7 @@ Output ONLY valid JSON:
  */
 function buildCoordinatorPrompt(subAgentReviews: any[], file: string, projectPath: string): string {
   const diff = getFileDiff(file, projectPath)
+  const content = getFileContent(file, projectPath)
   const reviewsJson = JSON.stringify(subAgentReviews, null, 2)
 
   return `You are coordinating findings from 3 independent reviewers.
@@ -662,29 +663,49 @@ Tasks:
 2. Consolidate descriptions
 3. Calculate confidence (3 agents=1.0, 2=0.85, 1=0.65)
 4. Filter out false positives
+5. Generate EXACT code fixes with old/new code snippets
 
 File: ${file}
 
 Diff:
 ${diff}
 
+Full file content:
+${content}
+
 Sub-agent reviews:
 ${reviewsJson}
 
-Output consolidated findings:
+For EACH finding, you MUST provide:
+- "aiPrompt": A clear prompt the user can copy to ask AI to fix this issue
+- "codeChange": Object with "oldCode" and "newCode" for automatic fixing (if applicable)
+
+Output consolidated findings in this EXACT format:
 [
   {
     "file": "${file}",
     "line": 42,
+    "endLine": 45,
     "severity": "critical",
     "category": "Security",
-    "title": "SQL injection",
-    "description": "Found by all 3 agents...",
-    "suggestion": "Use parameterized queries",
+    "title": "SQL injection vulnerability",
+    "description": "User input is directly concatenated into SQL query without sanitization",
+    "suggestion": "Use parameterized queries to prevent SQL injection",
+    "aiPrompt": "Fix the SQL injection vulnerability on line 42 by converting the string concatenation to use parameterized queries with prepared statements",
+    "codeChange": {
+      "oldCode": "const query = 'SELECT * FROM users WHERE id = ' + userId",
+      "newCode": "const query = 'SELECT * FROM users WHERE id = ?'\\nconst results = await db.execute(query, [userId])"
+    },
     "sourceAgents": ["reviewer-1", "reviewer-2", "reviewer-3"],
     "confidence": 1.0
   }
-]`
+]
+
+IMPORTANT:
+- Always include "aiPrompt" for every finding
+- Only include "codeChange" if you can provide exact old/new code snippets
+- "oldCode" must match EXACTLY what's in the file (including whitespace)
+- "newCode" should be the complete fixed version`
 }
 
 /**
@@ -2009,9 +2030,38 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
  * Cancel review
  */
 ipcMain.handle('review:cancel', async (_event, reviewId: string) => {
+  console.log(`[Review] Cancelling review ${reviewId}`)
+
+  const review = activeReviews.get(reviewId)
+
+  // Cancel all active background tasks for this review
+  if (backgroundClaude) {
+    const stats = backgroundClaude.getStats()
+    console.log(`[Review] Active tasks before cancel:`, stats.activeTasks)
+
+    // Cancel all tasks related to this review
+    for (const task of stats.tasks) {
+      if (task.taskId.startsWith(reviewId)) {
+        console.log(`[Review] Cancelling task: ${task.taskId}`)
+        backgroundClaude.cancelTask(task.taskId)
+      }
+    }
+  }
+
+  // Kill any terminals associated with this review
+  if (review?.terminalId && ptyManager) {
+    console.log(`[Review] Killing terminal: ${review.terminalId}`)
+    try {
+      ptyManager.kill(review.terminalId)
+    } catch (error) {
+      console.error(`[Review] Failed to kill terminal:`, error)
+    }
+  }
+
+  // Remove from active reviews
   activeReviews.delete(reviewId)
-  // Cancel any active background tasks for this review
-  // (BackgroundClaudeManager will handle cleanup)
+  console.log(`[Review] Review ${reviewId} cancelled and cleaned up`)
+
   return { success: true }
 })
 

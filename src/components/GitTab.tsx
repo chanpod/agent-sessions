@@ -1,4 +1,4 @@
-import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown, Search, Sparkles, Loader2 } from 'lucide-react'
+import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, Cloud, ArrowUp, ArrowDown, Search, Sparkles, Loader2, XCircle } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChangedFile } from '../types/electron'
@@ -49,9 +49,11 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const setVisibility = useReviewStore((state) => state.setVisibility)
   const getCachedFileReview = useReviewStore((state) => state.getCachedFileReview)
   const setCachedFileReview = useReviewStore((state) => state.setCachedFileReview)
+  const clearCacheForFiles = useReviewStore((state) => state.clearCacheForFiles)
   const loadCacheFromStorage = useReviewStore((state) => state.loadCacheFromStorage)
   const setReviewStage = useReviewStore((state) => state.setReviewStage)
   const failReview = useReviewStore((state) => state.failReview)
+  const cancelReview = useReviewStore((state) => state.cancelReview)
 
   const [showBranchMenu, setShowBranchMenu] = useState(false)
   const [localBranches, setLocalBranches] = useState<string[]>([])
@@ -219,6 +221,13 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     }
   }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings, failReview, currentFileHashes, projectPath, getCachedFileReview, setCachedFileReview])
 
+  // Watch for review completion to reset isReviewing state
+  useEffect(() => {
+    if (activeReview && (activeReview.status === 'completed' || activeReview.status === 'failed' || activeReview.status === 'cancelled')) {
+      setIsReviewing(false)
+    }
+  }, [activeReview?.status])
+
   const handleStartReview = async () => {
     if (!window.electron || changedFiles.length === 0) return
 
@@ -226,6 +235,12 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     // Get files to review (all changed files)
     const filesToReview = changedFiles.map(f => f.path)
+
+    // If this is a "Review Again" (review already completed), clear cache for these files
+    if (activeReview && activeReview.status === 'completed') {
+      console.log('[GitTab] Review Again - clearing cache for', filesToReview.length, 'files')
+      clearCacheForFiles(projectPath, filesToReview)
+    }
 
     // Generate reviewId on frontend
     const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -335,6 +350,21 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     // Step 5: Merge cached classifications with new ones when they arrive
     // This will be handled by the event listeners below
     console.log('[GitTab] Review started, will merge cached data with new results')
+  }
+
+  const handleCancelReview = async () => {
+    if (!activeReviewId) return
+
+    console.log('[GitTab] Cancelling review:', activeReviewId)
+
+    // Cancel on backend
+    if (window.electron) {
+      await window.electron.review.cancel(activeReviewId)
+    }
+
+    // Cancel on frontend
+    cancelReview(activeReviewId)
+    setIsReviewing(false)
   }
 
   const handleBranchClick = (e: React.MouseEvent) => {
@@ -740,28 +770,59 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
         <div>
           {/* Review Button */}
           <div className="px-2 mb-3 flex gap-2">
-            <button
-              onClick={handleStartReview}
-              disabled={isReviewing || changedFiles.length === 0}
-              className={cn(
-                'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs rounded transition-colors',
-                isReviewing
-                  ? 'bg-purple-600/50 text-purple-300 cursor-wait'
-                  : 'bg-purple-600 hover:bg-purple-500 text-white'
-              )}
-            >
-              {isReviewing ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Reviewing...
-                </>
-              ) : (
-                <>
+            {/* Show "Review Complete" when done, otherwise show review button */}
+            {activeReview && activeReview.status === 'completed' ? (
+              <>
+                <div className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs rounded bg-green-600/20 text-green-400 border border-green-600/30">
+                  <Check className="w-3.5 h-3.5" />
+                  Review Complete
+                </div>
+                <button
+                  onClick={handleStartReview}
+                  className="px-3 py-2 text-xs rounded bg-purple-600 hover:bg-purple-500 text-white transition-colors flex items-center gap-1.5"
+                  title="Start a fresh review (clears cache)"
+                >
                   <Sparkles className="w-3.5 h-3.5" />
-                  Review ({changedFiles.length})
-                </>
-              )}
-            </button>
+                  Review Again
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={handleStartReview}
+                  disabled={isReviewing || changedFiles.length === 0}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs rounded transition-colors',
+                    isReviewing
+                      ? 'bg-purple-600/50 text-purple-300 cursor-wait'
+                      : 'bg-purple-600 hover:bg-purple-500 text-white'
+                  )}
+                >
+                  {isReviewing ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Reviewing...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Review ({changedFiles.length})
+                    </>
+                  )}
+                </button>
+                {/* Cancel button - only show when actively reviewing */}
+                {isReviewing && activeReviewId && (
+                  <button
+                    onClick={handleCancelReview}
+                    className="px-3 py-2 text-xs rounded bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-600/30 transition-colors flex items-center gap-1.5"
+                    title="Cancel review"
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                    Cancel
+                  </button>
+                )}
+              </>
+            )}
             {/* Show Results button when there's a review */}
             {activeReviewId && activeReview && (
               <button

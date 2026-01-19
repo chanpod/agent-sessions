@@ -13,6 +13,7 @@ export interface ReviewFinding {
   title: string // Short title
   description: string // Detailed description
   suggestion?: string // Optional fix suggestion
+  aiPrompt?: string // Prompt user can copy to ask AI to fix (CodeRabbit-style)
 
   // UI state
   isSelected?: boolean // For checkbox selection
@@ -23,6 +24,7 @@ export interface ReviewFinding {
   sourceAgents?: string[] // Which agents found this (multi-agent)
   confidence?: number // Confidence score (multi-agent)
   verificationStatus?: 'verified' | 'rejected' // Accuracy verification
+  verificationResult?: any // Verification details from accuracy checker
 
   // For code changes
   codeChange?: {
@@ -171,6 +173,7 @@ interface ReviewState {
   // Cache actions
   getCachedFileReview: (projectId: string, file: string, diffHash: string) => FileReviewCache | null
   setCachedFileReview: (cache: FileReviewCache) => void
+  clearCacheForFiles: (projectId: string, files: string[]) => void
   clearExpiredCache: (maxAgeMs: number) => void
   loadCacheFromStorage: () => void
   saveCacheToStorage: () => void
@@ -458,12 +461,23 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
           get().failReview(reviewId, error.message || 'Inconsequential review failed')
         })
     } else if (window.electron && filesNeedingReview.length === 0 && highRiskFiles.length > 0) {
-      // All inconsequential files were cached, move directly to high-risk
-      console.log('[ReviewStore] All inconsequential files cached, moving to high-risk review')
-      get().setReviewStage(reviewId, 'reviewing-high-risk')
-      window.electron.review.reviewHighRiskFile(reviewId)
+      // All inconsequential files were cached, but we still need to call backend
+      // to update its activeReviews Map with highRiskFiles before starting high-risk review
+      console.log('[ReviewStore] All inconsequential files cached, initializing backend for high-risk review')
+      window.electron.review.startInconsequentialReview(reviewId, [], highRiskFiles)
         .then((result) => {
           if (!result.success) {
+            console.error('[ReviewStore] Failed to initialize high-risk review:', result.error)
+            get().failReview(reviewId, result.error || 'Failed to initialize high-risk review')
+            return
+          }
+          // Now backend is ready, move to high-risk stage and start review
+          console.log('[ReviewStore] Backend ready, starting high-risk review')
+          get().setReviewStage(reviewId, 'reviewing-high-risk')
+          return window.electron.review.reviewHighRiskFile(reviewId)
+        })
+        .then((result) => {
+          if (result && !result.success) {
             console.error('[ReviewStore] High-risk review failed:', result.error)
             get().failReview(reviewId, result.error || 'High-risk review failed')
           }
@@ -503,14 +517,29 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     })
 
     // Auto-advance: If no findings and there are high-risk files, move to high-risk stage
+    // BUT: Only do this if we're not already transitioning (to avoid race with confirmClassifications)
     const review = get().reviews.get(reviewId)
-    if (review && findings.length === 0 && review.highRiskFiles && review.highRiskFiles.length > 0) {
-      console.log('[ReviewStore] No inconsequential findings, auto-advancing to high-risk review')
-      get().setReviewStage(reviewId, 'reviewing-high-risk')
-      // Trigger first high-risk file review
-      if (window.electron) {
-        window.electron.review.reviewHighRiskFile(reviewId)
-      }
+    if (review && findings.length === 0 && review.highRiskFiles && review.highRiskFiles.length > 0 && review.stage === 'reviewing-inconsequential') {
+      console.log('[ReviewStore] No inconsequential findings, checking if auto-advance needed')
+
+      // Use a small delay to let any ongoing transitions complete
+      setTimeout(() => {
+        const currentReview = get().reviews.get(reviewId)
+        if (currentReview && currentReview.stage === 'reviewing-inconsequential') {
+          console.log('[ReviewStore] Auto-advancing to high-risk review')
+          get().setReviewStage(reviewId, 'reviewing-high-risk')
+          // Trigger first high-risk file review
+          if (window.electron) {
+            window.electron.review.reviewHighRiskFile(reviewId)
+              .catch((error) => {
+                console.error('[ReviewStore] Auto-advance high-risk review error:', error)
+                get().failReview(reviewId, error.message || 'High-risk review failed')
+              })
+          }
+        } else {
+          console.log('[ReviewStore] Already transitioned to stage:', currentReview?.stage)
+        }
+      }, 100) // 100ms delay to let confirmClassifications complete
     } else if (review && findings.length === 0 && (!review.highRiskFiles || review.highRiskFiles.length === 0)) {
       // No findings and no high-risk files = completed
       console.log('[ReviewStore] No findings at all, marking review as completed')
@@ -630,7 +659,14 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const review = reviews.get(reviewId)
     if (!review) return
 
-    const finding = review.inconsequentialFindings.find((f) => f.id === findingId)
+    // Find in either inconsequential or high-risk findings
+    let finding = review.inconsequentialFindings.find((f) => f.id === findingId)
+    let isHighRisk = false
+    if (!finding) {
+      finding = review.highRiskFindings.find((f) => f.id === findingId)
+      isHighRisk = true
+    }
+
     if (!finding || finding.isApplied || !finding.codeChange) return
 
     // Apply the fix to the file
@@ -657,13 +693,23 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     // Mark finding as applied
     set((state) => {
       const newReviews = new Map(state.reviews)
-      const newFindings = review.inconsequentialFindings.map((f) =>
-        f.id === findingId ? { ...f, isApplied: true } : f
-      )
-      newReviews.set(reviewId, {
-        ...review,
-        inconsequentialFindings: newFindings,
-      })
+      if (isHighRisk) {
+        const newFindings = review.highRiskFindings.map((f) =>
+          f.id === findingId ? { ...f, isApplied: true } : f
+        )
+        newReviews.set(reviewId, {
+          ...review,
+          highRiskFindings: newFindings,
+        })
+      } else {
+        const newFindings = review.inconsequentialFindings.map((f) =>
+          f.id === findingId ? { ...f, isApplied: true } : f
+        )
+        newReviews.set(reviewId, {
+          ...review,
+          inconsequentialFindings: newFindings,
+        })
+      }
       return { reviews: newReviews }
     })
   },
@@ -779,6 +825,33 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     })
 
     // Auto-save to storage
+    get().saveCacheToStorage()
+  },
+
+  clearCacheForFiles: (projectId, files) => {
+    set((state) => {
+      const newCache = new Map(state.fileReviewCache)
+      let removed = 0
+
+      // Remove cache entries for the specified files
+      for (const file of files) {
+        // Need to iterate through all cache entries since hash is part of the key
+        for (const [key, cache] of newCache.entries()) {
+          if (cache.projectId === projectId && cache.file === file) {
+            newCache.delete(key)
+            removed++
+          }
+        }
+      }
+
+      if (removed > 0) {
+        console.log('[ReviewStore] Cleared cache for', removed, 'files')
+      }
+
+      return { fileReviewCache: newCache }
+    })
+
+    // Auto-save after cleanup
     get().saveCacheToStorage()
   },
 
