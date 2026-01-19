@@ -259,8 +259,8 @@ const electronAPI = {
   review: {
     start: (projectPath: string, files: string[], reviewId?: string): Promise<ReviewResult> =>
       ipcRenderer.invoke('review:start', projectPath, files, reviewId),
-    startInconsequentialReview: (reviewId: string, inconsequentialFiles: string[], highRiskFiles: string[]): Promise<{ success: boolean; findingCount?: number; error?: string }> =>
-      ipcRenderer.invoke('review:start-inconsequential', reviewId, inconsequentialFiles, highRiskFiles),
+    startLowRiskReview: (reviewId: string, lowRiskFiles: string[], highRiskFiles: string[]): Promise<{ success: boolean; findingCount?: number; error?: string }> =>
+      ipcRenderer.invoke('review:start-low-risk', reviewId, lowRiskFiles, highRiskFiles),
     reviewHighRiskFile: (reviewId: string): Promise<{ success: boolean; complete?: boolean; findingCount?: number; error?: string }> =>
       ipcRenderer.invoke('review:review-high-risk-file', reviewId),
     cancel: (reviewId: string): Promise<{ success: boolean }> =>
@@ -274,10 +274,10 @@ const electronAPI = {
       ipcRenderer.on('review:classifications', handler)
       return () => ipcRenderer.removeListener('review:classifications', handler)
     },
-    onInconsequentialFindings: (callback: (event: any) => void) => {
+    onLowRiskFindings: (callback: (event: any) => void) => {
       const handler = (_: any, event: any) => callback(event)
-      ipcRenderer.on('review:inconsequential-findings', handler)
-      return () => ipcRenderer.removeListener('review:inconsequential-findings', handler)
+      ipcRenderer.on('review:low-risk-findings', handler)
+      return () => ipcRenderer.removeListener('review:low-risk-findings', handler)
     },
     onHighRiskStatus: (callback: (event: any) => void) => {
       const handler = (_: any, event: any) => callback(event)

@@ -13,6 +13,7 @@ import { BackgroundClaudeManager } from './background-claude-manager.js'
 import { readFileSync } from 'fs'
 import { join, basename } from 'path'
 import { createHash } from 'crypto'
+import { generateFileId, type FileId } from './file-id-util.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -74,7 +75,7 @@ function getWslDistros(): string[] {
   }
 }
 
-// Execute a command, routing through WSL if needed
+// Execute a command, routing through WSL if needed (synchronous version)
 function execInContext(command: string, projectPath: string, options: { encoding: 'utf-8' } = { encoding: 'utf-8' }): string {
   const wslInfo = detectWslPath(projectPath)
 
@@ -93,6 +94,35 @@ function execInContext(command: string, projectPath: string, options: { encoding
     cwd: projectPath,
     ...options,
     stdio: ['pipe', 'pipe', 'pipe'],
+  })
+}
+
+// Execute a command asynchronously, routing through WSL if needed
+function execInContextAsync(command: string, projectPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const wslInfo = detectWslPath(projectPath)
+
+    let cmd: string
+    let execOptions: any
+
+    if (process.platform === 'win32' && wslInfo.isWslPath) {
+      const linuxPath = wslInfo.linuxPath || projectPath
+      const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
+      const escapedCmd = command.replace(/"/g, '\\"')
+      cmd = `wsl ${distroArg}bash -c "cd '${linuxPath}' && ${escapedCmd}"`
+      execOptions = { encoding: 'utf-8' }
+    } else {
+      cmd = command
+      execOptions = { cwd: projectPath, encoding: 'utf-8' }
+    }
+
+    exec(cmd, execOptions, (error, stdout, stderr) => {
+      if (error) {
+        reject(error)
+      } else {
+        resolve(stdout)
+      }
+    })
   })
 }
 
@@ -352,20 +382,22 @@ interface ActiveReview {
   projectPath: string
   files: string[]
   classifications?: any[]
-  inconsequentialFiles?: string[]
+  lowRiskFiles?: string[]
   highRiskFiles?: string[]
   currentHighRiskIndex: number
 }
 
 const activeReviews = new Map<string, ActiveReview>()
 
-// Git polling for detecting branch and file changes
-interface GitPollerSet {
-  pollInterval: NodeJS.Timeout
-  lastNotifyTime: number
+// Git watching for detecting branch and file changes
+interface GitWatcherSet {
+  watcher: fs.FSWatcher
+  debounceTimer: NodeJS.Timeout | null
+  lastHeadContent: string
+  lastIndexMtime: number
 }
-const gitPollers = new Map<string, GitPollerSet>()
-const GIT_POLL_INTERVAL_MS = 3000 // Poll every 3 seconds
+const gitWatchers = new Map<string, GitWatcherSet>()
+const GIT_DEBOUNCE_MS = 300 // Debounce rapid changes
 
 async function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js')
@@ -463,11 +495,14 @@ async function createWindow() {
     ptyManager = null
     sshManager?.disposeAll()
     sshManager = null
-    // Clean up all git pollers
-    for (const pollerSet of gitPollers.values()) {
-      clearInterval(pollerSet.pollInterval)
+    // Clean up all git watchers
+    for (const watcherSet of gitWatchers.values()) {
+      watcherSet.watcher.close()
+      if (watcherSet.debounceTimer) {
+        clearTimeout(watcherSet.debounceTimer)
+      }
     }
-    gitPollers.clear()
+    gitWatchers.clear()
   })
 }
 
@@ -531,20 +566,30 @@ function generatePerFileDiffHashes(files: string[], projectPath: string): Map<st
 }
 
 /**
- * Build classification prompt
+ * Build classification prompt (with FileId for exact matching)
  */
 function buildClassificationPrompt(files: string[], projectPath: string): string {
-  const fileList = files.map(f => `- ${f}`).join('\n')
-  const diffs = files.map(f => {
+  // Build file list with FileIds
+  const filesWithIds = files.map(f => {
+    const fileId = generateFileId(projectPath, f)
     const diff = getFileDiff(f, projectPath)
-    return `=== ${f} ===\n${diff}\n`
-  }).join('\n')
+    return {
+      fileId,
+      path: f,
+      diff
+    }
+  })
+
+  const fileList = filesWithIds.map(f => `- ${f.path} (fileId: ${f.fileId})`).join('\n')
+  const diffs = filesWithIds.map(f =>
+    `=== ${f.path} ===\nFileId: ${f.fileId}\n${f.diff}\n`
+  ).join('\n')
 
   return `You are analyzing code changes to classify files by risk level.
 
-Classify each file as INCONSEQUENTIAL or HIGH-RISK based on these criteria:
+Classify each file as LOW-RISK or HIGH-RISK based on these criteria:
 
-INCONSEQUENTIAL (low risk):
+LOW-RISK:
 - Configuration files, docs, type definitions, formatting changes
 - Comments, simple refactoring, test files
 
@@ -558,24 +603,37 @@ ${fileList}
 Diffs:
 ${diffs}
 
-Output ONLY valid JSON:
+Output ONLY valid JSON with EXACTLY these fields (including fileId):
 [
   {
+    "fileId": "project:src/config.ts",
     "file": "src/config.ts",
-    "riskLevel": "inconsequential",
+    "riskLevel": "low-risk",
     "reasoning": "Only config values changed"
   }
-]`
+]
+
+CRITICAL: You MUST include the exact fileId from the input for each file in your response!`
 }
 
 /**
- * Build inconsequential review prompt
+ * Build low-risk review prompt (with FileId for exact matching)
  */
-function buildInconsequentialPrompt(files: string[], projectPath: string): string {
-  const filesWithDiffs = files.map(f => {
+function buildLowRiskPrompt(files: string[], projectPath: string): string {
+  // Build file list with FileIds
+  const filesWithIds = files.map(f => {
+    const fileId = generateFileId(projectPath, f)
     const diff = getFileDiff(f, projectPath)
-    return `=== ${f} ===\n${diff}\n`
-  }).join('\n')
+    return {
+      fileId,
+      path: f,
+      diff
+    }
+  })
+
+  const filesWithDiffs = filesWithIds.map(f =>
+    `=== ${f.path} ===\nFileId: ${f.fileId}\n${f.diff}\n`
+  ).join('\n')
 
   return `You are reviewing LOW-RISK code changes for simple issues.
 
@@ -589,9 +647,10 @@ DO NOT report: Complex logic, architecture, pre-existing issues
 Files:
 ${filesWithDiffs}
 
-Output ONLY valid JSON array with codeChange field:
+Output ONLY valid JSON array with fileId AND codeChange fields:
 [
   {
+    "fileId": "project:src/utils.ts",
     "file": "src/utils.ts",
     "line": 42,
     "severity": "suggestion",
@@ -604,13 +663,16 @@ Output ONLY valid JSON array with codeChange field:
       "newCode": ""
     }
   }
-]`
+]
+
+CRITICAL: You MUST include the exact fileId from the input for each finding!`
 }
 
 /**
- * Build sub-agent reviewer prompt
+ * Build sub-agent reviewer prompt (with FileId for exact matching)
  */
 function buildSubAgentPrompt(file: string, projectPath: string, agentNumber: number, riskReasoning: string): string {
+  const fileId = generateFileId(projectPath, file)
   const diff = getFileDiff(file, projectPath)
   const content = getFileContent(file, projectPath)
   const imports = getFileImports(file, projectPath)
@@ -621,6 +683,7 @@ function buildSubAgentPrompt(file: string, projectPath: string, agentNumber: num
 ⚠️ DO NOT report issues in unchanged code
 
 File: ${file}
+FileId: ${fileId}
 Risk reason: ${riskReasoning}
 
 === CHANGES (diff) ===
@@ -1198,60 +1261,129 @@ ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
   }
 })
 
-// Poll a project's git directory for changes (branch switches, commits, staging, file edits)
+// Watch a project's git directory for changes (branch switches, commits, staging, file edits)
 ipcMain.handle('git:watch', async (_event, projectPath: string) => {
-  // Don't double-poll
-  if (gitPollers.has(projectPath)) {
+  // Don't double-watch
+  if (gitWatchers.has(projectPath)) {
     return { success: true }
   }
 
   const fsPath = resolvePathForFs(projectPath)
   const gitDir = path.join(fsPath, '.git')
   const headPath = path.join(gitDir, 'HEAD')
+  const indexPath = path.join(gitDir, 'index')
 
-  if (!fs.existsSync(headPath)) {
+  if (!fs.existsSync(gitDir)) {
     return { success: false, error: 'Not a git repository' }
   }
 
   try {
-    // Set up interval-based polling instead of file watching
-    const pollInterval = setInterval(() => {
-      const pollerSet = gitPollers.get(projectPath)
-      if (!pollerSet) {
-        clearInterval(pollInterval)
+    // Read initial state to detect changes
+    let lastHeadContent = ''
+    let lastIndexMtime = 0
+
+    try {
+      lastHeadContent = fs.readFileSync(headPath, 'utf-8')
+    } catch (err) {
+      // HEAD might not exist yet
+    }
+
+    try {
+      const indexStats = fs.statSync(indexPath)
+      lastIndexMtime = indexStats.mtimeMs
+    } catch (err) {
+      // index might not exist yet
+    }
+
+    // Notify function with debouncing
+    const notifyChange = () => {
+      const watcherSet = gitWatchers.get(projectPath)
+      if (!watcherSet) return
+
+      // Clear existing debounce timer
+      if (watcherSet.debounceTimer) {
+        clearTimeout(watcherSet.debounceTimer)
+      }
+
+      // Debounce: only notify after 300ms of no changes
+      watcherSet.debounceTimer = setTimeout(async () => {
+        try {
+          // Check if anything actually changed
+          let hasChanged = false
+
+          // Check HEAD (branch changes)
+          try {
+            const currentHeadContent = fs.readFileSync(headPath, 'utf-8')
+            if (currentHeadContent !== watcherSet.lastHeadContent) {
+              watcherSet.lastHeadContent = currentHeadContent
+              hasChanged = true
+            }
+          } catch (err) {
+            // Ignore errors reading HEAD
+          }
+
+          // Check index (staging changes)
+          try {
+            const indexStats = fs.statSync(indexPath)
+            if (indexStats.mtimeMs !== watcherSet.lastIndexMtime) {
+              watcherSet.lastIndexMtime = indexStats.mtimeMs
+              hasChanged = true
+            }
+          } catch (err) {
+            // Ignore errors reading index
+          }
+
+          // Only notify if something actually changed
+          if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('git:changed', projectPath)
+          }
+        } catch (err) {
+          console.error('[Git Watch] Error checking for changes:', err)
+        }
+      }, GIT_DEBOUNCE_MS)
+    }
+
+    // Watch the .git directory for changes
+    // fs.watch is non-blocking and doesn't lock files
+    const watcher = fs.watch(gitDir, { recursive: false }, (eventType, filename) => {
+      // We care about changes to HEAD (branch), index (staging), and refs (commits)
+      if (!filename) {
+        notifyChange()
         return
       }
 
-      // Throttle notifications to avoid spamming (minimum 1 second between notifications)
-      const now = Date.now()
-      if (now - pollerSet.lastNotifyTime < 1000) {
-        return
+      const fileStr = filename.toString()
+      if (fileStr === 'HEAD' || fileStr === 'index' || fileStr.startsWith('refs')) {
+        notifyChange()
       }
-
-      pollerSet.lastNotifyTime = now
-      if (mainWindow) {
-        mainWindow.webContents.send('git:changed', projectPath)
-      }
-    }, GIT_POLL_INTERVAL_MS)
-
-    gitPollers.set(projectPath, {
-      pollInterval,
-      lastNotifyTime: 0,
     })
 
+    // Store watcher info
+    gitWatchers.set(projectPath, {
+      watcher,
+      debounceTimer: null,
+      lastHeadContent,
+      lastIndexMtime,
+    })
+
+    console.log(`[Git Watch] Started watching ${projectPath}`)
     return { success: true }
   } catch (err) {
-    console.error('Failed to start git polling:', err)
+    console.error('Failed to start git watching:', err)
     return { success: false, error: String(err) }
   }
 })
 
-// Stop polling a project's git directory
+// Stop watching a project's git directory
 ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
-  const pollerSet = gitPollers.get(projectPath)
-  if (pollerSet) {
-    clearInterval(pollerSet.pollInterval)
-    gitPollers.delete(projectPath)
+  const watcherSet = gitWatchers.get(projectPath)
+  if (watcherSet) {
+    watcherSet.watcher.close()
+    if (watcherSet.debounceTimer) {
+      clearTimeout(watcherSet.debounceTimer)
+    }
+    gitWatchers.delete(projectPath)
+    console.log(`[Git Watch] Stopped watching ${projectPath}`)
   }
   return { success: true }
 })
@@ -1768,18 +1900,24 @@ ipcMain.handle('review:start', async (_event, projectPath: string, files: string
 
       console.log(`[Review] Sending ${classifications.length} classifications to frontend`)
 
+      // Ensure all classifications have fileId
+      const classificationsWithFileId = classifications.map((c: any) => ({
+        ...c,
+        fileId: c.fileId || generateFileId(projectPath, c.file) // Fallback if AI didn't include it
+      }))
+
       // Send to frontend
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('review:classifications', {
           reviewId,
-          classifications
+          classifications: classificationsWithFileId
         })
       }
 
       // Update active review
       const review = activeReviews.get(reviewId)
       if (review) {
-        review.classifications = classifications
+        review.classifications = classificationsWithFileId
       }
 
       return { success: true, reviewId }
@@ -1795,25 +1933,25 @@ ipcMain.handle('review:start', async (_event, projectPath: string, files: string
 })
 
 /**
- * Stage 2: User confirmed classifications, start inconsequential review
+ * Stage 2: User confirmed classifications, start low-risk review
  */
-ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, inconsequentialFiles: string[], highRiskFiles: string[]) => {
+ipcMain.handle('review:start-low-risk', async (_event, reviewId: string, lowRiskFiles: string[], highRiskFiles: string[]) => {
   const review = activeReviews.get(reviewId)
   if (!review) {
     return { success: false, error: 'Review not found' }
   }
 
-  console.log(`[Review] Starting inconsequential review: ${inconsequentialFiles.length} files`)
+  console.log(`[Review] Starting low-risk review: ${lowRiskFiles.length} files`)
 
-  review.inconsequentialFiles = inconsequentialFiles
+  review.lowRiskFiles = lowRiskFiles
   review.highRiskFiles = highRiskFiles
 
   // Handle case where all files were cached (0 files to review)
-  if (inconsequentialFiles.length === 0) {
+  if (lowRiskFiles.length === 0) {
     console.log('[Review] No files to review (all cached), sending empty findings')
     const mainWindow = BrowserWindow.getAllWindows()[0]
     if (mainWindow) {
-      mainWindow.webContents.send('review:inconsequential-findings', {
+      mainWindow.webContents.send('review:low-risk-findings', {
         reviewId,
         findings: []
       })
@@ -1825,13 +1963,13 @@ ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, 
     // Split files into batches for parallel review
     const batchSize = 5
     const batches: string[][] = []
-    for (let i = 0; i < inconsequentialFiles.length; i += batchSize) {
-      batches.push(inconsequentialFiles.slice(i, i + batchSize))
+    for (let i = 0; i < lowRiskFiles.length; i += batchSize) {
+      batches.push(lowRiskFiles.slice(i, i + batchSize))
     }
 
     // Run batches in parallel
     const batchPromises = batches.map((batch, idx) => {
-      const prompt = buildInconsequentialPrompt(batch, review.projectPath)
+      const prompt = buildLowRiskPrompt(batch, review.projectPath)
       return backgroundClaude!.runTask({
         taskId: `${reviewId}-batch-${idx}`,
         prompt,
@@ -1850,15 +1988,16 @@ ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, 
       }
     }
 
-    // Add unique IDs
+    // Add unique IDs and ensure fileId is present
     const findingsWithIds = allFindings.map((f, idx) => ({
       ...f,
-      id: `${reviewId}-inconseq-${idx}`
+      id: `${reviewId}-low-risk-${idx}`,
+      fileId: f.fileId || generateFileId(review.projectPath, f.file) // Fallback if AI didn't include it
     }))
 
     // Send to frontend
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('review:inconsequential-findings', {
+      mainWindow.webContents.send('review:low-risk-findings', {
         reviewId,
         findings: findingsWithIds
       })
@@ -1866,11 +2005,11 @@ ipcMain.handle('review:start-inconsequential', async (_event, reviewId: string, 
 
     return { success: true, findingCount: findingsWithIds.length }
   } catch (error: any) {
-    console.error(`[Review] Inconsequential review failed:`, error)
+    console.error(`[Review] Low-risk review failed:`, error)
 
     // Send failure event to frontend
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('review:failed', reviewId, error.message || 'Inconsequential review failed')
+      mainWindow.webContents.send('review:failed', reviewId, error.message || 'Low-risk review failed')
     }
 
     return { success: false, error: error.message }

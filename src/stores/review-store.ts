@@ -1,11 +1,14 @@
 import { create } from 'zustand'
+import type { FileId, CacheKey } from '../lib/file-id'
+import { generateFileId, generateCacheKey, cacheKeyMatchesFileId } from '../lib/file-id'
 
 /**
  * Review Finding - Individual issue found by the review
  */
 export interface ReviewFinding {
   id: string // Unique ID for this finding
-  file: string // Relative file path
+  fileId: FileId // Stable file identifier (NEW)
+  file: string // Relative file path (kept for backward compatibility)
   line?: number // Line number (optional)
   endLine?: number // End line for multi-line issues
   severity: 'critical' | 'warning' | 'info' | 'suggestion'
@@ -37,11 +40,13 @@ export interface ReviewFinding {
 }
 
 /**
- * Per-File Review Cache
+ * Per-File Review Cache (NEW: keyed by CacheKey = fileId:contentHash)
  */
 export interface FileReviewCache {
-  file: string // File path
-  diffHash: string // Hash of this file's git diff
+  cacheKey: CacheKey // NEW: Unique cache key "fileId:contentHash"
+  fileId: FileId // NEW: Stable file identifier
+  file: string // Relative file path (kept for backward compatibility)
+  contentHash: string // Content hash (renamed from diffHash)
   classification?: FileClassification // Risk classification
   findings: ReviewFinding[] // Findings for this file
   reviewedAt: number // Timestamp when reviewed
@@ -51,15 +56,32 @@ export interface FileReviewCache {
 /**
  * File Risk Level
  */
-export type FileRiskLevel = 'inconsequential' | 'high-risk'
+export type FileRiskLevel = 'low-risk' | 'high-risk'
+
+/**
+ * Expert Reviewer Type
+ */
+export type ExpertReviewerType = 'security' | 'ui' | 'performance' | 'accessibility' | 'database'
+
+/**
+ * Expert Review Flag - Manual flag applied to files
+ */
+export interface ExpertReviewFlag {
+  fileId: FileId // NEW: Stable file identifier
+  file: string // Kept for backward compatibility
+  reviewerType: ExpertReviewerType
+  priority: 'minor' | 'major' // minor = quick check, major = thorough review
+}
 
 /**
  * File Classification
  */
 export interface FileClassification {
-  file: string
+  fileId: FileId // NEW: Stable file identifier
+  file: string // Kept for backward compatibility
   riskLevel: FileRiskLevel
   reasoning: string
+  expertFlags?: ExpertReviewFlag[] // Optional expert reviewer flags
 }
 
 /**
@@ -68,7 +90,7 @@ export interface FileClassification {
 export type ReviewStage =
   | 'classifying'
   | 'classification-review'
-  | 'reviewing-inconsequential'
+  | 'reviewing-low-risk'
   | 'reviewing-high-risk'
   | 'completed'
 
@@ -90,9 +112,9 @@ export interface ReviewResult {
 
   // Multi-stage specific
   classifications?: FileClassification[] // Risk classifications
-  inconsequentialFiles: string[] // Low-risk files
+  lowRiskFiles: string[] // Low-risk files
   highRiskFiles: string[] // High-risk files
-  inconsequentialFindings: ReviewFinding[] // Findings from low-risk review
+  lowRiskFindings: ReviewFinding[] // Findings from low-risk review
   highRiskFindings: ReviewFinding[] // Findings from high-risk review
   currentHighRiskFileIndex: number // Which high-risk file we're on
   currentFileCoordinatorStatus?: 'reviewing' | 'coordinating' | 'verifying' | 'complete'
@@ -154,9 +176,11 @@ interface ReviewState {
   // Multi-stage actions
   setClassifications: (reviewId: string, classifications: FileClassification[]) => void
   updateClassification: (reviewId: string, file: string, riskLevel: FileRiskLevel) => void
+  addExpertFlag: (reviewId: string, file: string, reviewerType: ExpertReviewerType, priority: 'minor' | 'major') => void
+  removeExpertFlag: (reviewId: string, file: string, reviewerType: ExpertReviewerType) => void
   confirmClassifications: (reviewId: string) => void
   setReviewStage: (reviewId: string, stage: ReviewStage) => void
-  setInconsequentialFindings: (reviewId: string, findings: ReviewFinding[]) => void
+  setLowRiskFindings: (reviewId: string, findings: ReviewFinding[]) => void
   addHighRiskFindings: (reviewId: string, findings: ReviewFinding[]) => void
   toggleFindingSelection: (reviewId: string, findingId: string) => void
   selectAllFindings: (reviewId: string) => void
@@ -170,10 +194,11 @@ interface ReviewState {
   getConfig: (projectId: string) => ReviewConfig
   updateConfig: (projectId: string, config: Partial<ReviewConfig>) => void
 
-  // Cache actions
-  getCachedFileReview: (projectId: string, file: string, diffHash: string) => FileReviewCache | null
+  // Cache actions (NEW: FileId-based)
+  getCachedFileReview: (fileId: FileId, contentHash: string) => FileReviewCache | null
   setCachedFileReview: (cache: FileReviewCache) => void
-  clearCacheForFiles: (projectId: string, files: string[]) => void
+  clearCacheForFile: (fileId: FileId) => void // NEW: Clear all versions of a file
+  clearCacheForFiles: (fileIds: FileId[]) => void // Updated to use FileId
   clearExpiredCache: (maxAgeMs: number) => void
   loadCacheFromStorage: () => void
   saveCacheToStorage: () => void
@@ -234,9 +259,9 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       startedAt: Date.now(),
       files,
       findings: [],
-      inconsequentialFiles: [],
+      lowRiskFiles: [],
       highRiskFiles: [],
-      inconsequentialFindings: [],
+      lowRiskFindings: [],
       highRiskFindings: [],
       currentHighRiskFileIndex: 0,
     }
@@ -409,14 +434,65 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     })
   },
 
+  addExpertFlag: (reviewId, file, reviewerType, priority) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review && review.classifications) {
+        const newClassifications = review.classifications.map((c) => {
+          if (c.file === file) {
+            const existingFlags = c.expertFlags || []
+            // Don't add duplicate flags
+            if (existingFlags.some((f) => f.reviewerType === reviewerType)) {
+              return c
+            }
+            return {
+              ...c,
+              expertFlags: [...existingFlags, { file, reviewerType, priority }],
+            }
+          }
+          return c
+        })
+        newReviews.set(reviewId, {
+          ...review,
+          classifications: newClassifications,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  removeExpertFlag: (reviewId, file, reviewerType) => {
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const review = newReviews.get(reviewId)
+      if (review && review.classifications) {
+        const newClassifications = review.classifications.map((c) => {
+          if (c.file === file && c.expertFlags) {
+            return {
+              ...c,
+              expertFlags: c.expertFlags.filter((f) => f.reviewerType !== reviewerType),
+            }
+          }
+          return c
+        })
+        newReviews.set(reviewId, {
+          ...review,
+          classifications: newClassifications,
+        })
+      }
+      return { reviews: newReviews }
+    })
+  },
+
   confirmClassifications: (reviewId) => {
     const { reviews } = get()
     const review = reviews.get(reviewId)
     if (!review || !review.classifications) return
 
-    // Split files into inconsequential and high-risk
-    const inconsequentialFiles = review.classifications
-      .filter((c) => c.riskLevel === 'inconsequential')
+    // Split files into low-risk and high-risk
+    const lowRiskFiles = review.classifications
+      .filter((c) => c.riskLevel === 'low-risk')
       .map((c) => c.file)
     const highRiskFiles = review.classifications
       .filter((c) => c.riskLevel === 'high-risk')
@@ -426,45 +502,45 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const newReviews = new Map(state.reviews)
       newReviews.set(reviewId, {
         ...review,
-        stage: 'reviewing-inconsequential',
-        inconsequentialFiles,
+        stage: 'reviewing-low-risk',
+        lowRiskFiles,
         highRiskFiles,
       })
       return { reviews: newReviews }
     })
 
     // Check if we already have findings (from cache)
-    const alreadyHasInconsequentialFindings = review.inconsequentialFindings.length > 0
-    const filesNeedingReview = inconsequentialFiles.filter((file) =>
-      !review.inconsequentialFindings.some((f) => f.file === file)
+    const alreadyHasLowRiskFindings = review.lowRiskFindings.length > 0
+    const filesNeedingReview = lowRiskFiles.filter((file) =>
+      !review.lowRiskFindings.some((f) => f.file === file)
     )
 
-    // If all inconsequential files already have cached findings, skip backend and show results
-    if (filesNeedingReview.length === 0 && alreadyHasInconsequentialFindings) {
-      console.log('[ReviewStore] All inconsequential files already have cached findings, skipping backend review')
-      // Already in 'reviewing-inconsequential' stage, findings are already set, UI will show results
+    // If all low-risk files already have cached findings, skip backend and show results
+    if (filesNeedingReview.length === 0 && alreadyHasLowRiskFindings) {
+      console.log('[ReviewStore] All low-risk files already have cached findings, skipping backend review')
+      // Already in 'reviewing-low-risk' stage, findings are already set, UI will show results
       return
     }
 
     // Only trigger backend review for files that need it
     if (window.electron && filesNeedingReview.length > 0) {
-      console.log(`[ReviewStore] Triggering inconsequential review for ${filesNeedingReview.length} uncached files`)
-      window.electron.review.startInconsequentialReview(reviewId, filesNeedingReview, highRiskFiles)
+      console.log(`[ReviewStore] Triggering low-risk review for ${filesNeedingReview.length} uncached files`)
+      window.electron.review.startLowRiskReview(reviewId, filesNeedingReview, highRiskFiles)
         .then((result) => {
           if (!result.success) {
-            console.error('[ReviewStore] Inconsequential review failed:', result.error)
-            get().failReview(reviewId, result.error || 'Inconsequential review failed')
+            console.error('[ReviewStore] Low-risk review failed:', result.error)
+            get().failReview(reviewId, result.error || 'Low-risk review failed')
           }
         })
         .catch((error) => {
-          console.error('[ReviewStore] Inconsequential review error:', error)
-          get().failReview(reviewId, error.message || 'Inconsequential review failed')
+          console.error('[ReviewStore] Low-risk review error:', error)
+          get().failReview(reviewId, error.message || 'Low-risk review failed')
         })
     } else if (window.electron && filesNeedingReview.length === 0 && highRiskFiles.length > 0) {
-      // All inconsequential files were cached, but we still need to call backend
+      // All low-risk files were cached, but we still need to call backend
       // to update its activeReviews Map with highRiskFiles before starting high-risk review
-      console.log('[ReviewStore] All inconsequential files cached, initializing backend for high-risk review')
-      window.electron.review.startInconsequentialReview(reviewId, [], highRiskFiles)
+      console.log('[ReviewStore] All low-risk files cached, initializing backend for high-risk review')
+      window.electron.review.startLowRiskReview(reviewId, [], highRiskFiles)
         .then((result) => {
           if (!result.success) {
             console.error('[ReviewStore] Failed to initialize high-risk review:', result.error)
@@ -503,14 +579,14 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     })
   },
 
-  setInconsequentialFindings: (reviewId, findings) => {
+  setLowRiskFindings: (reviewId, findings) => {
     set((state) => {
       const newReviews = new Map(state.reviews)
       const review = newReviews.get(reviewId)
       if (review) {
         newReviews.set(reviewId, {
           ...review,
-          inconsequentialFindings: findings,
+          lowRiskFindings: findings,
         })
       }
       return { reviews: newReviews }
@@ -519,13 +595,13 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     // Auto-advance: If no findings and there are high-risk files, move to high-risk stage
     // BUT: Only do this if we're not already transitioning (to avoid race with confirmClassifications)
     const review = get().reviews.get(reviewId)
-    if (review && findings.length === 0 && review.highRiskFiles && review.highRiskFiles.length > 0 && review.stage === 'reviewing-inconsequential') {
-      console.log('[ReviewStore] No inconsequential findings, checking if auto-advance needed')
+    if (review && findings.length === 0 && review.highRiskFiles && review.highRiskFiles.length > 0 && review.stage === 'reviewing-low-risk') {
+      console.log('[ReviewStore] No low-risk findings, checking if auto-advance needed')
 
       // Use a small delay to let any ongoing transitions complete
       setTimeout(() => {
         const currentReview = get().reviews.get(reviewId)
-        if (currentReview && currentReview.stage === 'reviewing-inconsequential') {
+        if (currentReview && currentReview.stage === 'reviewing-low-risk') {
           console.log('[ReviewStore] Auto-advancing to high-risk review')
           get().setReviewStage(reviewId, 'reviewing-high-risk')
           // Trigger first high-risk file review
@@ -578,12 +654,12 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const newReviews = new Map(state.reviews)
       const review = newReviews.get(reviewId)
       if (review) {
-        const newFindings = review.inconsequentialFindings.map((f) =>
+        const newFindings = review.lowRiskFindings.map((f) =>
           f.id === findingId ? { ...f, isSelected: !f.isSelected } : f
         )
         newReviews.set(reviewId, {
           ...review,
-          inconsequentialFindings: newFindings,
+          lowRiskFindings: newFindings,
         })
       }
       return { reviews: newReviews }
@@ -595,14 +671,14 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const newReviews = new Map(state.reviews)
       const review = newReviews.get(reviewId)
       if (review) {
-        const allSelected = review.inconsequentialFindings.every((f) => f.isSelected)
-        const newFindings = review.inconsequentialFindings.map((f) => ({
+        const allSelected = review.lowRiskFindings.every((f) => f.isSelected)
+        const newFindings = review.lowRiskFindings.map((f) => ({
           ...f,
           isSelected: !allSelected,
         }))
         newReviews.set(reviewId, {
           ...review,
-          inconsequentialFindings: newFindings,
+          lowRiskFindings: newFindings,
         })
       }
       return { reviews: newReviews }
@@ -614,7 +690,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const review = reviews.get(reviewId)
     if (!review) return
 
-    const selectedFindings = review.inconsequentialFindings.filter((f) => f.isSelected && !f.isApplied)
+    const selectedFindings = review.lowRiskFindings.filter((f) => f.isSelected && !f.isApplied)
 
     // Apply each finding via IPC
     for (const finding of selectedFindings) {
@@ -643,12 +719,12 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     // Mark applied findings
     set((state) => {
       const newReviews = new Map(state.reviews)
-      const newFindings = review.inconsequentialFindings.map((f) =>
+      const newFindings = review.lowRiskFindings.map((f) =>
         f.isSelected && !f.isApplied ? { ...f, isApplied: true, isSelected: false } : f
       )
       newReviews.set(reviewId, {
         ...review,
-        inconsequentialFindings: newFindings,
+        lowRiskFindings: newFindings,
       })
       return { reviews: newReviews }
     })
@@ -659,8 +735,8 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const review = reviews.get(reviewId)
     if (!review) return
 
-    // Find in either inconsequential or high-risk findings
-    let finding = review.inconsequentialFindings.find((f) => f.id === findingId)
+    // Find in either low-risk or high-risk findings
+    let finding = review.lowRiskFindings.find((f) => f.id === findingId)
     let isHighRisk = false
     if (!finding) {
       finding = review.highRiskFindings.find((f) => f.id === findingId)
@@ -702,12 +778,12 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
           highRiskFindings: newFindings,
         })
       } else {
-        const newFindings = review.inconsequentialFindings.map((f) =>
+        const newFindings = review.lowRiskFindings.map((f) =>
           f.id === findingId ? { ...f, isApplied: true } : f
         )
         newReviews.set(reviewId, {
           ...review,
-          inconsequentialFindings: newFindings,
+          lowRiskFindings: newFindings,
         })
       }
       return { reviews: newReviews }
@@ -719,12 +795,12 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const newReviews = new Map(state.reviews)
       const review = newReviews.get(reviewId)
       if (review) {
-        const newFindings = review.inconsequentialFindings.map((f) =>
+        const newFindings = review.lowRiskFindings.map((f) =>
           f.id === findingId ? { ...f, isDismissed: true } : f
         )
         newReviews.set(reviewId, {
           ...review,
-          inconsequentialFindings: newFindings,
+          lowRiskFindings: newFindings,
         })
       }
       return { reviews: newReviews }
@@ -791,11 +867,11 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     })
   },
 
-  // Cache actions
-  getCachedFileReview: (projectId, file, diffHash) => {
+  // Cache actions (NEW: FileId-based - bulletproof cache management)
+  getCachedFileReview: (fileId, contentHash) => {
     const { fileReviewCache } = get()
-    const key = `${projectId}:${file}:${diffHash}`
-    const cached = fileReviewCache.get(key)
+    const cacheKey = generateCacheKey(fileId, contentHash)
+    const cached = fileReviewCache.get(cacheKey)
 
     if (!cached) return null
 
@@ -804,23 +880,22 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       // Remove expired cache
       set((state) => {
         const newCache = new Map(state.fileReviewCache)
-        newCache.delete(key)
+        newCache.delete(cacheKey)
         return { fileReviewCache: newCache }
       })
       return null
     }
 
-    console.log('[ReviewStore] Cache hit for', file, 'hash:', diffHash.slice(0, 8))
+    console.log('[ReviewStore] Cache HIT for', fileId, 'hash:', contentHash.slice(0, 8))
     return cached
   },
 
   setCachedFileReview: (cache) => {
-    const key = `${cache.projectId}:${cache.file}:${cache.diffHash}`
-    console.log('[ReviewStore] Caching review for', cache.file, 'hash:', cache.diffHash.slice(0, 8))
+    console.log('[ReviewStore] Caching review for', cache.fileId, 'hash:', cache.contentHash.slice(0, 8))
 
     set((state) => {
       const newCache = new Map(state.fileReviewCache)
-      newCache.set(key, cache)
+      newCache.set(cache.cacheKey, cache)
       return { fileReviewCache: newCache }
     })
 
@@ -828,24 +903,47 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     get().saveCacheToStorage()
   },
 
-  clearCacheForFiles: (projectId, files) => {
+  clearCacheForFile: (fileId) => {
     set((state) => {
       const newCache = new Map(state.fileReviewCache)
       let removed = 0
 
-      // Remove cache entries for the specified files
-      for (const file of files) {
-        // Need to iterate through all cache entries since hash is part of the key
-        for (const [key, cache] of newCache.entries()) {
-          if (cache.projectId === projectId && cache.file === file) {
-            newCache.delete(key)
+      // Remove ALL cache entries for this FileId (all versions/hashes)
+      for (const [cacheKey] of newCache.entries()) {
+        if (cacheKeyMatchesFileId(cacheKey, fileId)) {
+          newCache.delete(cacheKey)
+          removed++
+        }
+      }
+
+      if (removed > 0) {
+        console.log(`[ReviewStore] Cleared ${removed} cached version(s) for file ${fileId}`)
+      }
+
+      return { fileReviewCache: newCache }
+    })
+
+    // Auto-save after cleanup
+    get().saveCacheToStorage()
+  },
+
+  clearCacheForFiles: (fileIds) => {
+    set((state) => {
+      const newCache = new Map(state.fileReviewCache)
+      let removed = 0
+
+      // Remove ALL cache entries for these FileIds (all versions/hashes)
+      for (const fileId of fileIds) {
+        for (const [cacheKey] of newCache.entries()) {
+          if (cacheKeyMatchesFileId(cacheKey, fileId)) {
+            newCache.delete(cacheKey)
             removed++
           }
         }
       }
 
       if (removed > 0) {
-        console.log('[ReviewStore] Cleared cache for', removed, 'files')
+        console.log(`[ReviewStore] Cleared ${removed} cached version(s) for ${fileIds.length} file(s)`)
       }
 
       return { fileReviewCache: newCache }

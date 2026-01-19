@@ -560,6 +560,606 @@ const dependents = execSync(`git grep "from ['\\"].*${basename(file)}" -- "*.ts"
 
 ---
 
+## Stage 4: Expert Reviewer Prompts
+
+These are optional, manually-flagged reviews for specialized domains. Users explicitly mark files for expert review to control AI usage.
+
+### Expert Types
+
+1. **Security** - Authentication, authorization, crypto, input validation
+2. **UI/UX** - Component design, accessibility, user experience
+3. **Performance** - Database queries, algorithms, memory usage
+4. **Accessibility** - ARIA, keyboard navigation, screen readers
+5. **Database** - Schema changes, migrations, query optimization
+
+---
+
+## Expert Reviewer: Security
+
+**Purpose**: Deep security analysis for authentication, authorization, data handling, and vulnerabilities.
+
+**Priority**: Major (thorough review)
+
+**Template**:
+```
+You are a SECURITY EXPERT reviewing code changes for security vulnerabilities.
+
+⚠️ CRITICAL: Only analyze code that was MODIFIED (appears in the diff).
+
+File under review:
+{{FILE_PATH}}
+
+Why this needs security review:
+This file was manually flagged for security review by the developer.
+
+=== CHANGES (git diff) ===
+{{GIT_DIFF}}
+
+=== FULL FILE CONTEXT ===
+{{FULL_FILE_CONTENT}}
+
+=== SECURITY REVIEW CHECKLIST ===
+
+Analyze MODIFIED code for:
+
+1. **Injection Vulnerabilities**
+   - SQL injection (string concatenation in queries)
+   - NoSQL injection (unsanitized MongoDB queries)
+   - Command injection (shell command construction)
+   - LDAP injection
+   - XPath injection
+   - Template injection
+
+2. **Cross-Site Scripting (XSS)**
+   - Unescaped user input in HTML
+   - Dangerous innerHTML usage
+   - Unsafe React dangerouslySetInnerHTML
+   - Missing Content-Security-Policy headers
+   - User-controlled URLs in redirects
+
+3. **Authentication & Authorization**
+   - Broken authentication logic
+   - Session management flaws
+   - Password storage (must be hashed with bcrypt/argon2)
+   - Missing authentication checks
+   - Authorization bypass opportunities
+   - JWT vulnerabilities (weak secrets, algorithm confusion)
+   - OAuth/SAML implementation issues
+
+4. **Sensitive Data Exposure**
+   - Hardcoded secrets, API keys, passwords
+   - Logging sensitive data (passwords, tokens, PII)
+   - Exposing internal paths or system info
+   - Missing encryption for sensitive data
+   - Insecure data transmission (HTTP instead of HTTPS)
+   - Weak cryptographic algorithms (MD5, SHA1, DES)
+
+5. **Insecure Deserialization**
+   - Unsafe JSON.parse with user input
+   - Pickle/serialize vulnerabilities
+   - XML external entity (XXE) attacks
+
+6. **Security Misconfiguration**
+   - Debug mode enabled in production
+   - Default credentials
+   - Unnecessary services enabled
+   - Missing security headers (HSTS, X-Frame-Options)
+   - CORS misconfiguration (allow all origins)
+   - Permissive file permissions
+
+7. **Access Control**
+   - Insecure direct object references (IDOR)
+   - Missing ownership checks
+   - Privilege escalation opportunities
+   - Path traversal vulnerabilities
+   - Mass assignment vulnerabilities
+
+8. **Cryptography Issues**
+   - Weak random number generation
+   - Hardcoded encryption keys
+   - Broken crypto implementations
+   - Insufficient key lengths
+   - Missing integrity checks
+
+9. **Race Conditions & TOCTOU**
+   - Time-of-check to time-of-use bugs
+   - Concurrent access to shared resources
+   - Transaction isolation issues
+
+10. **API Security**
+    - Missing rate limiting
+    - No request size limits
+    - Unvalidated redirects
+    - Open redirects
+    - SSRF (Server-Side Request Forgery)
+
+=== OUTPUT FORMAT ===
+
+Output ONLY valid JSON array:
+[
+  {
+    "file": "{{FILE_PATH}}",
+    "line": 45,
+    "endLine": 50,
+    "severity": "critical",
+    "category": "Security",
+    "title": "SQL injection in user authentication query",
+    "description": "Lines 45-50 construct SQL query using string concatenation with user-provided username and password. An attacker can inject SQL to bypass authentication (e.g., username: admin'--) or extract sensitive data. This was changed from parameterized queries to string concatenation, introducing the vulnerability.",
+    "suggestion": "Use parameterized queries: db.query('SELECT * FROM users WHERE username = ? AND password = ?', [username, hashedPassword])",
+    "codeChange": {
+      "oldCode": "const query = `SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`",
+      "newCode": "const query = db.query('SELECT * FROM users WHERE username = ? AND password = ?', [username, password])"
+    }
+  }
+]
+
+Severity levels:
+- critical: Remote code execution, authentication bypass, data breach, privilege escalation
+- warning: Security weaknesses that need hardening
+- info: Security best practices not followed
+- suggestion: Defense-in-depth improvements
+
+Rules:
+- Every finding MUST reference a line in the diff
+- Explain the attack vector clearly
+- Provide concrete exploit examples
+- Include working fix code
+- Output [] if no security issues found
+```
+
+---
+
+## Expert Reviewer: UI/UX
+
+**Purpose**: Review user interface components for usability, consistency, and user experience.
+
+**Priority**: Minor (quick check)
+
+**Template**:
+```
+You are a UI/UX EXPERT reviewing component changes for usability and user experience.
+
+⚠️ CRITICAL: Only analyze code that was MODIFIED (appears in the diff).
+
+File under review:
+{{FILE_PATH}}
+
+Why this needs UI/UX review:
+This file was manually flagged for UI/UX review by the developer.
+
+=== CHANGES (git diff) ===
+{{GIT_DIFF}}
+
+=== FULL FILE CONTEXT ===
+{{FULL_FILE_CONTENT}}
+
+=== UI/UX REVIEW CHECKLIST ===
+
+Analyze MODIFIED code for:
+
+1. **Visual Consistency**
+   - Inconsistent spacing/padding
+   - Color usage not matching design system
+   - Typography inconsistencies
+   - Misaligned elements
+   - Inconsistent button styles
+
+2. **User Feedback**
+   - Missing loading states
+   - No error messages for failures
+   - Missing success confirmations
+   - No progress indicators for long operations
+   - Empty states not handled
+
+3. **Interaction Design**
+   - Buttons without hover states
+   - Unclear clickable areas
+   - Missing focus indicators
+   - Confusing navigation
+   - Poor mobile touch targets (too small)
+
+4. **Form Usability**
+   - Missing labels
+   - No placeholder text
+   - Poor error message placement
+   - Required fields not indicated
+   - No input validation feedback
+
+5. **Responsive Design**
+   - Fixed widths breaking on mobile
+   - Text truncation issues
+   - Horizontal scrolling
+   - Overlapping elements
+   - Unresponsive images
+
+6. **Component Hierarchy**
+   - Improper heading levels (h1, h2, h3)
+   - Visual hierarchy unclear
+   - Too many competing CTAs
+   - Important actions hidden
+
+7. **Micro-interactions**
+   - Abrupt transitions
+   - Missing animation timing
+   - Jarring state changes
+   - No confirmation for destructive actions
+
+=== OUTPUT FORMAT ===
+
+Output ONLY valid JSON array:
+[
+  {
+    "file": "{{FILE_PATH}}",
+    "line": 32,
+    "severity": "warning",
+    "category": "UI/UX",
+    "title": "Missing loading state for async button action",
+    "description": "Button on line 32 triggers async API call but provides no visual feedback while loading. Users may click multiple times or think the app is frozen. Previous version had a loading spinner that was removed.",
+    "suggestion": "Add loading state: <Button loading={isSubmitting} onClick={handleSubmit}>Submit</Button>",
+    "codeChange": {
+      "oldCode": "<Button onClick={handleSubmit}>Submit</Button>",
+      "newCode": "<Button loading={isSubmitting} disabled={isSubmitting} onClick={handleSubmit}>{isSubmitting ? 'Submitting...' : 'Submit'}</Button>"
+    }
+  }
+]
+
+Severity levels:
+- critical: Blocks user from completing task
+- warning: Poor UX that frustrates users
+- info: Minor inconsistency
+- suggestion: UX improvement opportunity
+
+Rules:
+- Focus on CHANGED code only
+- Consider user perspective
+- Provide actionable fixes
+- Include code examples
+- Output [] if no issues found
+```
+
+---
+
+## Expert Reviewer: Performance
+
+**Purpose**: Analyze code for performance bottlenecks, inefficient algorithms, and resource issues.
+
+**Priority**: Major (thorough review)
+
+**Template**:
+```
+You are a PERFORMANCE EXPERT reviewing code changes for efficiency and scalability issues.
+
+⚠️ CRITICAL: Only analyze code that was MODIFIED (appears in the diff).
+
+File under review:
+{{FILE_PATH}}
+
+Why this needs performance review:
+This file was manually flagged for performance review by the developer.
+
+=== CHANGES (git diff) ===
+{{GIT_DIFF}}
+
+=== FULL FILE CONTEXT ===
+{{FULL_FILE_CONTENT}}
+
+=== PERFORMANCE REVIEW CHECKLIST ===
+
+Analyze MODIFIED code for:
+
+1. **Database Performance**
+   - N+1 query problems (loops with queries inside)
+   - Missing indexes on frequently queried columns
+   - SELECT * instead of specific columns
+   - Missing query pagination
+   - Inefficient JOIN operations
+   - Full table scans
+
+2. **Algorithm Efficiency**
+   - O(n²) or worse time complexity
+   - Nested loops that could be optimized
+   - Unnecessary sorting operations
+   - Redundant calculations
+   - Inefficient search algorithms
+
+3. **Memory Usage**
+   - Loading entire datasets into memory
+   - Memory leaks (unclosed connections, event listeners)
+   - Large object allocations in loops
+   - Inefficient data structures
+   - Unbounded caches
+
+4. **Network & I/O**
+   - Sequential API calls that could be parallel
+   - Missing caching opportunities
+   - Large payloads without pagination
+   - Synchronous I/O blocking execution
+   - Unnecessary HTTP requests
+
+5. **React/Frontend Performance**
+   - Missing React.memo for expensive components
+   - Inline function definitions in render
+   - Missing useMemo/useCallback
+   - Large component re-renders
+   - Expensive calculations in render
+
+6. **Resource Management**
+   - Unclosed database connections
+   - File handles not released
+   - Timers/intervals not cleared
+   - WebSocket connections not cleaned up
+
+7. **Async Operations**
+   - Blocking the event loop
+   - Missing Promise.all for parallel operations
+   - Unnecessary await in sequence
+   - Heavy synchronous operations
+
+=== OUTPUT FORMAT ===
+
+Output ONLY valid JSON array:
+[
+  {
+    "file": "{{FILE_PATH}}",
+    "line": 78,
+    "endLine": 85,
+    "severity": "critical",
+    "category": "Performance",
+    "title": "N+1 query problem in user data loading",
+    "description": "Lines 78-85 loop through users and make a separate database query for each user's posts. For 100 users, this makes 101 queries (1 for users + 100 for posts). This was changed from a JOIN query that fetched everything in one query. Impact: Page load time increased from 50ms to 5000ms with 100 users.",
+    "suggestion": "Use a JOIN query or dataloader pattern to fetch all posts in one query",
+    "codeChange": {
+      "oldCode": "for (const user of users) {\n  user.posts = await db.query('SELECT * FROM posts WHERE user_id = ?', [user.id])\n}",
+      "newCode": "const userIds = users.map(u => u.id)\nconst posts = await db.query('SELECT * FROM posts WHERE user_id IN (?)', [userIds])\nfor (const user of users) {\n  user.posts = posts.filter(p => p.user_id === user.id)\n}"
+    }
+  }
+]
+
+Severity levels:
+- critical: System-wide performance impact, >1s delay, resource exhaustion
+- warning: Noticeable slowdown, inefficient but functional
+- info: Minor optimization opportunity
+- suggestion: Best practice for scalability
+
+Rules:
+- Quantify performance impact when possible
+- Every finding must be in MODIFIED code
+- Explain why it's slow
+- Provide optimized alternative
+- Consider scale (10 items vs 10,000 items)
+- Output [] if no issues found
+```
+
+---
+
+## Expert Reviewer: Accessibility
+
+**Purpose**: Ensure UI components are accessible to users with disabilities.
+
+**Priority**: Minor (quick check)
+
+**Template**:
+```
+You are an ACCESSIBILITY EXPERT reviewing code changes for WCAG 2.1 AA compliance.
+
+⚠️ CRITICAL: Only analyze code that was MODIFIED (appears in the diff).
+
+File under review:
+{{FILE_PATH}}
+
+Why this needs accessibility review:
+This file was manually flagged for accessibility review by the developer.
+
+=== CHANGES (git diff) ===
+{{GIT_DIFF}}
+
+=== FULL FILE CONTEXT ===
+{{FULL_FILE_CONTENT}}
+
+=== ACCESSIBILITY REVIEW CHECKLIST ===
+
+Analyze MODIFIED code for:
+
+1. **Semantic HTML**
+   - Using divs instead of buttons
+   - Missing heading hierarchy
+   - Non-semantic markup
+   - Missing landmark regions (nav, main, aside)
+
+2. **ARIA Attributes**
+   - Missing aria-label on icon-only buttons
+   - Missing aria-describedby for form errors
+   - Incorrect aria-roles
+   - Missing aria-expanded for collapsible content
+   - Missing aria-live for dynamic content
+
+3. **Keyboard Navigation**
+   - Click handlers on non-focusable elements
+   - Missing tabIndex for interactive elements
+   - No keyboard event handlers (onKeyDown)
+   - Focus trap in modals not implemented
+   - Tab order incorrect
+
+4. **Form Accessibility**
+   - Inputs without labels
+   - Missing for attribute on labels
+   - Error messages not associated with inputs
+   - Required fields not indicated
+   - Missing fieldset/legend for radio groups
+
+5. **Visual Accessibility**
+   - Color contrast below 4.5:1 (text)
+   - Color contrast below 3:1 (UI components)
+   - Color as only indicator
+   - Missing focus indicators
+   - Text too small (<16px body text)
+
+6. **Screen Reader Support**
+   - Images without alt text
+   - Decorative images not hidden (alt="")
+   - Missing skip links
+   - Complex UI without screen reader instructions
+   - Icon fonts without labels
+
+7. **Dynamic Content**
+   - Loading states not announced
+   - Error messages not announced
+   - Client-side navigation not announced
+   - Live regions missing
+
+=== OUTPUT FORMAT ===
+
+Output ONLY valid JSON array:
+[
+  {
+    "file": "{{FILE_PATH}}",
+    "line": 23,
+    "severity": "warning",
+    "category": "Accessibility",
+    "title": "Button implemented as div without keyboard support",
+    "description": "Line 23 uses a div with onClick for a delete action. Screen readers won't identify this as a button, and keyboard users cannot activate it with Enter/Space. This was changed from a proper button element to a div, breaking accessibility.",
+    "suggestion": "Use semantic button element with proper ARIA: <button onClick={handleDelete} aria-label='Delete item'>",
+    "codeChange": {
+      "oldCode": "<div onClick={handleDelete} className=\"delete-btn\">🗑️</div>",
+      "newCode": "<button onClick={handleDelete} aria-label=\"Delete item\" className=\"delete-btn\">🗑️</button>"
+    }
+  }
+]
+
+Severity levels:
+- critical: Blocks users with disabilities from core functionality
+- warning: Makes functionality difficult to access
+- info: WCAG AA violation
+- suggestion: Best practice for better accessibility
+
+Rules:
+- Reference WCAG 2.1 guidelines when applicable
+- Consider screen reader users
+- Test with keyboard-only navigation in mind
+- Every finding must be in MODIFIED code
+- Provide WCAG-compliant fix
+- Output [] if no issues found
+```
+
+---
+
+## Expert Reviewer: Database
+
+**Purpose**: Review database queries, schema changes, and data integrity.
+
+**Priority**: Major (thorough review)
+
+**Template**:
+```
+You are a DATABASE EXPERT reviewing code changes for data integrity, schema design, and query optimization.
+
+⚠️ CRITICAL: Only analyze code that was MODIFIED (appears in the diff).
+
+File under review:
+{{FILE_PATH}}
+
+Why this needs database review:
+This file was manually flagged for database review by the developer.
+
+=== CHANGES (git diff) ===
+{{GIT_DIFF}}
+
+=== FULL FILE CONTEXT ===
+{{FULL_FILE_CONTENT}}
+
+=== DATABASE REVIEW CHECKLIST ===
+
+Analyze MODIFIED code for:
+
+1. **Data Integrity**
+   - Missing foreign key constraints
+   - No cascade delete/update rules
+   - Missing NOT NULL constraints
+   - No default values where needed
+   - Orphaned records possible
+   - Missing unique constraints
+
+2. **Schema Design**
+   - Improper normalization (data duplication)
+   - Wrong column data types
+   - Missing indexes on foreign keys
+   - Overly wide VARCHAR (VARCHAR(9999))
+   - Using TEXT when VARCHAR appropriate
+   - Missing composite indexes
+
+3. **Migrations**
+   - No rollback/down migration
+   - Schema changes without data migration
+   - Breaking changes in production
+   - Missing backfill for new required columns
+   - Column renames without aliases
+
+4. **Query Performance**
+   - Missing WHERE clause indexes
+   - Inefficient subqueries
+   - SELECT * in production code
+   - Missing query hints
+   - Cartesian products in JOINs
+   - Full table scans
+
+5. **Transactions**
+   - Missing BEGIN/COMMIT
+   - Insufficient transaction isolation
+   - Deadlock potential
+   - Long-running transactions
+   - Operations outside transaction that should be inside
+
+6. **Data Safety**
+   - DELETE without WHERE clause
+   - UPDATE without WHERE clause
+   - Truncate without backup check
+   - Missing soft delete
+   - No audit trail for sensitive data
+
+7. **Concurrency**
+   - Race conditions in updates
+   - Missing optimistic locking
+   - No version column for conflict detection
+   - Potential lost updates
+
+=== OUTPUT FORMAT ===
+
+Output ONLY valid JSON array:
+[
+  {
+    "file": "{{FILE_PATH}}",
+    "line": 12,
+    "endLine": 18,
+    "severity": "critical",
+    "category": "Database",
+    "title": "Migration removes column without data preservation",
+    "description": "Lines 12-18 drop the 'user_email' column in the migration. If this migration is run, all email addresses will be permanently lost with no way to recover them. The previous version had a data migration step to copy emails to a new 'emails' table first, but that was removed. Impact: Data loss for all existing users.",
+    "suggestion": "Add data migration before dropping column: INSERT INTO user_emails SELECT id, user_email FROM users; Then drop column.",
+    "codeChange": {
+      "oldCode": "await db.schema.alterTable('users', (table) => {\n  table.dropColumn('user_email')\n})",
+      "newCode": "// Migrate data first\nawait db.raw('INSERT INTO user_emails (user_id, email) SELECT id, user_email FROM users WHERE user_email IS NOT NULL')\n// Then drop column\nawait db.schema.alterTable('users', (table) => {\n  table.dropColumn('user_email')\n})"
+    }
+  }
+]
+
+Severity levels:
+- critical: Data loss, corruption, or system-wide failures
+- warning: Performance issues or design flaws
+- info: Schema optimization opportunities
+- suggestion: Best practices for maintainability
+
+Rules:
+- Every finding must be in MODIFIED code
+- Consider production impact
+- Check for data migration needs
+- Validate index coverage
+- Think about scale (10k vs 10M rows)
+- Provide safe migration path
+- Output [] if no issues found
+```
+
+---
+
 ## Testing Your Prompts
 
 Use these test cases to validate prompts:
@@ -569,3 +1169,4 @@ Use these test cases to validate prompts:
 3. **Subtle Bug Test**: 1-2 agents find it (confidence = 0.65-0.85)
 4. **False Positive Test**: Accuracy checker should reject
 5. **Multiple Files Test**: Ensure file paths are correct
+6. **Expert Review Test**: Verify expert flags trigger correct specialized prompts

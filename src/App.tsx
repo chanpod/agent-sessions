@@ -10,6 +10,8 @@ import {
   PointerSensor,
 } from '@dnd-kit/core'
 import { Terminal as TerminalIcon } from 'lucide-react'
+import { ProjectHeader } from './components/ProjectHeader'
+import { ProjectSubHeader } from './components/ProjectSubHeader'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
 import { UpdateNotification } from './components/UpdateNotification'
@@ -673,6 +675,21 @@ function App() {
     }
   }
 
+  const handleCreateProject = async () => {
+    if (!window.electron) return
+    await window.electron.dialogs.showCreateProjectDialog()
+  }
+
+  const handleEditProject = async (projectId: string) => {
+    if (!window.electron) return
+    await window.electron.dialogs.showEditProjectDialog(projectId)
+  }
+
+  const handleDeleteProject = async (projectId: string) => {
+    if (!window.electron) return
+    await window.electron.dialogs.showDeleteProjectDialog(projectId)
+  }
+
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event
     setActiveDragId(active.id as string)
@@ -773,18 +790,29 @@ function App() {
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex h-screen overflow-hidden">
-        <Sidebar
-          onCreateTerminal={handleCreateTerminal}
-          onCreateQuickTerminal={handleCreateQuickTerminal}
-          onCloseTerminal={handleCloseTerminal}
-          onReconnectTerminal={handleReconnectTerminal}
-          onStartServer={handleStartServer}
-          onStopServer={handleStopServer}
-          onRestartServer={handleRestartServer}
-          onDeleteServer={handleDeleteServer}
+      <div className="flex flex-col h-screen overflow-hidden">
+        {/* Top header with project tabs */}
+        <ProjectHeader
+          onCreateProject={handleCreateProject}
+          onEditProject={handleEditProject}
+          onDeleteProject={handleDeleteProject}
         />
-        <TerminalArea />
+        {/* Project-specific sub-header */}
+        <ProjectSubHeader />
+        {/* Main content area */}
+        <div className="flex flex-1 overflow-hidden">
+          <Sidebar
+            onCreateTerminal={handleCreateTerminal}
+            onCreateQuickTerminal={handleCreateQuickTerminal}
+            onCloseTerminal={handleCloseTerminal}
+            onReconnectTerminal={handleReconnectTerminal}
+            onStartServer={handleStartServer}
+            onStopServer={handleStopServer}
+            onRestartServer={handleRestartServer}
+            onDeleteServer={handleDeleteServer}
+          />
+          <TerminalArea />
+        </div>
       </div>
       <DragOverlay>
         {activeDragId ? (

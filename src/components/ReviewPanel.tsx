@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { useReviewStore, type FileClassification, type ReviewFinding, type FileRiskLevel } from '../stores/review-store'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { cn } from '../lib/utils'
+import { generateFileId } from '../lib/file-id'
 
 interface ReviewPanelProps {
   projectPath: string
@@ -26,7 +27,7 @@ export function ReviewPanel({ projectPath }: ReviewPanelProps) {
       return (
         a.stage === b.stage &&
         a.status === b.status &&
-        a.inconsequentialFindings.length === b.inconsequentialFindings.length &&
+        a.lowRiskFindings.length === b.lowRiskFindings.length &&
         a.highRiskFindings.length === b.highRiskFindings.length &&
         a.currentHighRiskFileIndex === b.currentHighRiskFileIndex
       )
@@ -152,12 +153,12 @@ export function ReviewPanel({ projectPath }: ReviewPanelProps) {
               onConfirm={() => confirmClassifications(activeReviewId)}
             />
           )}
-          {review.stage === 'reviewing-inconsequential' && review.inconsequentialFindings.length === 0 && (
-            <ReviewingInconsequentialStage progress={progress} fileCount={review.inconsequentialFiles.length} />
+          {review.stage === 'reviewing-low-risk' && review.lowRiskFindings.length === 0 && (
+            <ReviewingLowRiskStage progress={progress} fileCount={review.lowRiskFiles.length} />
           )}
-          {review.stage === 'reviewing-inconsequential' && review.inconsequentialFindings.length > 0 && (
-            <InconsequentialResultsStage
-              findings={review.inconsequentialFindings}
+          {review.stage === 'reviewing-low-risk' && review.lowRiskFindings.length > 0 && (
+            <LowRiskResultsStage
+              findings={review.lowRiskFindings}
               projectPath={projectPath}
               onToggleSelection={(id) => toggleFindingSelection(activeReviewId, id)}
               onSelectAll={(selected) => selectAllFindings(activeReviewId, selected)}
@@ -198,7 +199,7 @@ function StageIndicator({ stage }: { stage: string }) {
   const stages = [
     { id: 'classifying', label: 'Classifying' },
     { id: 'classification-review', label: 'Review Classification' },
-    { id: 'reviewing-inconsequential', label: 'Low-Risk Review' },
+    { id: 'reviewing-low-risk', label: 'Low-Risk Review' },
     { id: 'reviewing-high-risk', label: 'High-Risk Review' },
     { id: 'completed', label: 'Complete' },
   ]
@@ -253,7 +254,7 @@ function ClassificationReviewStage({
   onUpdateClassification: (file: string, riskLevel: FileRiskLevel) => void
   onConfirm: () => void
 }) {
-  const inconsequentialFiles = classifications.filter((c) => (c.userOverride || c.riskLevel) === 'inconsequential')
+  const lowRiskFiles = classifications.filter((c) => (c.userOverride || c.riskLevel) === 'low-risk')
   const highRiskFiles = classifications.filter((c) => (c.userOverride || c.riskLevel) === 'high-risk')
 
   return (
@@ -267,17 +268,17 @@ function ClassificationReviewStage({
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="grid grid-cols-2 gap-6">
-          {/* Inconsequential Files */}
+          {/* Low-Risk Files */}
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
               <div className="w-3 h-3 rounded-full bg-blue-500" />
-              Inconsequential ({inconsequentialFiles.length})
+              Low Risk ({lowRiskFiles.length})
             </h4>
             <p className="text-xs text-zinc-500 mb-4">
               These files will be reviewed quickly in bulk. Low risk of bugs or security issues.
             </p>
             <div className="space-y-2">
-              {inconsequentialFiles.map((c) => (
+              {lowRiskFiles.map((c) => (
                 <FileClassificationCard
                   key={c.file}
                   classification={c}
@@ -312,7 +313,7 @@ function ClassificationReviewStage({
       <div className="px-6 py-4 border-t border-zinc-700 bg-zinc-800/50 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <p className="text-xs text-zinc-500">
-            {classifications.length} files classified • {inconsequentialFiles.length} low-risk • {highRiskFiles.length}{' '}
+            {classifications.length} files classified • {lowRiskFiles.length} low-risk • {highRiskFiles.length}{' '}
             high-risk
           </p>
         </div>
@@ -348,7 +349,7 @@ function FileClassificationCard({
         </div>
         <button
           onClick={() =>
-            onChangeRisk(currentRisk === 'inconsequential' ? 'high-risk' : 'inconsequential')
+            onChangeRisk(currentRisk === 'low-risk' ? 'high-risk' : 'low-risk')
           }
           className="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors flex-shrink-0"
           title="Switch classification"
@@ -361,8 +362,8 @@ function FileClassificationCard({
   )
 }
 
-// Stage 3: Reviewing Inconsequential Files (Loading)
-function ReviewingInconsequentialStage({ progress, fileCount }: { progress: any; fileCount: number }) {
+// Stage 3: Reviewing Low-Risk Files (Loading)
+function ReviewingLowRiskStage({ progress, fileCount }: { progress: any; fileCount: number }) {
   return (
     <div className="flex flex-col items-center justify-center h-full text-zinc-400">
       <Loader2 className="w-12 h-12 animate-spin mb-6 text-purple-400" />
@@ -372,8 +373,8 @@ function ReviewingInconsequentialStage({ progress, fileCount }: { progress: any;
   )
 }
 
-// Stage 4: Inconsequential Results (Bulk Apply/Dismiss)
-function InconsequentialResultsStage({
+// Stage 4: Low-Risk Results (Bulk Apply/Dismiss)
+function LowRiskResultsStage({
   findings,
   projectPath,
   onToggleSelection,
@@ -417,7 +418,7 @@ function InconsequentialResultsStage({
         ) : (
           <div className="space-y-3">
             {visibleFindings.map((finding) => (
-              <InconsequentialFindingCard
+              <LowRiskFindingCard
                 key={finding.id}
                 finding={finding}
                 projectPath={projectPath}
@@ -464,7 +465,7 @@ function InconsequentialResultsStage({
   )
 }
 
-function InconsequentialFindingCard({
+function LowRiskFindingCard({
   finding,
   onToggleSelection,
   onApply,
@@ -570,7 +571,13 @@ function InconsequentialFindingCard({
 // Stage 5: High-Risk Review (Sequential, one file at a time with multi-agent verification)
 function HighRiskReviewStage({ review, projectPath, onNext }: { review: any; projectPath: string; onNext: () => void }) {
   const currentFile = review.highRiskFiles[review.currentHighRiskFileIndex]
-  const currentFindings = review.highRiskFindings.filter((f: ReviewFinding) => f.file === currentFile)
+  // Use FileId for comparison to avoid duplicates from path variations
+  const currentFileId = review.highRiskFiles[review.currentHighRiskFileIndex]
+    ? (review.highRiskFindings.find(f => f.file === currentFile)?.fileId || currentFile)
+    : currentFile
+  const currentFindings = review.highRiskFindings.filter((f: ReviewFinding) =>
+    f.fileId ? f.fileId === currentFileId : f.file === currentFile
+  )
   const coordinatorStatus = review.currentFileCoordinatorStatus
   const verifiedFindings = currentFindings.filter((f: ReviewFinding) => f.verificationStatus === 'verified')
   const isComplete = coordinatorStatus === 'complete'

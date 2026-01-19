@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Settings, FolderPlus, Terminal, ChevronDown } from 'lucide-react'
+import { Settings, Terminal, ChevronDown } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useSSHStore } from '../stores/ssh-store'
-import { ProjectItem } from './ProjectItem'
+import { ProjectContent } from './ProjectContent'
 import { NewProjectModal } from './NewProjectModal'
 import { SettingsModal } from './SettingsModal'
 
@@ -27,8 +27,10 @@ const MAX_WIDTH = 650
 const DEFAULT_WIDTH = 500
 
 export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
-  const { projects } = useProjectStore()
+  const { projects, activeProjectId } = useProjectStore()
   const { connections: sshConnections } = useSSHStore()
+
+  const activeProject = projects.find(p => p.id === activeProjectId)
   const [shells, setShells] = useState<ShellInfo[]>([])
   const [showNewProject, setShowNewProject] = useState(false)
   const [showQuickTerminalMenu, setShowQuickTerminalMenu] = useState(false)
@@ -99,12 +101,7 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
         style={{ width }}
         className={`flex-shrink-0 bg-zinc-900/50 border-r border-zinc-800 flex flex-col relative z-20 ${isResizing ? 'select-none' : ''}`}
       >
-        {/* Header - draggable region for window */}
-        <div className="h-12 flex items-center px-4 border-b border-zinc-800 app-drag-region">
-          <h1 className="text-sm font-semibold text-zinc-300">ToolChain</h1>
-        </div>
-
-        {/* Projects List */}
+        {/* Project Content */}
         <div className="flex-1 overflow-y-auto p-2">
           {/* Quick Terminal */}
           <div className="mb-4">
@@ -140,47 +137,24 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
             </div>
           </div>
 
-          {/* Projects */}
-          <div className="flex items-center justify-between px-2 mb-2">
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
-              Projects
-            </h2>
-            <button
-              onClick={() => setShowNewProject(true)}
-              className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
-              title="New Project"
-            >
-              <FolderPlus className="w-4 h-4" />
-            </button>
-          </div>
-
-          {projects.length === 0 ? (
+          {/* Project Tabs Section - Only show active project */}
+          {!activeProject ? (
             <div className="px-2 py-4 text-center">
-              <p className="text-xs text-zinc-600 mb-2">No projects yet</p>
-              <button
-                onClick={() => setShowNewProject(true)}
-                className="text-xs text-blue-400 hover:text-blue-300"
-              >
-                Create your first project
-              </button>
+              <p className="text-xs text-zinc-600 mb-2">No project selected</p>
+              <p className="text-xs text-zinc-500">Select a project from the header</p>
             </div>
           ) : (
-            <div className="space-y-0">
-              {projects.map((project) => (
-                <ProjectItem
-                  key={project.id}
-                  project={project}
-                  shells={allShells}
-                  onCreateTerminal={onCreateTerminal}
-                  onCloseTerminal={onCloseTerminal}
-                  onReconnectTerminal={onReconnectTerminal}
-                  onStartServer={onStartServer}
-                  onStopServer={onStopServer}
-                  onRestartServer={onRestartServer}
-                  onDeleteServer={onDeleteServer}
-                />
-              ))}
-            </div>
+            <ProjectContent
+              project={activeProject}
+              shells={allShells}
+              onCreateTerminal={onCreateTerminal}
+              onCloseTerminal={onCloseTerminal}
+              onReconnectTerminal={onReconnectTerminal}
+              onStartServer={onStartServer}
+              onStopServer={onStopServer}
+              onRestartServer={onRestartServer}
+              onDeleteServer={onDeleteServer}
+            />
           )}
         </div>
 

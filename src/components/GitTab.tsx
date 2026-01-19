@@ -5,6 +5,7 @@ import type { ChangedFile } from '../types/electron'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { useReviewStore } from '../stores/review-store'
 import { cn, normalizeFilePath } from '../lib/utils'
+import { generateFileId, generateCacheKey } from '../lib/file-id'
 
 interface GitTabProps {
   projectPath: string
@@ -43,7 +44,7 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
   const startReview = useReviewStore((state) => state.startReview)
   const setClassifications = useReviewStore((state) => state.setClassifications)
-  const setInconsequentialFindings = useReviewStore((state) => state.setInconsequentialFindings)
+  const setLowRiskFindings = useReviewStore((state) => state.setLowRiskFindings)
   const addHighRiskFindings = useReviewStore((state) => state.addHighRiskFindings)
   const updateHighRiskStatus = useReviewStore((state) => state.updateHighRiskStatus)
   const setVisibility = useReviewStore((state) => state.setVisibility)
@@ -69,7 +70,8 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isReviewing, setIsReviewing] = useState(false)
   const [currentReviewId, setCurrentReviewId] = useState<string | null>(null)
-  const [currentFileHashes, setCurrentFileHashes] = useState<Record<string, string>>({})
+  // NEW: FileId-based metadata tracking (replaces currentFileHashes)
+  const [fileMetadata, setFileMetadata] = useState<Map<string, { fileId: string; hash: string; relativePath: string }>>(new Map())
 
   const branchBtnRef = useRef<HTMLButtonElement>(null)
   const branchMenuRef = useRef<HTMLDivElement>(null)
@@ -127,13 +129,19 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
       setClassifications(event.reviewId, mergedClassifications)
 
-      // Cache each new classification
+      // Cache each new classification using FileId
       event.classifications.forEach((classification: any) => {
-        const hash = currentFileHashes[classification.file]
-        if (hash) {
+        // Use fileId from classification or generate from file path
+        const fileId = classification.fileId || generateFileId(projectPath, classification.file)
+        const metadata = Array.from(fileMetadata.values()).find(m => m.fileId === fileId)
+
+        if (metadata) {
+          const cacheKey = generateCacheKey(fileId, metadata.hash)
           setCachedFileReview({
+            cacheKey,
+            fileId,
             file: classification.file,
-            diffHash: hash,
+            contentHash: metadata.hash,
             classification,
             findings: [], // Findings will be added later
             reviewedAt: Date.now(),
@@ -143,26 +151,36 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       })
     })
 
-    const unsubInconseq = window.electron.review.onInconsequentialFindings((event) => {
-      console.log('[GitTab] Inconsequential findings received:', event)
-      setInconsequentialFindings(event.reviewId, event.findings)
+    const unsubLowRisk = window.electron.review.onLowRiskFindings((event) => {
+      console.log('[GitTab] Low-risk findings received:', event)
 
-      // Cache each finding with its file
-      const findingsByFile = new Map<string, any[]>()
-      event.findings.forEach((finding: any) => {
-        const existing = findingsByFile.get(finding.file) || []
+      // Ensure all findings have fileId set
+      const findingsWithFileId = event.findings.map((finding: any) => ({
+        ...finding,
+        fileId: finding.fileId || generateFileId(projectPath, finding.file)
+      }))
+
+      setLowRiskFindings(event.reviewId, findingsWithFileId)
+
+      // Cache findings grouped by FileId (NOT by file path)
+      const findingsByFileId = new Map<string, any[]>()
+      findingsWithFileId.forEach((finding: any) => {
+        const existing = findingsByFileId.get(finding.fileId) || []
         existing.push(finding)
-        findingsByFile.set(finding.file, existing)
+        findingsByFileId.set(finding.fileId, existing)
       })
 
-      findingsByFile.forEach((findings, file) => {
-        const hash = currentFileHashes[file]
-        if (hash) {
-          // Get existing cache or create new
-          const existing = getCachedFileReview(projectPath, file, hash)
+      findingsByFileId.forEach((findings, fileId) => {
+        const metadata = Array.from(fileMetadata.values()).find(m => m.fileId === fileId)
+        if (metadata) {
+          const cacheKey = generateCacheKey(fileId, metadata.hash)
+          // Get existing cache to preserve classification
+          const existing = getCachedFileReview(fileId, metadata.hash)
           setCachedFileReview({
-            file,
-            diffHash: hash,
+            cacheKey,
+            fileId,
+            file: metadata.relativePath,
+            contentHash: metadata.hash,
             classification: existing?.classification,
             findings,
             reviewedAt: Date.now(),
@@ -179,24 +197,34 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     const unsubHighRiskFindings = window.electron.review.onHighRiskFindings((event) => {
       console.log('[GitTab] High-risk findings:', event)
-      addHighRiskFindings(event.reviewId, event.findings)
 
-      // Cache each finding with its file
-      const findingsByFile = new Map<string, any[]>()
-      event.findings.forEach((finding: any) => {
-        const existing = findingsByFile.get(finding.file) || []
+      // Ensure all findings have fileId set
+      const findingsWithFileId = event.findings.map((finding: any) => ({
+        ...finding,
+        fileId: finding.fileId || generateFileId(projectPath, finding.file)
+      }))
+
+      addHighRiskFindings(event.reviewId, findingsWithFileId)
+
+      // Cache findings grouped by FileId (NOT by file path)
+      const findingsByFileId = new Map<string, any[]>()
+      findingsWithFileId.forEach((finding: any) => {
+        const existing = findingsByFileId.get(finding.fileId) || []
         existing.push(finding)
-        findingsByFile.set(finding.file, existing)
+        findingsByFileId.set(finding.fileId, existing)
       })
 
-      findingsByFile.forEach((findings, file) => {
-        const hash = currentFileHashes[file]
-        if (hash) {
-          // Get existing cache or create new
-          const existing = getCachedFileReview(projectPath, file, hash)
+      findingsByFileId.forEach((findings, fileId) => {
+        const metadata = Array.from(fileMetadata.values()).find(m => m.fileId === fileId)
+        if (metadata) {
+          const cacheKey = generateCacheKey(fileId, metadata.hash)
+          // Get existing cache to preserve classification
+          const existing = getCachedFileReview(fileId, metadata.hash)
           setCachedFileReview({
-            file,
-            diffHash: hash,
+            cacheKey,
+            fileId,
+            file: metadata.relativePath,
+            contentHash: metadata.hash,
             classification: existing?.classification,
             findings,
             reviewedAt: Date.now(),
@@ -214,12 +242,12 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     return () => {
       unsubClassifications()
-      unsubInconseq()
+      unsubLowRisk()
       unsubHighRiskStatus()
       unsubHighRiskFindings()
       unsubFailed()
     }
-  }, [setClassifications, setInconsequentialFindings, updateHighRiskStatus, addHighRiskFindings, failReview, currentFileHashes, projectPath, getCachedFileReview, setCachedFileReview])
+  }, [setClassifications, setLowRiskFindings, updateHighRiskStatus, addHighRiskFindings, failReview, fileMetadata, projectPath, getCachedFileReview, setCachedFileReview])
 
   // Watch for review completion to reset isReviewing state
   useEffect(() => {
@@ -236,16 +264,10 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     // Get files to review (all changed files)
     const filesToReview = changedFiles.map(f => f.path)
 
-    // If this is a "Review Again" (review already completed), clear cache for these files
-    if (activeReview && activeReview.status === 'completed') {
-      console.log('[GitTab] Review Again - clearing cache for', filesToReview.length, 'files')
-      clearCacheForFiles(projectPath, filesToReview)
-    }
-
     // Generate reviewId on frontend
     const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
-    console.log('[GitTab] Starting review with cache checking for', filesToReview.length, 'files')
+    console.log('[GitTab] Starting review with FileId-based cache checking for', filesToReview.length, 'files')
 
     // Step 1: Generate hashes for all files
     const hashResult = await window.electron.review.generateFileHashes(projectPath, filesToReview)
@@ -258,38 +280,59 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
     const fileHashes = hashResult.hashes
     console.log('[GitTab] Generated hashes for', Object.keys(fileHashes).length, 'files')
 
-    // Store hashes in state so event listeners can use them for caching
-    setCurrentFileHashes(fileHashes)
+    // Step 2: Build FileId-based metadata for all files
+    const newMetadata = new Map<string, { fileId: string; hash: string; relativePath: string }>()
+    const fileIdList: string[] = []
 
-    // Step 2: Check cache for each file
+    for (const file of filesToReview) {
+      const hash = fileHashes[file]
+      if (!hash) continue
+
+      const fileId = generateFileId(projectPath, file)
+      newMetadata.set(fileId, { fileId, hash, relativePath: file })
+      fileIdList.push(fileId)
+    }
+
+    // If "Review Again", clear cache for all FileIds (clears ALL versions!)
+    if (activeReview && activeReview.status === 'completed') {
+      console.log('[GitTab] Review Again - clearing ALL cached versions for', fileIdList.length, 'files')
+      clearCacheForFiles(fileIdList)
+    }
+
+    // Store metadata for event listeners
+    setFileMetadata(newMetadata)
+    setCurrentReviewId(reviewId)
+
+    // Step 3: Check cache for each file using FileId
     const cachedFiles: string[] = []
     const uncachedFiles: string[] = []
     const cachedClassifications: any[] = []
     const cachedFindings: any[] = []
 
-    for (const file of filesToReview) {
-      const hash = fileHashes[file]
-      if (!hash) {
-        uncachedFiles.push(file)
-        continue
-      }
-
-      const cached = getCachedFileReview(projectPath, file, hash)
+    for (const [fileId, metadata] of newMetadata.entries()) {
+      const cached = getCachedFileReview(fileId, metadata.hash)
       if (cached) {
-        console.log(`[GitTab] Cache HIT for ${file} (hash: ${hash.slice(0, 8)}...)`)
-        cachedFiles.push(file)
+        console.log(`[GitTab] Cache HIT for ${fileId} (hash: ${metadata.hash.slice(0, 8)}...)`)
+        cachedFiles.push(metadata.relativePath)
 
-        // Collect cached classification
+        // Collect cached classification (ensure it has fileId)
         if (cached.classification) {
-          cachedClassifications.push(cached.classification)
+          cachedClassifications.push({
+            ...cached.classification,
+            fileId
+          })
         }
 
-        // Collect cached findings (mark as cached)
-        const findingsWithCacheFlag = cached.findings.map(f => ({ ...f, isCached: true }))
+        // Collect cached findings (mark as cached, ensure fileId is set)
+        const findingsWithCacheFlag = cached.findings.map(f => ({
+          ...f,
+          isCached: true,
+          fileId: f.fileId || fileId // Ensure fileId is always present
+        }))
         cachedFindings.push(...findingsWithCacheFlag)
       } else {
-        console.log(`[GitTab] Cache MISS for ${file} (hash: ${hash.slice(0, 8)}...)`)
-        uncachedFiles.push(file)
+        console.log(`[GitTab] Cache MISS for ${fileId} (hash: ${metadata.hash.slice(0, 8)}...)`)
+        uncachedFiles.push(metadata.relativePath)
       }
     }
 
@@ -297,7 +340,6 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
 
     // Start review in store FIRST (this opens the dialog immediately)
     startReview(projectPath, filesToReview, reviewId)
-    setCurrentReviewId(reviewId)
 
     // Open review panel immediately
     setVisibility(true)
@@ -310,22 +352,22 @@ export function GitTab({ projectPath, gitBranch, gitHasChanges, changedFiles, ah
       setClassifications(reviewId, cachedClassifications)
 
       // Skip to results stage with cached findings
-      const inconsequentialClassifications = cachedClassifications.filter(c => c.riskLevel === 'inconsequential')
+      const lowRiskClassifications = cachedClassifications.filter(c => c.riskLevel === 'low-risk')
       const highRiskClassifications = cachedClassifications.filter(c => c.riskLevel === 'high-risk')
 
-      const inconsequentialFindings = cachedFindings.filter(f =>
-        inconsequentialClassifications.some(c => c.file === f.file)
+      const lowRiskFindings = cachedFindings.filter(f =>
+        lowRiskClassifications.some(c => c.file === f.file)
       )
       const highRiskFindings = cachedFindings.filter(f =>
         highRiskClassifications.some(c => c.file === f.file)
       )
 
-      setInconsequentialFindings(reviewId, inconsequentialFindings)
-      highRiskFindings.forEach(f => addHighRiskFindings(reviewId, [f]))
+      setLowRiskFindings(reviewId, lowRiskFindings)
+      addHighRiskFindings(reviewId, highRiskFindings)
 
       // Move to appropriate stage
-      if (inconsequentialFindings.length > 0) {
-        setReviewStage(reviewId, 'reviewing-inconsequential')
+      if (lowRiskFindings.length > 0) {
+        setReviewStage(reviewId, 'reviewing-low-risk')
       } else if (highRiskFindings.length > 0) {
         setReviewStage(reviewId, 'reviewing-high-risk')
       } else {
