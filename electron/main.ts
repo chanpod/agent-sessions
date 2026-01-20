@@ -1289,8 +1289,8 @@ ipcMain.handle('git:list-branches', async (_event, projectPath: string, projectI
       currentBranch = ''
     }
 
-    // Get local branches
-    const localOutput = await execInContextAsync('git branch --format="%(refname:short)"', projectPath, projectId)
+    // Get local branches sorted by most recent commit
+    const localOutput = await execInContextAsync('git branch --sort=-committerdate --format="%(refname:short)"', projectPath, projectId)
     const localBranches = localOutput
       .split('\n')
       .map((b) => b.trim())

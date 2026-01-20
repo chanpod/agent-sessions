@@ -27,6 +27,7 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   const [showHiddenProjectsMenu, setShowHiddenProjectsMenu] = useState(false)
   const [isFetching, setIsFetching] = useState(false)
   const [isCheckingOut, setIsCheckingOut] = useState(false)
+  const [branchFilter, setBranchFilter] = useState('')
   const branchMenuRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const hiddenProjectsMenuRef = useRef<HTMLDivElement>(null)
@@ -74,6 +75,13 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Reset branch filter when menu closes
+  useEffect(() => {
+    if (!showBranchMenu) {
+      setBranchFilter('')
+    }
+  }, [showBranchMenu])
+
   const handleSwitchBranch = async (projectId: string, branch: string) => {
     const project = projects.find(p => p.id === projectId)
     if (!project || isCheckingOut) return
@@ -118,12 +126,6 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     }
   }
 
-  const handleOpenBranchTool = (projectId: string) => {
-    const project = projects.find(p => p.id === projectId)
-    if (!project) return
-    window.electron.openExternalTool('branch', project.path)
-    setShowBranchMenu(null)
-  }
 
   const handleContextMenu = (e: React.MouseEvent, projectId: string) => {
     e.preventDefault()
@@ -238,10 +240,13 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
       {/* Branch Menu Dropdown - positioned with fixed positioning */}
       {showBranchMenu && gitInfo[showBranchMenu] && (() => {
         const buttonRect = branchButtonRefs.current[showBranchMenu]?.getBoundingClientRect()
+        const filteredBranches = gitInfo[showBranchMenu].branches.filter(branch =>
+          branch.toLowerCase().includes(branchFilter.toLowerCase())
+        )
         return (
           <div
             ref={branchMenuRef}
-            className="fixed py-1 bg-[#2d2d2d] border border-gray-700 rounded shadow-lg z-[100] min-w-[200px] max-h-80 overflow-y-auto no-drag"
+            className="fixed py-1 bg-[#2d2d2d] border border-gray-700 rounded shadow-lg z-[100] min-w-[200px] max-h-80 overflow-hidden flex flex-col no-drag"
             style={{
               top: buttonRect ? `${buttonRect.bottom + 2}px` : '0px',
               left: buttonRect ? `${buttonRect.left}px` : '0px',
@@ -251,52 +256,63 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
           <button
             onClick={(e) => handleFetch(e, showBranchMenu)}
             disabled={isFetching}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left border-b border-zinc-700 mb-1"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left border-b border-zinc-700"
           >
             <RefreshCw className={cn('w-3 h-3', isFetching && 'animate-spin')} />
             {isFetching ? 'Fetching...' : 'Fetch from remote'}
           </button>
 
-          {/* Branch list */}
-          {gitInfo[showBranchMenu].branches.length > 0 ? (
-            <>
-              <div className="px-3 py-1 text-xs text-zinc-500 uppercase">
-                Local branches
-              </div>
-              {gitInfo[showBranchMenu].branches.map((branch) => (
-                <button
-                  key={branch}
-                  onClick={() => handleSwitchBranch(showBranchMenu, branch)}
-                  disabled={isCheckingOut || branch === gitInfo[showBranchMenu].branch}
-                  className={cn(
-                    'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left',
-                    branch === gitInfo[showBranchMenu].branch
-                      ? 'text-green-400 bg-green-500/10'
-                      : 'text-zinc-300 hover:bg-zinc-700 hover:text-white'
-                  )}
-                >
-                  {branch === gitInfo[showBranchMenu].branch ? (
-                    <Check className="w-3 h-3 text-green-400" />
-                  ) : (
-                    <GitBranch className="w-3 h-3" />
-                  )}
-                  <span className="truncate">{branch}</span>
-                </button>
-              ))}
-            </>
-          ) : (
-            <div className="px-3 py-2 text-xs text-zinc-500">
-              No branches found
-            </div>
-          )}
+          {/* Filter input */}
+          <div className="px-3 py-2 border-b border-zinc-700">
+            <input
+              type="text"
+              placeholder="Filter branches..."
+              value={branchFilter}
+              onChange={(e) => setBranchFilter(e.target.value)}
+              className="w-full px-2 py-1 text-xs bg-zinc-800 border border-zinc-600 rounded text-zinc-300 placeholder-zinc-500 focus:outline-none focus:border-blue-500"
+              autoFocus
+            />
+          </div>
 
-          <div className="border-t border-zinc-700 mt-1">
-            <button
-              onClick={() => handleOpenBranchTool(showBranchMenu)}
-              className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700"
-            >
-              Open branch tool...
-            </button>
+          {/* Branch list - scrollable */}
+          <div className="overflow-y-auto flex-1">
+            {gitInfo[showBranchMenu].branches.length > 0 ? (
+              <>
+                <div className="px-3 py-1 text-xs text-zinc-500 uppercase">
+                  Local branches {filteredBranches.length !== gitInfo[showBranchMenu].branches.length && `(${filteredBranches.length}/${gitInfo[showBranchMenu].branches.length})`}
+                </div>
+                {filteredBranches.length > 0 ? (
+                  filteredBranches.map((branch) => (
+                    <button
+                      key={branch}
+                      onClick={() => handleSwitchBranch(showBranchMenu, branch)}
+                      disabled={isCheckingOut || branch === gitInfo[showBranchMenu].branch}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left',
+                        branch === gitInfo[showBranchMenu].branch
+                          ? 'text-green-400 bg-green-500/10'
+                          : 'text-zinc-300 hover:bg-zinc-700 hover:text-white'
+                      )}
+                    >
+                      {branch === gitInfo[showBranchMenu].branch ? (
+                        <Check className="w-3 h-3 text-green-400" />
+                      ) : (
+                        <GitBranch className="w-3 h-3" />
+                      )}
+                      <span className="truncate">{branch}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-3 py-2 text-xs text-zinc-500">
+                    No branches match "{branchFilter}"
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="px-3 py-2 text-xs text-zinc-500">
+                No branches found
+              </div>
+            )}
           </div>
         </div>
         )
