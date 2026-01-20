@@ -4,10 +4,12 @@ import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { useGridStore } from '../stores/grid-store'
 import { useSSHStore } from '../stores/ssh-store'
+import { useGitStore } from '../stores/git-store'
 import { ActivityIndicator } from './ActivityIndicator'
 import { ProjectTabBar } from './ProjectTabBar'
 import { TerminalsTab } from './TerminalsTab'
 import { FilesTab } from './FilesTab'
+import { SearchTab } from './SearchTab'
 import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -45,13 +47,32 @@ export function ProjectItem({
   const { sessions, activeSessionId } = useTerminalStore()
   const { servers } = useServerStore()
   const { getConnection } = useSSHStore()
+  const { gitInfo, refreshGitInfo } = useGitStore()
 
   // Get SSH connection info if this is an SSH project
   const sshConnection = project.isSSHProject && project.sshConnectionId
     ? getConnection(project.sshConnectionId)
     : null
 
+  // Get git info for this project from the centralized store
+  const projectGitInfo = gitInfo[project.id]
+  const gitBranch = projectGitInfo?.branch || null
+  const gitHasChanges = projectGitInfo?.hasChanges || false
+  const changedFiles = projectGitInfo?.changedFiles || []
+
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showBranchMenu, setShowBranchMenu] = useState(false)
+  const [showChangedFilesMenu, setShowChangedFilesMenu] = useState(false)
+  const [branchMenuPos, setBranchMenuPos] = useState<{ top: number; left: number } | null>(null)
+  const [localBranches, setLocalBranches] = useState<string[]>([])
+  const [remoteBranches, setRemoteBranches] = useState<string[]>([])
+  const [isFetching, setIsFetching] = useState(false)
+  const [isCheckingOut, setIsCheckingOut] = useState(false)
+
+  const branchMenuRef = useRef<HTMLDivElement>(null)
+  const branchBtnRef = useRef<HTMLButtonElement>(null)
+  const changedFilesMenuRef = useRef<HTMLDivElement>(null)
+  const changedFilesBtnRef = useRef<HTMLButtonElement>(null)
 
   // Filter out server terminals from regular terminal list (they have shell: '')
   const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
@@ -86,26 +107,6 @@ export function ProjectItem({
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [showBranchMenu, showChangedFilesMenu])
-
-  const refreshGitInfo = async () => {
-      if (!window.electron) return
-      const result = await window.electron.git.getInfo(project.path, project.id)
-      if (result.isGitRepo) {
-        setGitBranch(result.branch || null)
-        setGitHasChanges(result.hasChanges || false)
-        setGitAhead(result.ahead || 0)
-        setGitBehind(result.behind || 0)
-        // Fetch changed files
-        if (result.hasChanges) {
-          const filesResult = await window.electron.git.getChangedFiles(project.path, project.id)
-          if (filesResult.success && filesResult.files) {
-            setChangedFiles(filesResult.files)
-          }
-        } else {
-          setChangedFiles([])
-        }
-      }
-    }
 
   const handleBranchClick = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -152,7 +153,7 @@ export function ProjectItem({
     try {
       const result = await window.electron.git.checkout(project.path, branch)
       if (result.success) {
-        await refreshGitInfo()
+        await refreshGitInfo(project.id, project.path)
         setShowBranchMenu(false)
       } else {
         console.error('Checkout failed:', result.error)
@@ -377,16 +378,13 @@ export function ProjectItem({
         <div className="ml-2 mt-2 mr-1 bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
           <ProjectTabBar
             activeTab={project.activeTab}
-            onTabChange={(tab) => {
-              console.log('🌍 HELLO WORLD - TAB CLICKED 🌍', tab)
-              setProjectTab(project.id, tab)
-            }}
+            onTabChange={(tab) => setProjectTab(project.id, tab)}
             terminalCount={projectSessions.length + projectServers.length}
             changedFilesCount={changedFiles.length}
           />
 
           <div className="mt-2 space-y-1">
-            {project.activeTab === 'terminals' && (
+            <div className={cn(project.activeTab !== 'terminals' && 'hidden')}>
               <TerminalsTab
                 project={project}
                 projectId={project.id}
@@ -400,11 +398,15 @@ export function ProjectItem({
                 onRestartServer={onRestartServer}
                 onDeleteServer={onDeleteServer}
               />
-            )}
+            </div>
 
-            {project.activeTab === 'files' && (
-              <FilesTab projectPath={project.path} />
-            )}
+            <div className={cn(project.activeTab !== 'files' && 'hidden')}>
+              <FilesTab projectId={project.id} projectPath={project.path} />
+            </div>
+
+            <div className={cn(project.activeTab !== 'search' && 'hidden')}>
+              <SearchTab projectId={project.id} projectPath={project.path} />
+            </div>
           </div>
         </div>
       )}

@@ -136,6 +136,21 @@ export interface DirListResult {
   error?: string
 }
 
+export interface SearchResult {
+  file: string
+  line: number
+  column: number
+  content: string
+  matchStart: number
+  matchEnd: number
+}
+
+export interface SearchContentResult {
+  success: boolean
+  results?: SearchResult[]
+  error?: string
+}
+
 export interface ReviewFinding {
   id: string
   file: string
@@ -314,6 +329,8 @@ const electronAPI = {
       ipcRenderer.invoke('fs:writeFile', filePath, content, projectId),
     listDir: (dirPath: string, projectId?: string): Promise<DirListResult> =>
       ipcRenderer.invoke('fs:listDir', dirPath, projectId),
+    searchContent: (projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }, projectId?: string): Promise<SearchContentResult> =>
+      ipcRenderer.invoke('fs:searchContent', projectPath, query, options, projectId),
   },
   ssh: {
     connect: (config: SSHConnectionConfig): Promise<SSHConnectionResult> =>

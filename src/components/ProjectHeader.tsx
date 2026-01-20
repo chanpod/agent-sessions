@@ -32,25 +32,24 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const hiddenProjectsMenuRef = useRef<HTMLDivElement>(null)
   const branchButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const prevProjectIdsRef = useRef<string>('')
 
   // Watch git changes for all projects
   useEffect(() => {
-    // Start watching all projects
-    projects.forEach((project) => {
-      if (project.path) {
-        watchProject(project.id, project.path)
-      }
-    })
+    // Create a stable key based on project IDs and paths
+    const projectKey = projects.map(p => `${p.id}:${p.path}`).sort().join('|')
 
-    // Cleanup: unwatch projects that are no longer in the list
-    return () => {
+    // Only re-watch if the set of projects actually changed
+    if (projectKey !== prevProjectIdsRef.current) {
+      prevProjectIdsRef.current = projectKey
+
       projects.forEach((project) => {
         if (project.path) {
-          unwatchProject(project.id, project.path)
+          watchProject(project.id, project.path)
         }
       })
     }
-  }, [projects, watchProject, unwatchProject])
+  }, [projects, watchProject])
 
   // Close menus when clicking outside
   useEffect(() => {

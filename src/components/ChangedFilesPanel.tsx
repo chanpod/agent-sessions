@@ -1,10 +1,11 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown, Sparkles, Loader2, XCircle, Folder } from 'lucide-react'
+import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown, Sparkles, Loader2, XCircle, Folder, Search } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore } from '../stores/git-store'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { useReviewStore } from '../stores/review-store'
 import { FileBrowser } from './FileBrowser'
+import { SearchTab } from './SearchTab'
 import { cn, normalizeFilePath } from '../lib/utils'
 import { generateFileId, generateCacheKey } from '../lib/file-id'
 import type { ChangedFile } from '../types/electron'
@@ -52,7 +53,7 @@ export function ChangedFilesPanel() {
   const failReview = useReviewStore((state) => state.failReview)
   const cancelReview = useReviewStore((state) => state.cancelReview)
 
-  const [activeTab, setActiveTab] = useState<'files' | 'git'>('git') // Default to git tab
+  const [activeTab, setActiveTab] = useState<'files' | 'git' | 'search'>('git') // Default to git tab
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('changed-files-panel-width')
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH
@@ -141,15 +142,13 @@ export function ChangedFilesPanel() {
     console.log('🔍 ChangedFilesPanel: Setting up git watch', { activeProjectId, projectPath })
     if (!activeProjectId || !projectPath) return
 
-    const { watchProject, unwatchProject } = useGitStore.getState()
+    const { watchProject } = useGitStore.getState()
 
-    // Start watching this project
+    // Start watching this project (idempotent - safe to call multiple times)
     watchProject(activeProjectId, projectPath)
 
-    return () => {
-      // Clean up when project changes
-      unwatchProject(activeProjectId, projectPath)
-    }
+    // No cleanup - keep watching even when component unmounts or switches
+    // The ProjectHeader manages the overall watch lifecycle
   }, [activeProjectId, projectPath])
 
   // Listen for review events
@@ -577,6 +576,18 @@ export function ChangedFilesPanel() {
             </span>
           )}
         </button>
+        <button
+          onClick={() => setActiveTab('search')}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors relative',
+            activeTab === 'search'
+              ? 'text-blue-400 border-b-2 border-blue-400 -mb-[1px]'
+              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
+          )}
+        >
+          <Search className="w-3.5 h-3.5" />
+          <span>Search</span>
+        </button>
       </div>
 
       {/* Git Tab Header - only show when git tab is active */}
@@ -642,6 +653,10 @@ export function ChangedFilesPanel() {
       <div className="flex-1 overflow-y-auto p-3">
         {activeTab === 'files' && (
           <FileBrowser projectId={activeProject.id} rootPath={projectPath} maxDepth={4} />
+        )}
+
+        {activeTab === 'search' && (
+          <SearchTab projectId={activeProject.id} projectPath={projectPath} />
         )}
 
         {activeTab === 'git' && !projectGitInfo.isGitRepo && (

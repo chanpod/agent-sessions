@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
 
-export type ProjectTab = 'terminals' | 'files' | 'git'
+export type ProjectTab = 'terminals' | 'files' | 'git' | 'search'
 
 export interface Project {
   id: string

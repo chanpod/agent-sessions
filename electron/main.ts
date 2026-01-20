@@ -1990,6 +1990,186 @@ ipcMain.handle('fs:listDir', async (_event, dirPath: string, projectId?: string)
   }
 })
 
+// Search files content (using grep or ripgrep)
+ipcMain.handle('fs:searchContent', async (_event, projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }, projectId?: string) => {
+  try {
+    console.log('[fs:searchContent] Searching in:', projectPath, 'query:', query, 'options:', options)
+
+    interface SearchResult {
+      file: string
+      line: number
+      column: number
+      content: string
+      matchStart: number
+      matchEnd: number
+    }
+
+    const results: SearchResult[] = []
+
+    // Build grep/ripgrep command
+    let grepCmd = ''
+    const excludeDirs = 'node_modules|.git|dist|build|.next|out|.turbo|coverage'
+
+    // Check if ripgrep is available (faster and better)
+    let useRipgrep = false
+    try {
+      if (projectId && sshManager) {
+        const status = sshManager.getProjectMasterStatus(projectId)
+        if (status.connected) {
+          await sshManager.execViaProjectMaster(projectId, 'which rg')
+          useRipgrep = true
+        }
+      } else {
+        execSync('which rg || where rg', { stdio: 'ignore' })
+        useRipgrep = true
+      }
+    } catch {
+      // ripgrep not available, will use grep
+    }
+
+    if (useRipgrep) {
+      // Use ripgrep (faster, better)
+      const flags: string[] = ['--line-number', '--column', '--no-heading', '--with-filename', '--color=never']
+
+      if (!options.caseSensitive) flags.push('--ignore-case')
+      if (options.wholeWord) flags.push('--word-regexp')
+      if (!options.useRegex) flags.push('--fixed-strings')
+
+      // Escape query for shell
+      const escapedQuery = query.replace(/'/g, "'\\''")
+      grepCmd = `rg ${flags.join(' ')} '${escapedQuery}' "${projectPath}"`
+    } else {
+      // Fallback to grep
+      const flags: string[] = ['-r', '-n', '--exclude-dir={' + excludeDirs + '}']
+
+      if (!options.caseSensitive) flags.push('-i')
+      if (options.wholeWord) flags.push('-w')
+      if (!options.useRegex) flags.push('-F')
+
+      // Escape query for shell
+      const escapedQuery = query.replace(/'/g, "'\\''")
+      grepCmd = `grep ${flags.join(' ')} '${escapedQuery}' "${projectPath}" || true`
+    }
+
+    console.log('[fs:searchContent] Command:', grepCmd)
+
+    // Execute search command
+    let output = ''
+    try {
+      output = await execInContextAsync(grepCmd, projectPath, projectId)
+    } catch (err: any) {
+      // grep exits with code 1 if no matches found, which throws an error
+      // Only treat it as a real error if it's not a "no matches" error
+      if (err.message && !err.message.includes('exit code 1')) {
+        throw err
+      }
+      output = ''
+    }
+
+    if (!output || output.trim() === '') {
+      return { success: true, results: [] }
+    }
+
+    // Parse output
+    const lines = output.split('\n').filter(l => l.trim())
+
+    for (const line of lines) {
+      let match: RegExpMatchArray | null
+
+      if (useRipgrep) {
+        // ripgrep format: file:line:column:content
+        match = line.match(/^(.+?):(\d+):(\d+):(.*)$/)
+        if (match) {
+          const [, file, lineNum, col, content] = match
+          const relativePath = file.startsWith(projectPath)
+            ? file.substring(projectPath.length).replace(/^[/\\]/, '')
+            : file
+
+          // Find match position in content
+          let matchStart = 0
+          let matchEnd = query.length
+
+          if (options.useRegex) {
+            try {
+              const regex = new RegExp(query, options.caseSensitive ? 'g' : 'gi')
+              const regexMatch = content.match(regex)
+              if (regexMatch) {
+                matchStart = content.indexOf(regexMatch[0])
+                matchEnd = matchStart + regexMatch[0].length
+              }
+            } catch {
+              // Invalid regex, use simple search
+              matchStart = content.toLowerCase().indexOf(query.toLowerCase())
+              matchEnd = matchStart + query.length
+            }
+          } else {
+            const searchIn = options.caseSensitive ? content : content.toLowerCase()
+            const searchFor = options.caseSensitive ? query : query.toLowerCase()
+            matchStart = searchIn.indexOf(searchFor)
+            matchEnd = matchStart + query.length
+          }
+
+          results.push({
+            file: relativePath,
+            line: parseInt(lineNum, 10),
+            column: parseInt(col, 10),
+            content: content.trim(),
+            matchStart,
+            matchEnd,
+          })
+        }
+      } else {
+        // grep format: file:line:content
+        match = line.match(/^(.+?):(\d+):(.*)$/)
+        if (match) {
+          const [, file, lineNum, content] = match
+          const relativePath = file.startsWith(projectPath)
+            ? file.substring(projectPath.length).replace(/^[/\\]/, '')
+            : file
+
+          // Find match position in content
+          let matchStart = 0
+          let matchEnd = query.length
+
+          if (options.useRegex) {
+            try {
+              const regex = new RegExp(query, options.caseSensitive ? 'g' : 'gi')
+              const regexMatch = content.match(regex)
+              if (regexMatch) {
+                matchStart = content.indexOf(regexMatch[0])
+                matchEnd = matchStart + regexMatch[0].length
+              }
+            } catch {
+              matchStart = content.toLowerCase().indexOf(query.toLowerCase())
+              matchEnd = matchStart + query.length
+            }
+          } else {
+            const searchIn = options.caseSensitive ? content : content.toLowerCase()
+            const searchFor = options.caseSensitive ? query : query.toLowerCase()
+            matchStart = searchIn.indexOf(searchFor)
+            matchEnd = matchStart + query.length
+          }
+
+          results.push({
+            file: relativePath,
+            line: parseInt(lineNum, 10),
+            column: matchStart + 1, // Convert to 1-based
+            content: content.trim(),
+            matchStart,
+            matchEnd,
+          })
+        }
+      }
+    }
+
+    console.log(`[fs:searchContent] Found ${results.length} results`)
+    return { success: true, results }
+  } catch (err) {
+    console.error('Failed to search content:', err)
+    return { success: false, error: String(err), results: [] }
+  }
+})
+
 /**
  * Generate per-file diff hashes
  */

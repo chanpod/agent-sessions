@@ -32,20 +32,12 @@ export const useFileSearchStore = create<FileSearchStore>((set, get) => ({
     const { files } = get()
     const lowerQuery = query.toLowerCase()
 
-    // Fuzzy search: match files that contain all characters in order
+    // Simple substring search: match files using case-insensitive substring matching
     const filteredFiles = query === ''
       ? files
       : files.filter(file => {
           const lowerFile = file.toLowerCase()
-          let queryIndex = 0
-
-          for (let i = 0; i < lowerFile.length && queryIndex < lowerQuery.length; i++) {
-            if (lowerFile[i] === lowerQuery[queryIndex]) {
-              queryIndex++
-            }
-          }
-
-          return queryIndex === lowerQuery.length
+          return lowerFile.includes(lowerQuery)
         })
         .sort((a, b) => {
           // Prioritize matches at the start of the filename

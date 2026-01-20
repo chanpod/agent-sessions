@@ -76,11 +76,11 @@ export function ReviewPanel({ projectPath }: ReviewPanelProps) {
       clearCacheForFiles(projectPath, allFiles)
     }
 
-    // Close panel and trigger new review from GitTab
+    // Close panel and allow user to start a fresh review
     setVisibility(false)
     cancelReview(activeReviewId)
 
-    // Small delay to let state settle, then the user can click Review Again in GitTab
+    // Small delay to let state settle before starting a new review
     setTimeout(() => {
       console.log('[ReviewPanel] Ready for fresh review')
     }, 100)

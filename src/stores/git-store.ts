@@ -95,13 +95,13 @@ export const useGitStore = create<GitStore>((set, get) => ({
         newWatchedProjects.set(projectPath, projectId)
         return { watchedProjects: newWatchedProjects }
       })
-    } else {
-      console.log(`[GitStore] Already watching ${projectPath}`)
-    }
 
-    // Fetch initial git info
-    console.log(`[GitStore] Fetching initial git info`)
-    await get().refreshGitInfo(projectId, projectPath)
+      // Fetch initial git info only for new watches
+      console.log(`[GitStore] Fetching initial git info for new watch`)
+      await get().refreshGitInfo(projectId, projectPath)
+    } else {
+      console.log(`[GitStore] Already watching ${projectPath}, skipping refresh`)
+    }
   },
 
   unwatchProject: (projectId: string, projectPath: string) => {

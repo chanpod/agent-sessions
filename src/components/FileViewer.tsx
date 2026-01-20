@@ -1,7 +1,7 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import Editor, { loader, OnMount, DiffEditor } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
-import { X, Save, Circle, GitCompare } from 'lucide-react'
+import { X, Save, Circle, GitCompare, Search, CaseSensitive, Regex, WholeWord } from 'lucide-react'
 import { useFileViewerStore, OpenFile } from '../stores/file-viewer-store'
 import { cn } from '../lib/utils'
 
@@ -48,6 +48,125 @@ function FileTab({ file, isActive, onSelect, onClose }: FileTabProps) {
   )
 }
 
+interface SearchBarProps {
+  onClose: () => void
+  editorRef: React.RefObject<monaco.editor.IStandaloneCodeEditor | null>
+}
+
+function SearchBar({ onClose, editorRef }: SearchBarProps) {
+  const [searchTerm, setSearchTerm] = useState('')
+  const [matchCase, setMatchCase] = useState(false)
+  const [wholeWord, setWholeWord] = useState(false)
+  const [useRegex, setUseRegex] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    // Focus input when search bar opens
+    inputRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    if (!editorRef.current) return
+
+    const editor = editorRef.current
+    const findController = editor.getContribution('editor.contrib.findController') as any
+
+    if (findController) {
+      // Update find state when options change
+      findController.getState().change({
+        searchString: searchTerm,
+        isRegex: useRegex,
+        matchCase: matchCase,
+        wholeWord: wholeWord,
+      }, false)
+
+      if (searchTerm) {
+        findController.start({
+          forceRevealReplace: false,
+          seedSearchStringFromSelection: 'none',
+          seedSearchStringFromNonEmptySelection: false,
+          shouldFocus: 0, // Don't focus find widget
+          shouldAnimate: true,
+        })
+      }
+    }
+  }, [searchTerm, matchCase, wholeWord, useRegex, editorRef])
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      onClose()
+    } else if (e.key === 'Enter') {
+      if (!editorRef.current) return
+      const findController = editorRef.current.getContribution('editor.contrib.findController') as any
+      if (findController) {
+        if (e.shiftKey) {
+          findController.moveToPrevMatch()
+        } else {
+          findController.moveToNextMatch()
+        }
+      }
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 bg-zinc-900 border-b border-zinc-800">
+      <div className="flex items-center gap-1 flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1">
+        <Search className="w-3.5 h-3.5 text-zinc-500" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Find"
+          className="flex-1 bg-transparent text-xs text-white outline-none placeholder:text-zinc-600"
+        />
+      </div>
+
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => setMatchCase(!matchCase)}
+          className={cn(
+            'p-1 rounded hover:bg-zinc-800 transition-colors',
+            matchCase ? 'text-blue-400 bg-blue-500/20' : 'text-zinc-500 hover:text-zinc-300'
+          )}
+          title="Match Case"
+        >
+          <CaseSensitive className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => setWholeWord(!wholeWord)}
+          className={cn(
+            'p-1 rounded hover:bg-zinc-800 transition-colors',
+            wholeWord ? 'text-blue-400 bg-blue-500/20' : 'text-zinc-500 hover:text-zinc-300'
+          )}
+          title="Match Whole Word"
+        >
+          <WholeWord className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => setUseRegex(!useRegex)}
+          className={cn(
+            'p-1 rounded hover:bg-zinc-800 transition-colors',
+            useRegex ? 'text-blue-400 bg-blue-500/20' : 'text-zinc-500 hover:text-zinc-300'
+          )}
+          title="Use Regular Expression"
+        >
+          <Regex className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <button
+        onClick={onClose}
+        className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300"
+        title="Close (Esc)"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  )
+}
+
 export function FileViewer() {
   const {
     openFiles,
@@ -65,6 +184,7 @@ export function FileViewer() {
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const activeFile = openFiles.find((f) => f.path === activeFilePath)
+  const [showSearch, setShowSearch] = useState(false)
 
   // Load git content when diff mode is enabled
   useEffect(() => {
@@ -116,18 +236,30 @@ export function FileViewer() {
     }
   }, [activeFile, markFileSaved])
 
-  // Global keyboard shortcut for Ctrl+S
+  // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's' && isVisible && activeFile) {
+      if (!isVisible || !activeFile) return
+
+      // Ctrl+S to save
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
         handleSave()
+      }
+
+      // Ctrl+F to open Monaco's built-in find widget
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !showDiff && editorRef.current) {
+        e.preventDefault()
+        const action = editorRef.current.getAction('actions.find')
+        if (action) {
+          action.run()
+        }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isVisible, activeFile, handleSave])
+  }, [isVisible, activeFile, handleSave, showDiff])
 
   if (!isVisible || openFiles.length === 0) {
     return null
@@ -149,6 +281,18 @@ export function FileViewer() {
           ))}
         </div>
         <div className="flex items-center px-2 gap-1">
+          {!showDiff && (
+            <button
+              onClick={() => setShowSearch(!showSearch)}
+              className={cn(
+                'p-1 rounded hover:bg-zinc-800',
+                showSearch ? 'text-blue-400 bg-blue-500/20' : 'text-zinc-400 hover:text-white'
+              )}
+              title="Find (Ctrl+F)"
+            >
+              <Search className="w-4 h-4" />
+            </button>
+          )}
           {activeFile?.projectPath && (
             <button
               onClick={toggleDiffMode}
@@ -179,6 +323,14 @@ export function FileViewer() {
           </button>
         </div>
       </div>
+
+      {/* Search Bar */}
+      {showSearch && !showDiff && (
+        <SearchBar
+          onClose={() => setShowSearch(false)}
+          editorRef={editorRef}
+        />
+      )}
 
       {/* Editor */}
       <div className="flex-1 min-h-0">

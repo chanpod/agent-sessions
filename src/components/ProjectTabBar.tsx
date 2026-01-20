@@ -1,4 +1,4 @@
-import { Terminal, Folder, GitBranch } from 'lucide-react'
+import { Terminal, Folder, GitBranch, Search } from 'lucide-react'
 import { ProjectTab } from '../stores/project-store'
 import { cn } from '../lib/utils'
 
@@ -21,6 +21,17 @@ export function ProjectTabBar({ activeTab, onTabChange, terminalCount = 0, chang
       id: 'files',
       label: 'Files',
       icon: <Folder className="w-3.5 h-3.5" />,
+    },
+    {
+      id: 'git',
+      label: 'Git',
+      icon: <GitBranch className="w-3.5 h-3.5" />,
+      badge: changedFilesCount > 0 ? changedFilesCount : undefined,
+    },
+    {
+      id: 'search',
+      label: 'Search',
+      icon: <Search className="w-3.5 h-3.5" />,
     },
   ]
 

@@ -1,7 +1,8 @@
-import { Terminal, Plus, Server, Play, Command, RefreshCw, Package } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { Terminal, Plus, Server, Play, Command, RefreshCw, Package, ChevronDown, ChevronRight, Pin } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore } from '../stores/server-store'
+import { usePackageUIStore } from '../stores/package-ui-store'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem, ServerItem } from './ProjectItem'
 import { Project } from '../stores/project-store'
@@ -52,6 +53,7 @@ export function TerminalsTab({
 }: TerminalsTabProps) {
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { servers } = useServerStore()
+  const { packageStates, toggleMinimized, togglePinned, isMinimized, isPinned } = usePackageUIStore()
 
   const [showShellMenu, setShowShellMenu] = useState(false)
 
@@ -129,6 +131,25 @@ export function TerminalsTab({
     setCustomCommand('')
     setCustomName('')
   }
+
+  // Determine if packages should be minimized by default (when there are more than 2)
+  const defaultMinimized = packages.length > 2
+
+  // Sort packages: pinned first, then by path
+  const sortedPackages = useMemo(() => {
+    return [...packages].sort((a, b) => {
+      const aPinned = isPinned(projectId, a.packagePath)
+      const bPinned = isPinned(projectId, b.packagePath)
+
+      if (aPinned && !bPinned) return -1
+      if (!aPinned && bPinned) return 1
+
+      // If both pinned or both not pinned, sort by path
+      if (a.packagePath === '.') return -1
+      if (b.packagePath === '.') return 1
+      return a.packagePath.localeCompare(b.packagePath)
+    })
+  }, [packages, projectId, packageStates, isPinned])
 
   return (
     <>
@@ -219,33 +240,67 @@ export function TerminalsTab({
               <div className="absolute right-0 top-full mt-1 py-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-50 min-w-[220px] max-h-[400px] overflow-y-auto">
                 {packages.length > 0 ? (
                   <>
-                    {packages.map((pkg, pkgIndex) => (
-                      <div key={pkg.packagePath}>
-                        {pkgIndex > 0 && <div className="border-t border-zinc-700/50 my-1" />}
-                        <div className="px-3 py-1.5 text-[10px] text-zinc-400 uppercase flex items-center gap-1.5">
-                          <Package className="w-3 h-3" />
-                          {pkg.packagePath === '.' ? (
-                            <span>Root {pkg.packageName ? `(${pkg.packageName})` : ''}</span>
-                          ) : (
-                            <span title={pkg.packagePath}>
-                              {pkg.packagePath}
-                              {pkg.packageName && <span className="text-zinc-500 ml-1">({pkg.packageName})</span>}
+                    {sortedPackages.map((pkg, pkgIndex) => {
+                      const pinned = isPinned(projectId, pkg.packagePath)
+                      // Pinned packages should never use default minimized state
+                      const minimized = isMinimized(projectId, pkg.packagePath, pinned ? false : defaultMinimized)
+
+                      return (
+                        <div key={pkg.packagePath}>
+                          {pkgIndex > 0 && <div className="border-t border-zinc-700/50 my-1" />}
+                          <div className="px-2 py-1.5 text-[10px] text-zinc-400 uppercase flex items-center gap-1.5 group">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                toggleMinimized(projectId, pkg.packagePath)
+                              }}
+                              className="p-0.5 hover:bg-zinc-700 rounded flex-shrink-0"
+                              title={minimized ? 'Expand' : 'Minimize'}
+                            >
+                              {minimized ? (
+                                <ChevronRight className="w-3 h-3" />
+                              ) : (
+                                <ChevronDown className="w-3 h-3" />
+                              )}
+                            </button>
+                            <Package className="w-3 h-3 flex-shrink-0" />
+                            <span className="flex-1 truncate" title={pkg.packagePath}>
+                              {pkg.packagePath === '.' ? (
+                                <>Root {pkg.packageName ? `(${pkg.packageName})` : ''}</>
+                              ) : (
+                                <>
+                                  {pkg.packagePath}
+                                  {pkg.packageName && <span className="text-zinc-500 ml-1">({pkg.packageName})</span>}
+                                </>
+                              )}
                             </span>
-                          )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                togglePinned(projectId, pkg.packagePath)
+                              }}
+                              className={`p-0.5 hover:bg-zinc-700 rounded flex-shrink-0 transition-colors ${
+                                pinned ? 'text-yellow-500' : 'text-zinc-600 opacity-0 group-hover:opacity-100'
+                              }`}
+                              title={pinned ? 'Unpin' : 'Pin'}
+                            >
+                              <Pin className={`w-3 h-3 ${pinned ? 'fill-current' : ''}`} />
+                            </button>
+                          </div>
+                          {!minimized && pkg.scripts.map((script) => (
+                            <button
+                              key={`${pkg.packagePath}:${script.name}`}
+                              onClick={() => handleScriptSelect(script, pkg)}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left ml-4"
+                              title={`${script.command} (${pkg.packageManager})`}
+                            >
+                              <Play className="w-3 h-3 text-green-500 flex-shrink-0" />
+                              <span className="truncate">{script.name}</span>
+                            </button>
+                          ))}
                         </div>
-                        {pkg.scripts.map((script) => (
-                          <button
-                            key={`${pkg.packagePath}:${script.name}`}
-                            onClick={() => handleScriptSelect(script, pkg)}
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
-                            title={`${script.command} (${pkg.packageManager})`}
-                          >
-                            <Play className="w-3 h-3 text-green-500 flex-shrink-0" />
-                            <span className="truncate">{script.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ))}
+                      )
+                    })}
                     <div className="border-t border-zinc-700 my-1" />
                   </>
                 ) : (

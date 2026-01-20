@@ -53,7 +53,17 @@ export function FileSearchModal() {
 
           if (entry.isFile) {
             // Store relative path from project root
-            const relativePath = entry.path.replace(rootPath, '').replace(/^[/\\]/, '')
+            // Normalize both paths to use the same separator for reliable comparison
+            const normalizedRoot = rootPath.replace(/\\/g, '/').replace(/\/$/, '')
+            const normalizedEntry = entry.path.replace(/\\/g, '/')
+
+            let relativePath = normalizedEntry
+            if (normalizedEntry.startsWith(normalizedRoot + '/')) {
+              relativePath = normalizedEntry.substring(normalizedRoot.length + 1)
+            } else if (normalizedEntry.startsWith(normalizedRoot)) {
+              relativePath = normalizedEntry.substring(normalizedRoot.length).replace(/^[/\\]/, '')
+            }
+
             files.push(relativePath)
           } else if (entry.isDirectory) {
             await walkDir(entry.path, depth + 1)

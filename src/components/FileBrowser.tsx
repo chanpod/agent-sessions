@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
-import { ChevronRight, File, Folder, FolderOpen } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { ChevronRight, File, Folder, FolderOpen, Search, X } from 'lucide-react'
 import { useFileViewerStore } from '../stores/file-viewer-store'
+import { useFileCacheStore } from '../stores/file-cache-store'
 import { cn } from '../lib/utils'
 import type { DirEntry } from '../types/electron'
 
@@ -16,6 +17,7 @@ interface TreeNodeProps {
   depth: number
   maxDepth: number
   rootPath: string
+  searchTerm?: string
 }
 
 // Files/folders to hide
@@ -33,16 +35,41 @@ const HIDDEN_ENTRIES = new Set([
   'Thumbs.db',
 ])
 
-function TreeNode({ projectId, entry, depth, maxDepth, rootPath }: TreeNodeProps) {
+// Simple substring match - case insensitive
+function fuzzyMatch(searchTerm: string, text: string): boolean {
+  if (!searchTerm) return true
+
+  const search = searchTerm.toLowerCase()
+  const target = text.toLowerCase()
+
+  // Simple substring match only
+  return target.includes(search)
+}
+
+function TreeNode({ projectId, entry, depth, maxDepth, rootPath, searchTerm = '' }: TreeNodeProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [children, setChildren] = useState<DirEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const { openFile } = useFileViewerStore()
+  const { getCachedDir, setCachedDir, setLoading: setCacheLoading } = useFileCacheStore()
 
-  const loadChildren = async () => {
+  const loadChildren = async (useCache = true) => {
     if (!window.electron || !entry.isDirectory) return
 
+    // Check cache first
+    if (useCache) {
+      const cached = getCachedDir(entry.path)
+      if (cached && cached.entries.length > 0) {
+        setChildren(cached.entries)
+        // If cache is fresh (< 5 seconds), don't refresh in background
+        if (Date.now() - cached.timestamp < 5000) {
+          return
+        }
+      }
+    }
+
     setIsLoading(true)
+    setCacheLoading(entry.path, true)
     const result = await window.electron.fs.listDir(entry.path, projectId)
     setIsLoading(false)
 
@@ -50,8 +77,57 @@ function TreeNode({ projectId, entry, depth, maxDepth, rootPath }: TreeNodeProps
       // Filter hidden entries
       const filtered = result.items.filter((item) => !HIDDEN_ENTRIES.has(item.name))
       setChildren(filtered)
+      setCachedDir(entry.path, filtered)
+    } else {
+      setCachedDir(entry.path, [], result.error || 'Failed to load directory')
     }
   }
+
+  // Check recursively if any descendant matches the search
+  // This uses the cached/loaded children data
+  const hasMatchingDescendant = useCallback((entries: DirEntry[], term: string): boolean => {
+    if (!term) return true
+
+    for (const child of entries) {
+      // If file matches, we found a matching descendant
+      if (child.isFile && fuzzyMatch(term, child.name)) {
+        return true
+      }
+
+      // If directory name matches, we found a matching descendant
+      if (child.isDirectory && fuzzyMatch(term, child.name)) {
+        return true
+      }
+
+      // For directories, check if they might have matches
+      // We can only check loaded children from cache
+      if (child.isDirectory) {
+        const cached = getCachedDir(child.path)
+        if (cached && cached.entries.length > 0) {
+          // Recursively check the cached children
+          if (hasMatchingDescendant(cached.entries, term)) {
+            return true
+          }
+        }
+      }
+    }
+
+    return false
+  }, [getCachedDir])
+
+  // Load children automatically when searching
+  useEffect(() => {
+    if (searchTerm && entry.isDirectory && children.length === 0 && depth < maxDepth) {
+      loadChildren()
+    }
+  }, [searchTerm])
+
+  // Auto-expand when searching and children are loaded
+  useEffect(() => {
+    if (searchTerm && entry.isDirectory && children.length > 0) {
+      setIsExpanded(true)
+    }
+  }, [searchTerm, children, entry.isDirectory])
 
   const handleClick = async () => {
     if (entry.isDirectory) {
@@ -70,6 +146,40 @@ function TreeNode({ projectId, entry, depth, maxDepth, rootPath }: TreeNodeProps
   }
 
   const canExpand = entry.isDirectory && depth < maxDepth
+
+  // Determine if this node should be visible when searching
+  if (searchTerm) {
+    const nodeMatches = fuzzyMatch(searchTerm, entry.name)
+
+    // For files: only show if the file matches
+    if (entry.isFile && !nodeMatches) {
+      return null
+    }
+
+    // For directories: show if directory name matches OR it hasn't loaded yet OR has any matching descendants
+    if (entry.isDirectory) {
+      if (nodeMatches) {
+        // Directory name matches, always show
+        // Fall through to render
+      } else {
+        // Directory name doesn't match
+        const hasLoadedChildren = children.length > 0
+
+        if (!hasLoadedChildren) {
+          // Children not loaded yet, show it (will auto-load)
+          // Fall through to render
+        } else {
+          // Children are loaded - recursively check if any descendants match
+          if (!hasMatchingDescendant(children, searchTerm)) {
+            // No matching descendants - hide this directory
+            return null
+          }
+          // Has matching descendants, show
+          // Fall through to render
+        }
+      }
+    }
+  }
 
   return (
     <div>
@@ -120,6 +230,7 @@ function TreeNode({ projectId, entry, depth, maxDepth, rootPath }: TreeNodeProps
               depth={depth + 1}
               maxDepth={maxDepth}
               rootPath={rootPath}
+              searchTerm={searchTerm}
             />
           ))}
         </div>
@@ -168,13 +279,36 @@ export function FileBrowser({ projectId, rootPath, maxDepth = 4 }: FileBrowserPr
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [searchTerm, setSearchTerm] = useState('')
+  const { getCachedDir, setCachedDir, setLoading: setCacheLoading } = useFileCacheStore()
 
   useEffect(() => {
     const loadRoot = async () => {
       if (!window.electron) return
 
-      setIsLoading(true)
+      // Check cache first
+      const cached = getCachedDir(rootPath)
+      if (cached) {
+        if (cached.entries.length > 0) {
+          setEntries(cached.entries)
+          setError(null)
+        } else if (cached.error) {
+          setError(cached.error)
+        }
+
+        // If cache is fresh (< 5 seconds), skip refresh
+        if (Date.now() - cached.timestamp < 5000) {
+          return
+        }
+
+        // Otherwise, refresh in background without showing loading state
+      } else {
+        // No cache, show loading state
+        setIsLoading(true)
+      }
+
       setError(null)
+      setCacheLoading(rootPath, true)
 
       const result = await window.electron.fs.listDir(rootPath, projectId)
 
@@ -184,8 +318,11 @@ export function FileBrowser({ projectId, rootPath, maxDepth = 4 }: FileBrowserPr
         // Filter hidden entries
         const filtered = result.items.filter((item) => !HIDDEN_ENTRIES.has(item.name))
         setEntries(filtered)
+        setCachedDir(rootPath, filtered)
       } else {
-        setError(result.error || 'Failed to load directory')
+        const errorMsg = result.error || 'Failed to load directory'
+        setError(errorMsg)
+        setCachedDir(rootPath, [], errorMsg)
       }
     }
 
@@ -205,10 +342,43 @@ export function FileBrowser({ projectId, rootPath, maxDepth = 4 }: FileBrowserPr
   }
 
   return (
-    <div className="py-1">
-      {entries.map((entry) => (
-        <TreeNode key={entry.path} projectId={projectId} entry={entry} depth={0} maxDepth={maxDepth} rootPath={rootPath} />
-      ))}
+    <div>
+      {/* Search input */}
+      <div className="px-2 py-1.5 border-b border-zinc-800">
+        <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded px-2 py-1">
+          <Search className="w-3 h-3 text-zinc-500 flex-shrink-0" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search files..."
+            className="flex-1 bg-transparent text-xs text-white outline-none placeholder:text-zinc-600"
+          />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* File tree */}
+      <div className="py-1">
+        {entries.map((entry) => (
+          <TreeNode
+            key={entry.path}
+            projectId={projectId}
+            entry={entry}
+            depth={0}
+            maxDepth={maxDepth}
+            rootPath={rootPath}
+            searchTerm={searchTerm}
+          />
+        ))}
+      </div>
     </div>
   )
 }
