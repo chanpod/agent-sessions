@@ -8,7 +8,8 @@
       "Bash(wsl -l:*)",
       "Bash(cat:*)",
       "WebSearch",
-      "WebFetch(domain:stackoverflow.com)"
+      "WebFetch(domain:stackoverflow.com)",
+      "Bash(tasklist:*)"
     ],
     "deny": [],
     "ask": []
