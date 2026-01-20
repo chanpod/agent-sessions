@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Plus, X, FolderGit2, GitBranch, RefreshCw, Check } from 'lucide-react'
+import { Plus, X, FolderGit2, GitBranch, RefreshCw, Check, Settings, Trash2, Eye, EyeOff } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore } from '../stores/git-store'
 import { useToastStore } from '../stores/toast-store'
@@ -13,16 +13,23 @@ interface ProjectHeaderProps {
 
 export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   onCreateProject,
+  onEditProject,
+  onDeleteProject,
 }) => {
-  const { projects, activeProjectId, setActiveProject, flashingProjects, clearProjectFlash } = useProjectStore()
+  const { projects, activeProjectId, setActiveProject, flashingProjects, clearProjectFlash, hideProject, showProject } = useProjectStore()
   const { gitInfo, watchProject, unwatchProject, refreshGitInfo } = useGitStore()
   const { addToast } = useToastStore()
   const [hoveredProjectId, setHoveredProjectId] = useState<string | null>(null)
 
   const [showBranchMenu, setShowBranchMenu] = useState<string | null>(null)
+  const [showContextMenu, setShowContextMenu] = useState<string | null>(null)
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [showHiddenProjectsMenu, setShowHiddenProjectsMenu] = useState(false)
   const [isFetching, setIsFetching] = useState(false)
   const [isCheckingOut, setIsCheckingOut] = useState(false)
   const branchMenuRef = useRef<HTMLDivElement>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  const hiddenProjectsMenuRef = useRef<HTMLDivElement>(null)
   const branchButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
 
   // Watch git changes for all projects
@@ -44,7 +51,7 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     }
   }, [projects, watchProject, unwatchProject])
 
-  // Close menu when clicking outside
+  // Close menus when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (branchMenuRef.current && !branchMenuRef.current.contains(event.target as Node)) {
@@ -54,6 +61,12 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
         if (!clickedButton) {
           setShowBranchMenu(null)
         }
+      }
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setShowContextMenu(null)
+      }
+      if (hiddenProjectsMenuRef.current && !hiddenProjectsMenuRef.current.contains(event.target as Node)) {
+        setShowHiddenProjectsMenu(false)
       }
     }
 
@@ -112,11 +125,28 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     setShowBranchMenu(null)
   }
 
+  const handleContextMenu = (e: React.MouseEvent, projectId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenuPos({ x: e.clientX, y: e.clientY })
+    setShowContextMenu(projectId)
+  }
+
+  const handleEditProject = (projectId: string) => {
+    setShowContextMenu(null)
+    onEditProject(projectId)
+  }
+
+  const handleRemoveProject = (projectId: string) => {
+    setShowContextMenu(null)
+    onDeleteProject(projectId)
+  }
+
   return (
     <div className="h-10 bg-[#1e1e1e] border-b border-gray-800 flex items-stretch app-drag-region">
       {/* Project Tabs */}
       <div className="flex items-stretch overflow-x-auto no-drag">
-        {projects.map((project, index) => {
+        {projects.filter(p => !p.isHidden).map((project, index) => {
           const projectGitInfo = gitInfo[project.id]
           const isFlashing = flashingProjects.has(project.id)
           return (
@@ -141,6 +171,7 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
                   clearProjectFlash(project.id)
                 }
               }}
+              onContextMenu={(e) => handleContextMenu(e, project.id)}
               onMouseEnter={() => setHoveredProjectId(project.id)}
               onMouseLeave={() => setHoveredProjectId(null)}
             >
@@ -167,14 +198,13 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  // TODO: Show confirmation dialog before deleting
-                  // For now, just prevent accidental clicks
+                  hideProject(project.id)
                 }}
                 className={cn(
                   'p-0.5 hover:bg-gray-700 rounded transition-opacity flex-shrink-0',
                   hoveredProjectId === project.id ? 'opacity-70 hover:opacity-100' : 'opacity-0 pointer-events-none'
                 )}
-                title="Close project"
+                title="Hide project"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -190,6 +220,17 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
         >
           <Plus className="w-4 h-4 text-gray-500" />
         </button>
+
+        {/* Show Hidden Projects Button - only show if there are hidden projects */}
+        {projects.some(p => p.isHidden) && (
+          <button
+            onClick={() => setShowHiddenProjectsMenu(!showHiddenProjectsMenu)}
+            className="flex items-center justify-center px-3 border-r border-gray-800 hover:bg-[#2a2a2b] transition-colors no-drag"
+            title="Show hidden projects"
+          >
+            <EyeOff className="w-4 h-4 text-gray-500" />
+          </button>
+        )}
       </div>
 
       <div className="flex-1" />
@@ -260,6 +301,63 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
         </div>
         )
       })()}
+
+      {/* Context Menu - positioned with fixed positioning */}
+      {showContextMenu && contextMenuPos && (
+        <div
+          ref={contextMenuRef}
+          className="fixed py-1 bg-[#2d2d2d] border border-gray-700 rounded shadow-lg z-[100] min-w-[180px] no-drag"
+          style={{
+            top: `${contextMenuPos.y}px`,
+            left: `${contextMenuPos.x}px`,
+          }}
+        >
+          <button
+            onClick={() => handleEditProject(showContextMenu)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
+          >
+            <Settings className="w-3 h-3" />
+            Edit Project
+          </button>
+          <div className="border-t border-zinc-700 my-1" />
+          <button
+            onClick={() => handleRemoveProject(showContextMenu)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/20 hover:text-red-300 text-left"
+          >
+            <Trash2 className="w-3 h-3" />
+            Remove Project
+          </button>
+        </div>
+      )}
+
+      {/* Hidden Projects Menu - positioned below the eye icon button */}
+      {showHiddenProjectsMenu && (
+        <div
+          ref={hiddenProjectsMenuRef}
+          className="fixed top-10 left-0 py-1 bg-[#2d2d2d] border border-gray-700 rounded shadow-lg z-[100] min-w-[200px] max-h-80 overflow-y-auto no-drag"
+          style={{
+            left: `${projects.filter(p => !p.isHidden).length * 200 + 48}px`, // Approximate position after visible tabs + buttons
+          }}
+        >
+          <div className="px-3 py-1.5 text-xs text-zinc-500 uppercase border-b border-zinc-700">
+            Hidden Projects
+          </div>
+          {projects.filter(p => p.isHidden).map((project) => (
+            <button
+              key={project.id}
+              onClick={() => {
+                showProject(project.id)
+                setShowHiddenProjectsMenu(false)
+                setActiveProject(project.id)
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
+            >
+              <Eye className="w-3 h-3" />
+              <span className="truncate">{project.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

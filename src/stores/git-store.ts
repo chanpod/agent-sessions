@@ -63,17 +63,23 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   watchProject: async (projectId: string, projectPath: string) => {
-    if (!window.electron || !projectPath) return
+    console.log(`[GitStore] watchProject called for projectId=${projectId}, projectPath=${projectPath}`)
+    if (!window.electron || !projectPath) {
+      console.log(`[GitStore] Skipping watchProject - no electron or projectPath`)
+      return
+    }
 
     const { watchedProjects } = get()
 
     // Set up global listener once
     if (!globalListenerSetup) {
+      console.log(`[GitStore] Setting up global git change listener`)
       globalListenerSetup = true
       globalUnsubscribe = window.electron.git.onChanged((changedPath) => {
         const { watchedProjects } = get()
         const projectId = watchedProjects.get(changedPath)
         if (projectId) {
+          console.log(`[GitStore] Git changed for path ${changedPath}, refreshing project ${projectId}`)
           get().refreshGitInfo(projectId, changedPath)
         }
       })
@@ -81,6 +87,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
     // Only watch if not already watching
     if (!watchedProjects.has(projectPath)) {
+      console.log(`[GitStore] Starting git watch for ${projectPath}`)
       window.electron.git.watch(projectPath)
 
       set((state) => {
@@ -88,9 +95,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
         newWatchedProjects.set(projectPath, projectId)
         return { watchedProjects: newWatchedProjects }
       })
+    } else {
+      console.log(`[GitStore] Already watching ${projectPath}`)
     }
 
     // Fetch initial git info
+    console.log(`[GitStore] Fetching initial git info`)
     await get().refreshGitInfo(projectId, projectPath)
   },
 
@@ -113,30 +123,34 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   refreshGitInfo: async (projectId: string, projectPath: string) => {
-    if (!window.electron || !projectPath) return
-
-    // Check if this is an SSH project and if it's connected
-    const projects = (window as any).__project_store__?.getState?.()?.projects
-    const project = projects?.find((p: any) => p.id === projectId)
-    if (project?.isSSHProject) {
-      const connectionStatus = project.connectionStatus || 'disconnected'
-      if (connectionStatus !== 'connected') {
-        console.log(`[GitStore] Skipping git refresh for SSH project ${projectId} - not connected (${connectionStatus})`)
-        return
-      }
+    console.log('🌍 HELLO WORLD - GIT REFRESH STARTING 🌍')
+    console.log(`[GitStore] refreshGitInfo called for projectId=${projectId}, projectPath=${projectPath}`)
+    if (!window.electron || !projectPath) {
+      console.log(`[GitStore] Skipping - no electron or projectPath`)
+      return
     }
 
+    // Log project details for debugging
+    const projects = (window as any).__project_store__?.getState?.()?.projects
+    const project = projects?.find((p: any) => p.id === projectId)
+    console.log(`[GitStore] Project details:`, { isSSHProject: project?.isSSHProject, connectionStatus: project?.connectionStatus })
+
+    // Note: We don't check connection status here anymore - let the backend decide if it can handle the request
+    // The backend will use SSH if connected, or fail appropriately if not
+
     try {
-      const result = await window.electron.git.getInfo(projectPath)
+      console.log(`[GitStore] Calling window.electron.git.getInfo with projectPath=${projectPath}, projectId=${projectId}`)
+      const result = await window.electron.git.getInfo(projectPath, projectId)
+      console.log(`[GitStore] getInfo result:`, result)
 
       if (result.isGitRepo) {
         // Fetch branches
-        const branchesResult = await window.electron.git.listBranches(projectPath)
+        const branchesResult = await window.electron.git.listBranches(projectPath, projectId)
 
         // Fetch changed files if there are changes
         let changedFiles: ChangedFile[] = []
         if (result.hasChanges) {
-          const filesResult = await window.electron.git.getChangedFiles(projectPath)
+          const filesResult = await window.electron.git.getChangedFiles(projectPath, projectId)
           if (filesResult.success && filesResult.files) {
             changedFiles = filesResult.files
           }

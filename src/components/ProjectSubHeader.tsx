@@ -1,10 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Bell } from 'lucide-react'
+import { Bell, Settings } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useToastStore } from '../stores/toast-store'
 import { cn } from '../lib/utils'
 
-export const ProjectSubHeader: React.FC = () => {
+interface ProjectSubHeaderProps {
+  onEditProject?: (projectId: string) => void
+}
+
+export const ProjectSubHeader: React.FC<ProjectSubHeaderProps> = ({ onEditProject }) => {
   const { projects, activeProjectId } = useProjectStore()
   const activeProject = projects.find(p => p.id === activeProjectId)
   const { toasts } = useToastStore()
@@ -35,13 +39,30 @@ export const ProjectSubHeader: React.FC = () => {
 
   const hasNotifications = toasts.length > 0
 
+  // Get the display path - for SSH projects use remotePath, for local projects use path
+  const displayPath = activeProject.isSSHProject
+    ? (activeProject.remotePath || '~')
+    : (activeProject.path || 'No path set')
+
   return (
     <div className="h-8 bg-[#252526] border-b border-gray-800 flex items-center px-4 relative">
       {/* Project Path */}
       <div className="flex items-center gap-2 flex-1 min-w-0">
-        <span className="text-xs text-gray-500 truncate" title={activeProject.path}>
-          {activeProject.path}
+        <span className="text-xs text-gray-500 truncate" title={displayPath}>
+          {activeProject.isSSHProject && (
+            <span className="text-blue-400 mr-1">SSH:</span>
+          )}
+          {displayPath}
         </span>
+        {onEditProject && (
+          <button
+            onClick={() => onEditProject(activeProject.id)}
+            className="p-1 rounded hover:bg-gray-700 transition-colors text-gray-500 hover:text-gray-300"
+            title="Edit project settings"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Notification Bell */}

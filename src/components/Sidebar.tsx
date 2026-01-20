@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Settings, Terminal, ChevronDown } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
+import { useTerminalStore } from '../stores/terminal-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { ProjectContent } from './ProjectContent'
 import { NewProjectModal } from './NewProjectModal'
 import { SettingsModal } from './SettingsModal'
+import { DraggableTerminalItem } from './DraggableTerminalItem'
+import { TerminalItem } from './ProjectItem'
 
 interface ShellInfo {
   name: string
@@ -29,6 +32,7 @@ const DEFAULT_WIDTH = 500
 export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
   const { projects, activeProjectId } = useProjectStore()
   const { connections: sshConnections } = useSSHStore()
+  const { getGlobalSessions, activeSessionId, setActiveSession } = useTerminalStore()
 
   const activeProject = projects.find(p => p.id === activeProjectId)
   const [shells, setShells] = useState<ShellInfo[]>([])
@@ -94,6 +98,9 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
     })),
   ]
 
+  // Get global terminals
+  const globalSessions = getGlobalSessions()
+
   return (
     <>
       <aside
@@ -136,6 +143,36 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
               )}
             </div>
           </div>
+
+          {/* Global Terminals Section */}
+          {globalSessions.length > 0 && (
+            <div className="mb-4 bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
+              <div className="mb-2 bg-zinc-800/20 rounded-md p-2">
+                <div className="flex items-center justify-between px-2 py-2">
+                  <span className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
+                    Global
+                  </span>
+                </div>
+                <ul className="space-y-0.5">
+                  {globalSessions.map((session) => (
+                    <DraggableTerminalItem
+                      key={session.id}
+                      terminalId={session.id}
+                      terminalTitle={session.title}
+                    >
+                      <TerminalItem
+                        session={session}
+                        isActive={activeSessionId === session.id}
+                        onSelect={() => setActiveSession(session.id)}
+                        onClose={() => onCloseTerminal(session.id)}
+                        onReconnect={() => onReconnectTerminal(session.id)}
+                      />
+                    </DraggableTerminalItem>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
 
           {/* Project Tabs Section - Only show active project */}
           {!activeProject ? (

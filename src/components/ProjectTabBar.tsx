@@ -22,12 +22,6 @@ export function ProjectTabBar({ activeTab, onTabChange, terminalCount = 0, chang
       label: 'Files',
       icon: <Folder className="w-3.5 h-3.5" />,
     },
-    {
-      id: 'git',
-      label: 'Git',
-      icon: <GitBranch className="w-3.5 h-3.5" />,
-      badge: changedFilesCount,
-    },
   ]
 
   return (

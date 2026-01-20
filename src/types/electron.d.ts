@@ -4,6 +4,7 @@ export interface PtyOptions {
   sshConnectionId?: string // For SSH connections
   remoteCwd?: string // Remote working directory for SSH
   id?: string // Optional ID to reuse (for reconnection)
+  projectId?: string // Project ID to use SSH tunnel (if available)
 }
 
 export interface ShellInfo {
@@ -189,7 +190,7 @@ export interface ReviewProgressEvent {
 export interface ElectronAPI {
   pty: {
     create: (options: PtyOptions) => Promise<TerminalInfo>
-    createWithCommand: (shell: string, args: string[], displayCwd: string) => Promise<TerminalInfo>
+    createWithCommand: (shell: string, args: string[], displayCwd: string, hidden?: boolean) => Promise<TerminalInfo>
     write: (id: string, data: string) => Promise<void>
     resize: (id: string, cols: number, rows: number) => Promise<void>
     kill: (id: string) => Promise<void>
@@ -213,20 +214,20 @@ export interface ElectronAPI {
     getScripts: (projectPath: string) => Promise<ProjectScripts>
   }
   git: {
-    getInfo: (projectPath: string) => Promise<GitInfo>
-    listBranches: (projectPath: string) => Promise<GitBranchList>
-    checkout: (projectPath: string, branch: string) => Promise<GitResult>
-    fetch: (projectPath: string) => Promise<GitResult>
-    watch: (projectPath: string) => Promise<GitResult>
-    unwatch: (projectPath: string) => Promise<GitResult>
-    getChangedFiles: (projectPath: string) => Promise<ChangedFilesResult>
-    getFileContent: (projectPath: string, filePath: string) => Promise<GitFileContentResult>
-    stageFile: (projectPath: string, filePath: string) => Promise<GitResult>
-    unstageFile: (projectPath: string, filePath: string) => Promise<GitResult>
-    discardFile: (projectPath: string, filePath: string) => Promise<GitResult>
-    commit: (projectPath: string, message: string) => Promise<GitResult>
-    push: (projectPath: string) => Promise<GitResult>
-    pull: (projectPath: string) => Promise<GitResult>
+    getInfo: (projectPath: string, projectId?: string) => Promise<GitInfo>
+    listBranches: (projectPath: string, projectId?: string) => Promise<GitBranchList>
+    checkout: (projectPath: string, branch: string, projectId?: string) => Promise<GitResult>
+    fetch: (projectPath: string, projectId?: string) => Promise<GitResult>
+    watch: (projectPath: string, projectId?: string) => Promise<GitResult>
+    unwatch: (projectPath: string, projectId?: string) => Promise<GitResult>
+    getChangedFiles: (projectPath: string, projectId?: string) => Promise<ChangedFilesResult>
+    getFileContent: (projectPath: string, filePath: string, projectId?: string) => Promise<GitFileContentResult>
+    stageFile: (projectPath: string, filePath: string, projectId?: string) => Promise<GitResult>
+    unstageFile: (projectPath: string, filePath: string, projectId?: string) => Promise<GitResult>
+    discardFile: (projectPath: string, filePath: string, projectId?: string) => Promise<GitResult>
+    commit: (projectPath: string, message: string, projectId?: string) => Promise<GitResult>
+    push: (projectPath: string, projectId?: string) => Promise<GitResult>
+    pull: (projectPath: string, projectId?: string) => Promise<GitResult>
     onChanged: (callback: (projectPath: string) => void) => () => void
   }
   review: {
@@ -255,7 +256,7 @@ export interface ElectronAPI {
     test: (config: SSHConnectionConfig) => Promise<SSHTestResult>
     getStatus: (connectionId: string) => Promise<{ connected: boolean; error?: string }>
     onStatusChange: (callback: (connectionId: string, connected: boolean, error?: string) => void) => () => void
-    // Project-level SSH connections
+    // Project-level SSH connections (using ControlMaster)
     connectProject: (projectId: string, sshConnectionId: string) => Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }>
     disconnectProject: (projectId: string) => Promise<{ success: boolean; error?: string }>
     getInteractiveMasterCommand: (projectId: string) => Promise<{ shell: string; args: string[] } | null>

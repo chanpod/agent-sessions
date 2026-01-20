@@ -6,7 +6,9 @@
       "Bash(git add:*)",
       "Bash(npm run build:*)",
       "Bash(wsl -l:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "WebSearch",
+      "WebFetch(domain:stackoverflow.com)"
     ],
     "deny": [],
     "ask": []

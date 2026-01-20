@@ -172,8 +172,8 @@ const electronAPI = {
   pty: {
     create: (options: PtyOptions): Promise<TerminalInfo> =>
       ipcRenderer.invoke('pty:create', options),
-    createWithCommand: (shell: string, args: string[], displayCwd: string): Promise<TerminalInfo> =>
-      ipcRenderer.invoke('pty:create-with-command', shell, args, displayCwd),
+    createWithCommand: (shell: string, args: string[], displayCwd: string, hidden?: boolean): Promise<TerminalInfo> =>
+      ipcRenderer.invoke('pty:create-with-command', shell, args, displayCwd, hidden),
     write: (id: string, data: string): Promise<void> =>
       ipcRenderer.invoke('pty:write', id, data),
     resize: (id: string, cols: number, rows: number): Promise<void> =>
@@ -224,34 +224,34 @@ const electronAPI = {
       ipcRenderer.invoke('project:get-scripts', projectPath),
   },
   git: {
-    getInfo: (projectPath: string): Promise<GitInfo> =>
-      ipcRenderer.invoke('git:get-info', projectPath),
-    listBranches: (projectPath: string): Promise<GitBranchList> =>
-      ipcRenderer.invoke('git:list-branches', projectPath),
-    checkout: (projectPath: string, branch: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:checkout', projectPath, branch),
-    fetch: (projectPath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:fetch', projectPath),
-    watch: (projectPath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:watch', projectPath),
-    unwatch: (projectPath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:unwatch', projectPath),
-    getChangedFiles: (projectPath: string): Promise<ChangedFilesResult> =>
-      ipcRenderer.invoke('git:get-changed-files', projectPath),
-    getFileContent: (projectPath: string, filePath: string): Promise<GitFileContentResult> =>
-      ipcRenderer.invoke('git:get-file-content', projectPath, filePath),
-    stageFile: (projectPath: string, filePath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:stage-file', projectPath, filePath),
-    unstageFile: (projectPath: string, filePath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:unstage-file', projectPath, filePath),
-    discardFile: (projectPath: string, filePath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:discard-file', projectPath, filePath),
-    commit: (projectPath: string, message: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:commit', projectPath, message),
-    push: (projectPath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:push', projectPath),
-    pull: (projectPath: string): Promise<GitResult> =>
-      ipcRenderer.invoke('git:pull', projectPath),
+    getInfo: (projectPath: string, projectId?: string): Promise<GitInfo> =>
+      ipcRenderer.invoke('git:get-info', projectPath, projectId),
+    listBranches: (projectPath: string, projectId?: string): Promise<GitBranchList> =>
+      ipcRenderer.invoke('git:list-branches', projectPath, projectId),
+    checkout: (projectPath: string, branch: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:checkout', projectPath, branch, projectId),
+    fetch: (projectPath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:fetch', projectPath, projectId),
+    watch: (projectPath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:watch', projectPath, projectId),
+    unwatch: (projectPath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:unwatch', projectPath, projectId),
+    getChangedFiles: (projectPath: string, projectId?: string): Promise<ChangedFilesResult> =>
+      ipcRenderer.invoke('git:get-changed-files', projectPath, projectId),
+    getFileContent: (projectPath: string, filePath: string, projectId?: string): Promise<GitFileContentResult> =>
+      ipcRenderer.invoke('git:get-file-content', projectPath, filePath, projectId),
+    stageFile: (projectPath: string, filePath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:stage-file', projectPath, filePath, projectId),
+    unstageFile: (projectPath: string, filePath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:unstage-file', projectPath, filePath, projectId),
+    discardFile: (projectPath: string, filePath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:discard-file', projectPath, filePath, projectId),
+    commit: (projectPath: string, message: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:commit', projectPath, message, projectId),
+    push: (projectPath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:push', projectPath, projectId),
+    pull: (projectPath: string, projectId?: string): Promise<GitResult> =>
+      ipcRenderer.invoke('git:pull', projectPath, projectId),
     onChanged: (callback: (projectPath: string) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)
@@ -308,12 +308,12 @@ const electronAPI = {
       ipcRenderer.invoke('store:clear'),
   },
   fs: {
-    readFile: (filePath: string): Promise<FileReadResult> =>
-      ipcRenderer.invoke('fs:readFile', filePath),
-    writeFile: (filePath: string, content: string): Promise<FileWriteResult> =>
-      ipcRenderer.invoke('fs:writeFile', filePath, content),
-    listDir: (dirPath: string): Promise<DirListResult> =>
-      ipcRenderer.invoke('fs:listDir', dirPath),
+    readFile: (filePath: string, projectId?: string): Promise<FileReadResult> =>
+      ipcRenderer.invoke('fs:readFile', filePath, projectId),
+    writeFile: (filePath: string, content: string, projectId?: string): Promise<FileWriteResult> =>
+      ipcRenderer.invoke('fs:writeFile', filePath, content, projectId),
+    listDir: (dirPath: string, projectId?: string): Promise<DirListResult> =>
+      ipcRenderer.invoke('fs:listDir', dirPath, projectId),
   },
   ssh: {
     connect: (config: SSHConnectionConfig): Promise<SSHConnectionResult> =>
@@ -330,7 +330,7 @@ const electronAPI = {
       ipcRenderer.on('ssh:status-change', handler)
       return () => ipcRenderer.removeListener('ssh:status-change', handler)
     },
-    // Project-level SSH connections
+    // Project-level SSH connections (using ControlMaster)
     connectProject: (projectId: string, sshConnectionId: string): Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }> =>
       ipcRenderer.invoke('ssh:connect-project', projectId, sshConnectionId),
     disconnectProject: (projectId: string): Promise<{ success: boolean; error?: string }> =>

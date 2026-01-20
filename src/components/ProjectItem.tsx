@@ -8,7 +8,6 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { ProjectTabBar } from './ProjectTabBar'
 import { TerminalsTab } from './TerminalsTab'
 import { FilesTab } from './FilesTab'
-import { GitTab } from './GitTab'
 import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -52,23 +51,7 @@ export function ProjectItem({
     ? getConnection(project.sshConnectionId)
     : null
 
-  const [gitBranch, setGitBranch] = useState<string | null>(null)
-  const [gitHasChanges, setGitHasChanges] = useState(false)
-  const [gitAhead, setGitAhead] = useState(0)
-  const [gitBehind, setGitBehind] = useState(0)
-  const [showBranchMenu, setShowBranchMenu] = useState(false)
-  const [localBranches, setLocalBranches] = useState<string[]>([])
-  const [remoteBranches, setRemoteBranches] = useState<string[]>([])
-  const [isFetching, setIsFetching] = useState(false)
-  const [isCheckingOut, setIsCheckingOut] = useState(false)
-  const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([])
-  const [showChangedFilesMenu, setShowChangedFilesMenu] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-
-  // Refs and positions for portal-based dropdowns
-  const branchBtnRef = useRef<HTMLButtonElement>(null)
-  const branchMenuRef = useRef<HTMLDivElement>(null)
-  const [branchMenuPos, setBranchMenuPos] = useState<{ top: number; left: number } | null>(null)
 
   // Filter out server terminals from regular terminal list (they have shell: '')
   const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
@@ -79,69 +62,9 @@ export function ProjectItem({
   const hasFocusedTerminal = activeSessionId &&
     sessions.some(s => s.id === activeSessionId && s.projectId === project.id)
 
-  // Fetch git info and watch for changes
+  // Close delete confirm dialog when clicking outside
   useEffect(() => {
-    if (!window.electron) return
-
-    // Skip git detection for SSH projects for now
-    // TODO: Implement remote git detection over SSH
-    if (project.isSSHProject) {
-      setGitBranch(null)
-      setGitHasChanges(false)
-      setChangedFiles([])
-      return
-    }
-
-    // Skip if project has no path
-    if (!project.path) return
-
-    const fetchGitInfo = async () => {
-      const result = await window.electron!.git.getInfo(project.path)
-      if (result.isGitRepo) {
-        setGitBranch(result.branch || null)
-        setGitHasChanges(result.hasChanges || false)
-        setGitAhead(result.ahead || 0)
-        setGitBehind(result.behind || 0)
-        // Fetch changed files if there are changes
-        if (result.hasChanges) {
-          const filesResult = await window.electron!.git.getChangedFiles(project.path)
-          if (filesResult.success && filesResult.files) {
-            setChangedFiles(filesResult.files)
-          }
-        } else {
-          setChangedFiles([])
-        }
-      } else {
-        setGitBranch(null)
-        setGitHasChanges(false)
-        setGitAhead(0)
-        setGitBehind(0)
-        setChangedFiles([])
-      }
-    }
-
-    // Initial fetch
-    fetchGitInfo()
-
-    // Start watching for git changes
-    window.electron.git.watch(project.path)
-
-    // Listen for changes from file watcher
-    const unsubscribe = window.electron.git.onChanged((changedPath) => {
-      if (changedPath === project.path) {
-        fetchGitInfo()
-      }
-    })
-
-    return () => {
-      unsubscribe()
-      window.electron?.git.unwatch(project.path)
-    }
-  }, [project.path, project.isSSHProject])
-
-  // Close portal menus when clicking outside
-  useEffect(() => {
-    if (!showBranchMenu && !showChangedFilesMenu) return
+    if (!showDeleteConfirm) return
 
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node
@@ -166,7 +89,7 @@ export function ProjectItem({
 
   const refreshGitInfo = async () => {
       if (!window.electron) return
-      const result = await window.electron.git.getInfo(project.path)
+      const result = await window.electron.git.getInfo(project.path, project.id)
       if (result.isGitRepo) {
         setGitBranch(result.branch || null)
         setGitHasChanges(result.hasChanges || false)
@@ -174,7 +97,7 @@ export function ProjectItem({
         setGitBehind(result.behind || 0)
         // Fetch changed files
         if (result.hasChanges) {
-          const filesResult = await window.electron.git.getChangedFiles(project.path)
+          const filesResult = await window.electron.git.getChangedFiles(project.path, project.id)
           if (filesResult.success && filesResult.files) {
             setChangedFiles(filesResult.files)
           }
@@ -252,13 +175,17 @@ export function ProjectItem({
 
   const confirmDeleteProject = (e: React.MouseEvent) => {
     e.stopPropagation()
+    console.log('[ProjectItem] Deleting project:', project.id, project.name)
     // Close all terminals for this project
     const projectTerminals = sessions.filter((s) => s.projectId === project.id)
+    console.log('[ProjectItem] Closing terminals:', projectTerminals.length)
     projectTerminals.forEach((session) => onCloseTerminal(session.id))
 
     // Remove the project
+    console.log('[ProjectItem] Calling removeProject')
     removeProject(project.id)
     setShowDeleteConfirm(false)
+    console.log('[ProjectItem] Project deleted')
   }
 
   const cancelDeleteProject = (e: React.MouseEvent) => {
@@ -450,7 +377,10 @@ export function ProjectItem({
         <div className="ml-2 mt-2 mr-1 bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
           <ProjectTabBar
             activeTab={project.activeTab}
-            onTabChange={(tab) => setProjectTab(project.id, tab)}
+            onTabChange={(tab) => {
+              console.log('🌍 HELLO WORLD - TAB CLICKED 🌍', tab)
+              setProjectTab(project.id, tab)
+            }}
             terminalCount={projectSessions.length + projectServers.length}
             changedFilesCount={changedFiles.length}
           />
@@ -474,18 +404,6 @@ export function ProjectItem({
 
             {project.activeTab === 'files' && (
               <FilesTab projectPath={project.path} />
-            )}
-
-            {project.activeTab === 'git' && (
-              <GitTab
-                projectPath={project.path}
-                gitBranch={gitBranch}
-                gitHasChanges={gitHasChanges}
-                changedFiles={changedFiles}
-                ahead={gitAhead}
-                behind={gitBehind}
-                onRefreshGitInfo={refreshGitInfo}
-              />
             )}
           </div>
         </div>

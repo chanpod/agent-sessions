@@ -1,15 +1,13 @@
-import { useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore } from '../stores/server-store'
-import { useGitStore } from '../stores/git-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { useGridStore } from '../stores/grid-store'
-import { ProjectTabBar } from './ProjectTabBar'
+import { useGitStore } from '../stores/git-store'
 import { TerminalsTab } from './TerminalsTab'
-import { FilesTab } from './FilesTab'
-import { GitTab } from './GitTab'
 import { ProjectConnectionScreen } from './ProjectConnectionScreen'
+import { PasswordDialog } from './PasswordDialog'
 
 interface ShellInfo {
   name: string
@@ -39,39 +37,22 @@ export function ProjectContent({
   onRestartServer,
   onDeleteServer,
 }: ProjectContentProps) {
-  const { setProjectTab, connectProject } = useProjectStore()
-  const { sessions, addSession, saveConfig } = useTerminalStore()
+  const { connectProject, setProjectConnectionStatus, disconnectProject } = useProjectStore()
+  const { sessions } = useTerminalStore()
   const { servers } = useServerStore()
-  const { gitInfo, refreshGitInfo } = useGitStore()
   const { getConnection } = useSSHStore()
   const { createGrid, addTerminalToGrid } = useGridStore()
+  const { refreshGitInfo } = useGitStore()
+
+  // State for password authentication flow
+  const [showPasswordDialog, setShowPasswordDialog] = useState(false)
+  const [masterTerminalId, setMasterTerminalId] = useState<string | null>(null)
+  const [sshConnectionName, setSSHConnectionName] = useState('')
 
   // Check if SSH project is connected
   const isSSHProject = project.isSSHProject
   const connectionStatus = project.connectionStatus || 'disconnected'
   const isConnected = isSSHProject ? connectionStatus === 'connected' : true
-
-  // Get git info for this specific project
-  const projectGitInfo = gitInfo[project.id] || {
-    branch: null,
-    branches: [],
-    isGitRepo: false,
-    hasChanges: false,
-    ahead: 0,
-    behind: 0,
-    changedFiles: [],
-  }
-
-  // Filter out server terminals from regular terminal list
-  const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
-  const projectServers = servers.filter((s) => s.projectId === project.id)
-
-  // Wrapper for refreshing this project's git info
-  const handleRefreshGitInfo = async () => {
-    if (project.path) {
-      await refreshGitInfo(project.id, project.path)
-    }
-  }
 
   // Handle connection
   const handleConnect = async () => {
@@ -86,76 +67,96 @@ export function ProjectContent({
 
     await window.electron.ssh.connect(sshConnection)
 
-    // Then connect the project
+    // Connect the project - this will establish the ControlMaster connection
     console.log('[ProjectContent] Calling connectProject...')
     const result = await connectProject(project.id)
     console.log('[ProjectContent] connectProject result:', result)
 
-    // If password auth is required, create an interactive terminal
-    if (result?.requiresInteractive) {
-      console.log('[ProjectContent] Creating interactive terminal for password auth')
+    if (!result.success) {
+      // Check if password authentication is required
+      if (result.requiresInteractive) {
+        console.log('[ProjectContent] Password auth required - creating interactive ControlMaster terminal')
 
-      // Get the SSH command for the interactive master
-      const command = await window.electron.ssh.getInteractiveMasterCommand(project.id)
-      if (!command) {
-        console.error('Failed to get interactive master command')
+        // Get the command to establish ControlMaster interactively
+        const masterCmd = await window.electron.ssh.getInteractiveMasterCommand(project.id)
+        if (!masterCmd) {
+          console.error('[ProjectContent] Failed to get interactive master command')
+          handleCancelConnect()
+          return
+        }
+
+        // Create a HIDDEN terminal for ControlMaster setup (we'll pipe the password to it)
+        const terminalInfo = await window.electron.pty.createWithCommand(
+          masterCmd.shell,
+          masterCmd.args,
+          'SSH Connection Setup',
+          true // hidden
+        )
+
+        console.log('[ProjectContent] Created hidden ControlMaster terminal:', terminalInfo.id)
+
+        // Store terminal ID and show password dialog
+        setMasterTerminalId(terminalInfo.id)
+        setSSHConnectionName(sshConnection.name)
+        setShowPasswordDialog(true)
         return
       }
 
-      // Create a temporary terminal that establishes the master connection
-      // This terminal will prompt for password and keep the connection alive
-      const terminalInfo = await window.electron.pty.createWithCommand(
-        command.shell,
-        command.args,
-        project.remotePath || '~'
-      )
-
-      if (terminalInfo) {
-        console.log('[ProjectContent] Interactive terminal created:', terminalInfo.id)
-
-        // Add the terminal to the session store
-        addSession({
-          id: terminalInfo.id,
-          pid: terminalInfo.pid,
-          projectId: project.id,
-          shell: 'SSH (Connecting...)',
-          shellName: `${sshConnection.name} (Auth)`,
-          cwd: terminalInfo.cwd,
-          title: terminalInfo.title,
-          createdAt: terminalInfo.createdAt,
-          isActive: true,
-          status: 'running',
-          lastActivityTime: Date.now(),
-          sshConnectionId: project.sshConnectionId,
-        })
-
-        // Save the config for persistence
-        saveConfig({
-          id: terminalInfo.id,
-          projectId: project.id,
-          shell: terminalInfo.shell,
-          shellName: `${sshConnection.name} (Auth)`,
-          cwd: terminalInfo.cwd,
-          sshConnectionId: project.sshConnectionId,
-        })
-
-        // Create a new grid with this terminal and set it as active
-        const gridId = createGrid(terminalInfo.id)
-
-        // Get the store and set this grid as active
-        const { setActiveGrid } = useGridStore.getState()
-        setActiveGrid(gridId)
-
-        // Switch to terminals tab so user can see it
-        setProjectTab(project.id, 'terminals')
-
-        console.log('[ProjectContent] Terminal added to grid:', gridId, 'Terminal ID:', terminalInfo.id)
-
-        // Don't mark as connected yet - wait for actual authentication
-        // The terminal output will be monitored for successful login
-        // For now, the connection stays in "connecting" state until user successfully authenticates
-      }
+      console.error('[ProjectContent] Failed to connect project:', result.error)
+      handleCancelConnect()
+      return
     }
+
+    // Connection established successfully via ControlMaster
+    console.log('[ProjectContent] Project connected successfully via ControlMaster')
+    console.log('[ProjectContent] Setting connection status to connected for project:', project.id)
+    setProjectConnectionStatus(project.id, 'connected')
+    console.log('[ProjectContent] Connection status set. Project should now be:', useProjectStore.getState().projects.find(p => p.id === project.id)?.connectionStatus)
+
+    // Trigger git refresh now that we're connected
+    console.log('[ProjectContent] Triggering git refresh after connection')
+    refreshGitInfo(project.id, project.path)
+  }
+
+  // Handle password submission - pipe it to the hidden terminal
+  const handlePasswordSubmit = async (password: string) => {
+    if (!masterTerminalId || !window.electron) return
+
+    console.log('[ProjectContent] Sending password to ControlMaster terminal:', masterTerminalId)
+
+    // Send password followed by Enter key to the terminal
+    await window.electron.pty.write(masterTerminalId, password + '\n')
+
+    // Close the dialog
+    setShowPasswordDialog(false)
+
+    // After a delay, mark the project as connected
+    // (gives SSH time to authenticate and establish ControlMaster)
+    setTimeout(async () => {
+      if (window.electron) {
+        await window.electron.ssh.markProjectConnected(project.id)
+        const { setProjectConnectionStatus } = useProjectStore.getState()
+        setProjectConnectionStatus(project.id, 'connected')
+        console.log('[ProjectContent] Project marked as connected after password auth')
+
+        // Trigger git refresh now that we're connected
+        console.log('[ProjectContent] Triggering git refresh after password auth')
+        refreshGitInfo(project.id, project.path)
+      }
+    }, 2000) // Wait 2 seconds for SSH to authenticate
+  }
+
+  // Handle password dialog cancel
+  const handlePasswordCancel = () => {
+    setShowPasswordDialog(false)
+
+    // Kill the ControlMaster terminal if user cancels
+    if (masterTerminalId && window.electron) {
+      window.electron.pty.kill(masterTerminalId)
+      setMasterTerminalId(null)
+    }
+
+    handleCancelConnect()
   }
 
   // Handle cancel connection
@@ -165,62 +166,77 @@ export function ProjectContent({
     setProjectConnectionStatus(project.id, 'disconnected')
   }
 
+  // Handle disconnect
+  const handleDisconnect = async () => {
+    console.log('[ProjectContent] Disconnecting project:', project.id)
+    await disconnectProject(project.id)
+  }
+
   // Show connection screen if SSH project is not connected
   if (isSSHProject && !isConnected) {
     return (
-      <div className="bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
-        <ProjectConnectionScreen
-          project={project}
-          onConnect={handleConnect}
-          onCancel={handleCancelConnect}
+      <>
+        <div className="bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
+          <ProjectConnectionScreen
+            project={project}
+            onConnect={handleConnect}
+            onCancel={handleCancelConnect}
+          />
+        </div>
+
+        {/* Password dialog for SSH password authentication */}
+        <PasswordDialog
+          isOpen={showPasswordDialog}
+          title="SSH Password Required"
+          message={`Enter password for ${sshConnectionName}`}
+          onSubmit={handlePasswordSubmit}
+          onCancel={handlePasswordCancel}
         />
-      </div>
+      </>
     )
   }
 
   return (
-    <div className="bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
-      <ProjectTabBar
-        activeTab={project.activeTab}
-        onTabChange={(tab) => setProjectTab(project.id, tab)}
-        terminalCount={projectSessions.length + projectServers.length}
-        changedFilesCount={projectGitInfo.changedFiles.length}
-      />
-
-      <div className="mt-2 space-y-1">
-        {project.activeTab === 'terminals' && (
-          <TerminalsTab
-            project={project}
-            projectId={project.id}
-            projectPath={project.path}
-            shells={shells}
-            onCreateTerminal={onCreateTerminal}
-            onCloseTerminal={onCloseTerminal}
-            onReconnectTerminal={onReconnectTerminal}
-            onStartServer={onStartServer}
-            onStopServer={onStopServer}
-            onRestartServer={onRestartServer}
-            onDeleteServer={onDeleteServer}
-          />
+    <>
+      <div className="bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
+        {/* Disconnect button for SSH projects */}
+        {isSSHProject && (
+          <div className="mb-2 flex justify-end">
+            <button
+              onClick={handleDisconnect}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              Disconnect
+            </button>
+          </div>
         )}
 
-        {project.activeTab === 'files' && (
-          <FilesTab projectPath={project.path} />
-        )}
-
-        {project.activeTab === 'git' && (
-          <GitTab
-            projectId={project.id}
-            projectPath={project.path}
-            gitBranch={projectGitInfo.branch}
-            gitHasChanges={projectGitInfo.hasChanges}
-            changedFiles={projectGitInfo.changedFiles}
-            ahead={projectGitInfo.ahead}
-            behind={projectGitInfo.behind}
-            onRefreshGitInfo={handleRefreshGitInfo}
-          />
-        )}
+        <TerminalsTab
+          project={project}
+          projectId={project.id}
+          projectPath={project.path}
+          shells={shells}
+          onCreateTerminal={onCreateTerminal}
+          onCloseTerminal={onCloseTerminal}
+          onReconnectTerminal={onReconnectTerminal}
+          onStartServer={onStartServer}
+          onStopServer={onStopServer}
+          onRestartServer={onRestartServer}
+          onDeleteServer={onDeleteServer}
+        />
       </div>
-    </div>
+
+      {/* Password dialog for SSH password authentication */}
+      <PasswordDialog
+        isOpen={showPasswordDialog}
+        title="SSH Password Required"
+        message={`Enter password for ${sshConnectionName}`}
+        onSubmit={handlePasswordSubmit}
+        onCancel={handlePasswordCancel}
+      />
+    </>
   )
 }

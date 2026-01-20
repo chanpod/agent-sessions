@@ -14,10 +14,13 @@ import { ProjectHeader } from './components/ProjectHeader'
 import { ProjectSubHeader } from './components/ProjectSubHeader'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
+import { ChangedFilesPanel } from './components/ChangedFilesPanel'
 import { UpdateNotification } from './components/UpdateNotification'
 import { FileSearchModal } from './components/FileSearchModal'
 import { ReviewPanel } from './components/ReviewPanel'
 import { ToastContainer } from './components/ToastContainer'
+import { NewProjectModal } from './components/NewProjectModal'
+import { EditProjectModal } from './components/EditProjectModal'
 import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
@@ -31,10 +34,13 @@ function App() {
   const [isElectron, setIsElectron] = useState(false)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
   const [activeDragTitle, setActiveDragTitle] = useState<string>('')
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false)
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const {
     addSession,
     addSessionsBatch,
     removeSession,
+    removeSessionsByProject,
     updateSessionTitle,
     updateSessionPid,
     markSessionExited,
@@ -63,7 +69,7 @@ function App() {
     setActiveGrid,
     getGridForTerminal,
   } = useGridStore()
-  const { setActiveProject, activeProjectId } = useProjectStore()
+  const { setActiveProject, activeProjectId, removeProject, disconnectProject } = useProjectStore()
   const { openSearch } = useFileSearchStore()
 
   // Configure drag sensors with a distance threshold
@@ -102,6 +108,15 @@ function App() {
     // If nothing left after stripping, it's just control codes
     if (stripped.length === 0) return 'none'
 
+    // Check if this looks like a prompt redraw
+    // Prompts typically end with $, #, >, :, or ) followed by optional space
+    const looksLikePrompt = /[$#>:)][\s]*$/.test(stripped) && stripped.length < 100
+
+    if (looksLikePrompt) {
+      // Prompt redraws are minor activity (don't trigger green)
+      return 'minor'
+    }
+
     // Substantial activity: Has newlines (multi-line output) or significant length
     // This catches command output, agent responses, compilation errors, etc.
     if (data.includes('\n') || stripped.length >= 20) {
@@ -132,38 +147,9 @@ function App() {
 
     // Process all configs and batch the additions
     ;(async () => {
-      // Step 1: Establish SSH connections for SSH projects FIRST
-      const sshProjectConnections = new Set<string>()
-
-      // Identify unique SSH projects that need connections
-      for (const config of configs) {
-        const project = projects.find((p) => p.id === config.projectId)
-        if (project?.isSSHProject && project.sshConnectionId) {
-          sshProjectConnections.add(project.sshConnectionId)
-        }
-      }
-
-      // Establish all SSH connections in parallel
-      if (sshProjectConnections.size > 0) {
-        console.log(`Establishing ${sshProjectConnections.size} SSH connections...`)
-        await Promise.all(
-          Array.from(sshProjectConnections).map(async (connectionId) => {
-            const connection = getConnection(connectionId)
-            if (connection) {
-              try {
-                const result = await window.electron!.ssh.connect(connection)
-                if (result.success) {
-                  console.log(`SSH connection established: ${connection.name}`)
-                } else {
-                  console.error(`Failed to establish SSH connection to ${connection.name}:`, result.error)
-                }
-              } catch (err) {
-                console.error(`Error connecting to ${connection.name}:`, err)
-              }
-            }
-          })
-        )
-      }
+      // IMPORTANT: Do NOT auto-connect SSH projects on startup
+      // SSH connections should only be established when user explicitly clicks "Connect"
+      // This prevents password prompts on app startup
 
       // Step 2: Now restore terminals with connections ready
       const sessionsToAdd: Parameters<typeof addSession>[0][] = []
@@ -176,11 +162,10 @@ function App() {
 
           // Check if this config has an SSH connection
           if (config.sshConnectionId) {
-            // SSH terminal - use SSH connection ID
-            info = await window.electron!.pty.create({
-              sshConnectionId: config.sshConnectionId,
-              remoteCwd: config.cwd || undefined,
-            })
+            // Skip SSH terminals on startup - they need explicit connection
+            console.log(`Skipping SSH terminal restoration: ${config.shellName}`)
+            removeSavedConfig(config.id)
+            continue
           } else {
             // Local terminal
             info = await window.electron!.pty.create({
@@ -345,21 +330,22 @@ function App() {
         return
       }
 
-      // Connect to SSH if not already connected
-      const connectResult = await window.electron.ssh.connect(sshConnection)
-      if (!connectResult.success) {
-        console.error('Failed to establish SSH connection:', connectResult.error)
-        alert(`Failed to connect to ${sshConnection.name}: ${connectResult.error}`)
-        return
-      }
+      // For SSH projects, the connection should already be established via the project tunnel
+      // We don't need to call ssh.connect() here - just create the terminal with projectId
+      console.log('[handleCreateTerminal] Creating SSH terminal through existing project tunnel:', projectId)
 
       // Create terminal with SSH using the project's remote path
       info = await window.electron.pty.create({
         sshConnectionId: project.sshConnectionId,
         remoteCwd: project.remotePath || undefined,
+        projectId: projectId, // Pass project ID to use tunnel (no password needed!)
       })
 
       sessionSshConnectionId = project.sshConnectionId
+
+      // Mark project as connected (tunnel is working if we got here)
+      console.log('[handleCreateTerminal] Marking project as connected:', projectId)
+      await window.electron.ssh.markProjectConnected(projectId)
 
       // Save config for persistence
       saveConfig({
@@ -714,19 +700,34 @@ function App() {
     }
   }
 
-  const handleCreateProject = async () => {
-    if (!window.electron) return
-    await window.electron.dialogs.showCreateProjectDialog()
+  const handleCreateProject = () => {
+    setShowNewProjectModal(true)
   }
 
-  const handleEditProject = async (projectId: string) => {
-    if (!window.electron) return
-    await window.electron.dialogs.showEditProjectDialog(projectId)
+  const handleEditProject = (projectId: string) => {
+    setEditingProjectId(projectId)
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    if (!window.electron) return
-    await window.electron.dialogs.showDeleteProjectDialog(projectId)
+    console.log('Delete project:', projectId)
+
+    // Find the project to check if it's an SSH project
+    const project = projects.find((p) => p.id === projectId)
+
+    // If it's an SSH project, disconnect it first
+    if (project?.isSSHProject) {
+      try {
+        await disconnectProject(projectId)
+      } catch (error) {
+        console.error('Failed to disconnect SSH project:', error)
+      }
+    }
+
+    // Remove all terminals associated with this project
+    removeSessionsByProject(projectId)
+
+    // Finally, remove the project itself (permanent deletion)
+    removeProject(projectId)
   }
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -837,7 +838,7 @@ function App() {
           onDeleteProject={handleDeleteProject}
         />
         {/* Project-specific sub-header */}
-        <ProjectSubHeader />
+        <ProjectSubHeader onEditProject={handleEditProject} />
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
           <Sidebar
@@ -851,6 +852,7 @@ function App() {
             onDeleteServer={handleDeleteServer}
           />
           <TerminalArea />
+          <ChangedFilesPanel />
         </div>
       </div>
       <DragOverlay>
@@ -865,6 +867,15 @@ function App() {
       <FileSearchModal />
       <ReviewPanel projectPath={projects.find(p => p.id === activeProjectId)?.path || ''} />
       <ToastContainer />
+      {showNewProjectModal && (
+        <NewProjectModal onClose={() => setShowNewProjectModal(false)} />
+      )}
+      {editingProjectId && (
+        <EditProjectModal
+          projectId={editingProjectId}
+          onClose={() => setEditingProjectId(null)}
+        />
+      )}
     </DndContext>
   )
 }

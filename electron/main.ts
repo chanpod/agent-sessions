@@ -75,7 +75,8 @@ function getWslDistros(): string[] {
   }
 }
 
-// Execute a command, routing through WSL if needed (synchronous version)
+// Execute a command in the appropriate context (local, WSL, or SSH)
+// This is the main abstraction that routes commands correctly
 function execInContext(command: string, projectPath: string, options: { encoding: 'utf-8' } = { encoding: 'utf-8' }): string {
   const wslInfo = detectWslPath(projectPath)
 
@@ -97,8 +98,34 @@ function execInContext(command: string, projectPath: string, options: { encoding
   })
 }
 
-// Execute a command asynchronously, routing through WSL if needed
-function execInContextAsync(command: string, projectPath: string): Promise<string> {
+// Execute a command asynchronously in the appropriate context (local, WSL, or SSH)
+// This automatically detects and routes to the correct execution method
+async function execInContextAsync(command: string, projectPath: string, projectId?: string): Promise<string> {
+  console.log(`[execInContextAsync] Called with projectId=${projectId}, command="${command}"`)
+
+  // First check if this is an SSH project
+  if (projectId && sshManager) {
+    const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+    console.log(`[execInContextAsync] Project master status:`, projectMasterStatus)
+    if (projectMasterStatus.connected) {
+      // Execute via SSH using ControlMaster
+      console.log(`[execInContextAsync] Executing via SSH for project ${projectId}: ${command}`)
+      try {
+        const result = await sshManager.execViaProjectMaster(projectId, `cd "${projectPath}" && ${command}`)
+        console.log(`[execInContextAsync] SSH command result: ${result.substring(0, 100)}...`)
+        return result
+      } catch (error: any) {
+        console.error(`[execInContextAsync] SSH command failed:`, error)
+        throw new Error(`SSH command failed: ${error.message}`)
+      }
+    } else {
+      console.log(`[execInContextAsync] Project ${projectId} master not connected, falling back to local/WSL`)
+    }
+  } else {
+    console.log(`[execInContextAsync] No projectId or sshManager, using local/WSL execution`)
+  }
+
+  // Fall back to local/WSL execution
   return new Promise((resolve, reject) => {
     const wslInfo = detectWslPath(projectPath)
 
@@ -438,6 +465,9 @@ async function createWindow() {
 
   ptyManager = new PtyManager(mainWindow)
   sshManager = new SSHManager()
+
+  // Set PTY manager reference in SSH manager (needed for creating tunnel terminals)
+  sshManager.setPtyManager(ptyManager)
 
   // Initialize BackgroundClaudeManager
   backgroundClaude = new BackgroundClaudeManager(ptyManager)
@@ -824,12 +854,25 @@ Output verification:
 // IPC Handlers
 // ============================================================================
 
-ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string }) => {
+ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string; projectId?: string }) => {
   if (!ptyManager) return null
 
   // If this is an SSH connection, build the SSH command using SSH manager
   if (options.sshConnectionId && sshManager) {
-    const sshCommand = sshManager.buildSSHCommand(options.sshConnectionId, options.remoteCwd)
+    let sshCommand
+
+    // Try to use project tunnel if projectId is provided
+    if (options.projectId) {
+      console.log(`[Main] Creating SSH terminal through project ${options.projectId} tunnel`)
+      sshCommand = sshManager.buildSSHCommandForProject(options.projectId, options.remoteCwd)
+    }
+
+    // Fall back to direct connection if no project or tunnel not available
+    if (!sshCommand) {
+      console.log(`[Main] Creating SSH terminal with direct connection`)
+      sshCommand = sshManager.buildSSHCommand(options.sshConnectionId, options.remoteCwd)
+    }
+
     if (!sshCommand) {
       throw new Error('Failed to build SSH command - connection not found or not connected')
     }
@@ -857,9 +900,9 @@ ipcMain.handle('pty:list', async () => {
   return ptyManager?.list() ?? []
 })
 
-ipcMain.handle('pty:create-with-command', async (_event, shell: string, args: string[], displayCwd: string) => {
+ipcMain.handle('pty:create-with-command', async (_event, shell: string, args: string[], displayCwd: string, hidden?: boolean) => {
   if (!ptyManager) return null
-  return ptyManager.createTerminalWithCommand(shell, args, displayCwd)
+  return ptyManager.createTerminalWithCommand(shell, args, displayCwd, undefined, hidden)
 })
 
 ipcMain.handle('system:get-shells', async () => {
@@ -1120,25 +1163,48 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
   }
 })
 
-// Get git info for a directory
-ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
+// Get git info for a directory (supports local, WSL, and SSH projects)
+ipcMain.handle('git:get-info', async (_event, projectPath: string, projectId?: string) => {
+  console.log(`[git:get-info] Called with projectPath="${projectPath}", projectId="${projectId}"`)
   try {
-    // Check if it's a git repo
-    const fsPath = resolvePathForFs(projectPath)
-    const gitDir = path.join(fsPath, '.git')
-    if (!fs.existsSync(gitDir)) {
-      return { isGitRepo: false }
+    // For SSH projects, check if git repo exists remotely
+    if (projectId && sshManager) {
+      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      console.log(`[git:get-info] Project master status:`, projectMasterStatus)
+      if (projectMasterStatus.connected) {
+        // Check for .git directory remotely
+        console.log(`[git:get-info] Checking for .git directory remotely...`)
+        try {
+          await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
+          console.log(`[git:get-info] .git directory exists remotely`)
+        } catch (error) {
+          console.log(`[git:get-info] .git directory does not exist remotely:`, error)
+          return { isGitRepo: false }
+        }
+      } else {
+        console.log(`[git:get-info] SSH project but not connected, skipping check`)
+      }
+    } else {
+      // For local/WSL projects, check filesystem
+      console.log(`[git:get-info] Checking local/WSL filesystem for .git`)
+      const fsPath = resolvePathForFs(projectPath)
+      const gitDir = path.join(fsPath, '.git')
+      if (!fs.existsSync(gitDir)) {
+        console.log(`[git:get-info] .git directory does not exist locally at ${gitDir}`)
+        return { isGitRepo: false }
+      }
+      console.log(`[git:get-info] .git directory exists locally`)
     }
 
     // Get current branch
     let branch = ''
     try {
-      branch = execInContext('git rev-parse --abbrev-ref HEAD', projectPath).trim()
+      branch = (await execInContextAsync('git rev-parse --abbrev-ref HEAD', projectPath, projectId)).trim()
     } catch {
       // Could be detached HEAD or other issue
       try {
         // Try to get short SHA for detached HEAD
-        branch = execInContext('git rev-parse --short HEAD', projectPath).trim()
+        branch = (await execInContextAsync('git rev-parse --short HEAD', projectPath, projectId)).trim()
         branch = `(${branch})`
       } catch {
         branch = 'unknown'
@@ -1148,7 +1214,7 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
     // Check for uncommitted changes
     let hasChanges = false
     try {
-      const status = execInContext('git status --porcelain', projectPath)
+      const status = await execInContextAsync('git status --porcelain', projectPath, projectId)
       hasChanges = status.trim().length > 0
     } catch {
       // Ignore errors
@@ -1159,10 +1225,10 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
     let behind = 0
     try {
       // Check if branch has upstream
-      const upstream = execInContext('git rev-parse --abbrev-ref @{upstream}', projectPath).trim()
+      const upstream = (await execInContextAsync('git rev-parse --abbrev-ref @{upstream}', projectPath, projectId)).trim()
       if (upstream) {
         // Get ahead/behind counts: "behind\tahead"
-        const counts = execInContext('git rev-list --left-right --count @{upstream}...HEAD', projectPath).trim()
+        const counts = (await execInContextAsync('git rev-list --left-right --count @{upstream}...HEAD', projectPath, projectId)).trim()
         const [behindStr, aheadStr] = counts.split('\t')
         behind = parseInt(behindStr) || 0
         ahead = parseInt(aheadStr) || 0
@@ -1185,31 +1251,53 @@ ipcMain.handle('git:get-info', async (_event, projectPath: string) => {
 })
 
 // List git branches (local and remote)
-ipcMain.handle('git:list-branches', async (_event, projectPath: string) => {
+ipcMain.handle('git:list-branches', async (_event, projectPath: string, projectId?: string) => {
+  console.log(`[git:list-branches] Called with projectPath="${projectPath}", projectId="${projectId}"`)
   try {
-    const fsPath = resolvePathForFs(projectPath)
-    const gitDir = path.join(fsPath, '.git')
-    if (!fs.existsSync(gitDir)) {
-      return { success: false, error: 'Not a git repository' }
+    // For SSH projects, check if git repo exists remotely
+    if (projectId && sshManager) {
+      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      console.log(`[git:list-branches] Project master status:`, projectMasterStatus)
+      if (projectMasterStatus.connected) {
+        // Check for .git directory remotely
+        console.log(`[git:list-branches] Checking for .git directory remotely...`)
+        try {
+          await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
+          console.log(`[git:list-branches] .git directory exists remotely`)
+        } catch (error) {
+          console.log(`[git:list-branches] .git directory does not exist remotely:`, error)
+          return { success: false, error: 'Not a git repository' }
+        }
+      }
+    } else {
+      // For local/WSL projects, check filesystem
+      console.log(`[git:list-branches] Checking local/WSL filesystem for .git`)
+      const fsPath = resolvePathForFs(projectPath)
+      const gitDir = path.join(fsPath, '.git')
+      if (!fs.existsSync(gitDir)) {
+        console.log(`[git:list-branches] .git directory does not exist locally at ${gitDir}`)
+        return { success: false, error: 'Not a git repository' }
+      }
+      console.log(`[git:list-branches] .git directory exists locally`)
     }
 
     // Get current branch
     let currentBranch = ''
     try {
-      currentBranch = execInContext('git rev-parse --abbrev-ref HEAD', projectPath).trim()
+      currentBranch = (await execInContextAsync('git rev-parse --abbrev-ref HEAD', projectPath, projectId)).trim()
     } catch {
       currentBranch = ''
     }
 
     // Get local branches
-    const localOutput = execInContext('git branch --format="%(refname:short)"', projectPath)
+    const localOutput = await execInContextAsync('git branch --format="%(refname:short)"', projectPath, projectId)
     const localBranches = localOutput
       .split('\n')
       .map((b) => b.trim())
       .filter((b) => b.length > 0)
 
     // Get remote branches
-    const remoteOutput = execInContext('git branch -r --format="%(refname:short)"', projectPath)
+    const remoteOutput = await execInContextAsync('git branch -r --format="%(refname:short)"', projectPath, projectId)
     const remoteBranches = remoteOutput
       .split('\n')
       .map((b) => b.trim())
@@ -1228,12 +1316,28 @@ ipcMain.handle('git:list-branches', async (_event, projectPath: string) => {
 })
 
 // Checkout a git branch
-ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: string) => {
+ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: string, projectId?: string) => {
+  console.log(`[git:checkout] Called with projectPath="${projectPath}", branch="${branch}", projectId="${projectId}"`)
   try {
-    const fsPath = resolvePathForFs(projectPath)
-    const gitDir = path.join(fsPath, '.git')
-    if (!fs.existsSync(gitDir)) {
-      return { success: false, error: 'Not a git repository' }
+    // For SSH projects, check if git repo exists remotely
+    if (projectId && sshManager) {
+      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      console.log(`[git:checkout] Project master status:`, projectMasterStatus)
+      if (projectMasterStatus.connected) {
+        // Check for .git directory remotely
+        try {
+          await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
+        } catch (error) {
+          return { success: false, error: 'Not a git repository' }
+        }
+      }
+    } else {
+      // For local/WSL projects, check filesystem
+      const fsPath = resolvePathForFs(projectPath)
+      const gitDir = path.join(fsPath, '.git')
+      if (!fs.existsSync(gitDir)) {
+        return { success: false, error: 'Not a git repository' }
+      }
     }
 
     // If it's a remote branch (e.g., origin/feature), create a local tracking branch
@@ -1242,7 +1346,7 @@ ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: strin
       const localName = branch.split('/').slice(1).join('/')
       // Check if local branch already exists
       try {
-        execInContext(`git rev-parse --verify ${localName}`, projectPath)
+        await execInContextAsync(`git rev-parse --verify ${localName}`, projectPath, projectId)
         // Local branch exists, just checkout
         checkoutCmd = `git checkout ${localName}`
       } catch {
@@ -1251,7 +1355,7 @@ ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: strin
       }
     }
 
-    execInContext(checkoutCmd, projectPath)
+    await execInContextAsync(checkoutCmd, projectPath, projectId)
 
     return { success: true }
   } catch (err) {
@@ -1262,15 +1366,29 @@ ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: strin
 })
 
 // Fetch from remote
-ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
+ipcMain.handle('git:fetch', async (_event, projectPath: string, projectId?: string) => {
+  console.log(`[git:fetch] Called with projectPath="${projectPath}", projectId="${projectId}"`)
   try {
-    const fsPath = resolvePathForFs(projectPath)
-    const gitDir = path.join(fsPath, '.git')
-    if (!fs.existsSync(gitDir)) {
-      return { success: false, error: 'Not a git repository' }
+    // For SSH projects, check if git repo exists remotely
+    if (projectId && sshManager) {
+      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      if (projectMasterStatus.connected) {
+        try {
+          await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
+        } catch (error) {
+          return { success: false, error: 'Not a git repository' }
+        }
+      }
+    } else {
+      // For local/WSL projects, check filesystem
+      const fsPath = resolvePathForFs(projectPath)
+      const gitDir = path.join(fsPath, '.git')
+      if (!fs.existsSync(gitDir)) {
+        return { success: false, error: 'Not a git repository' }
+      }
     }
 
-    execInContext('git fetch --all --prune', projectPath)
+    await execInContextAsync('git fetch --all --prune', projectPath, projectId)
 
     return { success: true }
   } catch (err) {
@@ -1281,10 +1399,29 @@ ipcMain.handle('git:fetch', async (_event, projectPath: string) => {
 })
 
 // Watch a project's git directory for changes (branch switches, commits, staging, file edits)
-ipcMain.handle('git:watch', async (_event, projectPath: string) => {
+ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: string) => {
+  console.log(`[git:watch] Called with projectPath="${projectPath}", projectId="${projectId}"`)
+
   // Don't double-watch
   if (gitWatchers.has(projectPath)) {
     return { success: true }
+  }
+
+  // For SSH projects, we can't use fs.watch since files are remote
+  // Skip watching for SSH projects
+  if (projectId && sshManager) {
+    const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+    if (projectMasterStatus.connected) {
+      console.log('[Git Watch] Skipping git watch for SSH project (not supported):', projectPath)
+      return { success: false, error: 'Git watching is not supported for SSH projects' }
+    }
+  }
+
+  // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
+  const wslInfo = detectWslPath(projectPath)
+  if (wslInfo.isWslPath) {
+    console.log('[Git Watch] Skipping git watch for WSL path (not supported on Windows):', projectPath)
+    return { success: false, error: 'Git watching is not supported for WSL paths' }
   }
 
   const fsPath = resolvePathForFs(projectPath)
@@ -1408,15 +1545,37 @@ ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
 })
 
 // Get list of changed files with their status
-ipcMain.handle('git:get-changed-files', async (_event, projectPath: string) => {
+ipcMain.handle('git:get-changed-files', async (_event, projectPath: string, projectId?: string) => {
+  console.log(`[git:get-changed-files] Called with projectPath="${projectPath}", projectId="${projectId}"`)
   try {
-    const fsPath = resolvePathForFs(projectPath)
-    const gitDir = path.join(fsPath, '.git')
-    if (!fs.existsSync(gitDir)) {
-      return { success: false, error: 'Not a git repository' }
+    // For SSH projects, check if git repo exists remotely
+    if (projectId && sshManager) {
+      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      console.log(`[git:get-changed-files] Project master status:`, projectMasterStatus)
+      if (projectMasterStatus.connected) {
+        // Check for .git directory remotely
+        console.log(`[git:get-changed-files] Checking for .git directory remotely...`)
+        try {
+          await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
+          console.log(`[git:get-changed-files] .git directory exists remotely`)
+        } catch (error) {
+          console.log(`[git:get-changed-files] .git directory does not exist remotely:`, error)
+          return { success: false, error: 'Not a git repository' }
+        }
+      }
+    } else {
+      // For local/WSL projects, check filesystem
+      console.log(`[git:get-changed-files] Checking local/WSL filesystem for .git`)
+      const fsPath = resolvePathForFs(projectPath)
+      const gitDir = path.join(fsPath, '.git')
+      if (!fs.existsSync(gitDir)) {
+        console.log(`[git:get-changed-files] .git directory does not exist locally at ${gitDir}`)
+        return { success: false, error: 'Not a git repository' }
+      }
+      console.log(`[git:get-changed-files] .git directory exists locally`)
     }
 
-    const status = execInContext('git status --porcelain', projectPath)
+    const status = await execInContextAsync('git status --porcelain', projectPath, projectId)
 
     interface ChangedFile {
       path: string
@@ -1489,16 +1648,30 @@ ipcMain.handle('git:get-changed-files', async (_event, projectPath: string) => {
 // Get file content from git HEAD (for diff view)
 ipcMain.handle(
   'git:get-file-content',
-  async (_event, projectPath: string, filePath: string) => {
+  async (_event, projectPath: string, filePath: string, projectId?: string) => {
+    console.log(`[git:get-file-content] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
     try {
-      const fsPath = resolvePathForFs(projectPath)
-      const gitDir = path.join(fsPath, '.git')
-      if (!fs.existsSync(gitDir)) {
-        return { success: false, error: 'Not a git repository' }
+      // For SSH projects, check if git repo exists remotely
+      if (projectId && sshManager) {
+        const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+        if (projectMasterStatus.connected) {
+          try {
+            await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
+          } catch (error) {
+            return { success: false, error: 'Not a git repository' }
+          }
+        }
+      } else {
+        // For local/WSL projects, check filesystem
+        const fsPath = resolvePathForFs(projectPath)
+        const gitDir = path.join(fsPath, '.git')
+        if (!fs.existsSync(gitDir)) {
+          return { success: false, error: 'Not a git repository' }
+        }
       }
 
       // Get the file content from HEAD
-      const content = execInContext(`git show HEAD:${filePath}`, projectPath)
+      const content = await execInContextAsync(`git show HEAD:${filePath}`, projectPath, projectId)
 
       return { success: true, content }
     } catch (err) {
@@ -1516,9 +1689,10 @@ ipcMain.handle(
 // Stage a file (git add)
 ipcMain.handle(
   'git:stage-file',
-  async (_event, projectPath: string, filePath: string) => {
+  async (_event, projectPath: string, filePath: string, projectId?: string) => {
+    console.log(`[git:stage-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
     try {
-      execInContext(`git add "${filePath}"`, projectPath)
+      await execInContextAsync(`git add "${filePath}"`, projectPath, projectId)
       return { success: true }
     } catch (err) {
       console.error('Failed to stage file:', err)
@@ -1531,9 +1705,10 @@ ipcMain.handle(
 // Unstage a file (git restore --staged)
 ipcMain.handle(
   'git:unstage-file',
-  async (_event, projectPath: string, filePath: string) => {
+  async (_event, projectPath: string, filePath: string, projectId?: string) => {
+    console.log(`[git:unstage-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
     try {
-      execInContext(`git restore --staged "${filePath}"`, projectPath)
+      await execInContextAsync(`git restore --staged "${filePath}"`, projectPath, projectId)
       return { success: true }
     } catch (err) {
       console.error('Failed to unstage file:', err)
@@ -1546,21 +1721,32 @@ ipcMain.handle(
 // Discard changes to a file (git restore)
 ipcMain.handle(
   'git:discard-file',
-  async (_event, projectPath: string, filePath: string) => {
+  async (_event, projectPath: string, filePath: string, projectId?: string) => {
+    console.log(`[git:discard-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
     try {
       // For untracked files, we need to remove them
-      const status = execInContext(`git status --porcelain "${filePath}"`, projectPath).trim()
+      const status = (await execInContextAsync(`git status --porcelain "${filePath}"`, projectPath, projectId)).trim()
 
       if (status.startsWith('??')) {
         // Untracked file - delete it
-        const fsPath = resolvePathForFs(projectPath)
-        const fullPath = path.join(fsPath, filePath)
-        if (fs.existsSync(fullPath)) {
-          fs.unlinkSync(fullPath)
+        if (projectId && sshManager) {
+          const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+          if (projectMasterStatus.connected) {
+            // Delete via SSH
+            const fullPath = path.posix.join(projectPath, filePath)
+            await sshManager.execViaProjectMaster(projectId, `rm -f "${fullPath}"`)
+          }
+        } else {
+          // Delete locally
+          const fsPath = resolvePathForFs(projectPath)
+          const fullPath = path.join(fsPath, filePath)
+          if (fs.existsSync(fullPath)) {
+            fs.unlinkSync(fullPath)
+          }
         }
       } else {
         // Tracked file - restore it
-        execInContext(`git restore "${filePath}"`, projectPath)
+        await execInContextAsync(`git restore "${filePath}"`, projectPath, projectId)
       }
       return { success: true }
     } catch (err) {
@@ -1573,10 +1759,11 @@ ipcMain.handle(
 // Commit staged changes (git commit)
 ipcMain.handle(
   'git:commit',
-  async (_event, projectPath: string, message: string) => {
+  async (_event, projectPath: string, message: string, projectId?: string) => {
+    console.log(`[git:commit] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
       const escapedMessage = message.replace(/"/g, '\\"')
-      execInContext(`git commit -m "${escapedMessage}"`, projectPath)
+      await execInContextAsync(`git commit -m "${escapedMessage}"`, projectPath, projectId)
       return { success: true }
     } catch (err) {
       console.error('Failed to commit:', err)
@@ -1589,9 +1776,10 @@ ipcMain.handle(
 // Push changes to remote (git push)
 ipcMain.handle(
   'git:push',
-  async (_event, projectPath: string) => {
+  async (_event, projectPath: string, projectId?: string) => {
+    console.log(`[git:push] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
-      execInContext(`git push`, projectPath)
+      await execInContextAsync(`git push`, projectPath, projectId)
       return { success: true }
     } catch (err) {
       console.error('Failed to push:', err)
@@ -1604,9 +1792,10 @@ ipcMain.handle(
 // Pull changes from remote (git pull)
 ipcMain.handle(
   'git:pull',
-  async (_event, projectPath: string) => {
+  async (_event, projectPath: string, projectId?: string) => {
+    console.log(`[git:pull] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
-      execInContext(`git pull`, projectPath)
+      await execInContextAsync(`git pull`, projectPath, projectId)
       return { success: true }
     } catch (err) {
       console.error('Failed to pull:', err)
@@ -1617,9 +1806,57 @@ ipcMain.handle(
 )
 
 // File system IPC handlers
-ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
+ipcMain.handle('fs:readFile', async (_event, filePath: string, projectId?: string) => {
   try {
-    console.log('[fs:readFile] Original path:', filePath)
+    console.log('[fs:readFile] Original path:', filePath, 'projectId:', projectId)
+
+    // Check if this is an SSH project with active tunnel
+    if (projectId && sshManager) {
+      const status = sshManager.getProjectMasterStatus(projectId)
+      if (status.connected) {
+        console.log('[fs:readFile] Using SSH tunnel for project:', projectId)
+        try {
+          // Check if file exists and get size via SSH
+          // Use cross-platform stat command (works on both Linux and macOS)
+          const statOutput = await sshManager.execViaProjectMaster(
+            projectId,
+            `if [ -f "${filePath.replace(/"/g, '\\"')}" ]; then stat -f '%z %m' "${filePath.replace(/"/g, '\\"')}" 2>/dev/null || stat -c '%s %Y' "${filePath.replace(/"/g, '\\"')}" 2>/dev/null; fi`
+          )
+
+          if (!statOutput || statOutput.trim() === '') {
+            return { success: false, error: `File not found: ${filePath}` }
+          }
+
+          const [sizeStr, mtimeStr] = statOutput.trim().split(' ')
+          const size = parseInt(sizeStr, 10)
+
+          // Limit file size to 5MB for safety
+          if (size > 5 * 1024 * 1024) {
+            return { success: false, error: 'File too large (max 5MB)' }
+          }
+
+          // Read file content via SSH
+          const content = await sshManager.execViaProjectMaster(
+            projectId,
+            `cat "${filePath.replace(/"/g, '\\"')}"`
+          )
+
+          const modified = new Date(parseInt(mtimeStr, 10) * 1000).toISOString()
+
+          return {
+            success: true,
+            content,
+            size,
+            modified,
+          }
+        } catch (err) {
+          console.error('[fs:readFile] SSH command failed:', err)
+          return { success: false, error: String(err) }
+        }
+      }
+    }
+
+    // Local file system path
     const fsPath = resolvePathForFs(filePath)
     console.log('[fs:readFile] Resolved path:', fsPath)
     console.log('[fs:readFile] Path exists:', fs.existsSync(fsPath))
@@ -1667,9 +1904,56 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
   }
 })
 
-ipcMain.handle('fs:listDir', async (_event, dirPath: string) => {
+ipcMain.handle('fs:listDir', async (_event, dirPath: string, projectId?: string) => {
   try {
-    console.log('[fs:listDir] Original path:', dirPath)
+    console.log('[fs:listDir] Original path:', dirPath, 'projectId:', projectId)
+
+    // Check if this is an SSH project with active tunnel
+    if (projectId && sshManager) {
+      const status = sshManager.getProjectMasterStatus(projectId)
+      if (status.connected) {
+        console.log('[fs:listDir] Using SSH tunnel for project:', projectId)
+        try {
+          // Use ls to list directory via SSH
+          const output = await sshManager.execViaProjectMaster(
+            projectId,
+            `ls -1Ap "${dirPath.replace(/"/g, '\\"')}"`
+          )
+
+          if (!output || output.trim() === '') {
+            return { success: false, error: `Directory not found or empty: ${dirPath}` }
+          }
+
+          const entries = output
+            .split('\n')
+            .filter((line) => line.trim() && line !== '.')
+            .map((line) => {
+              const isDir = line.endsWith('/')
+              const name = isDir ? line.slice(0, -1) : line
+              return {
+                name,
+                path: path.posix.join(dirPath, name),
+                isDirectory: isDir,
+                isFile: !isDir,
+              }
+            })
+
+          // Sort: directories first, then files, alphabetically
+          entries.sort((a, b) => {
+            if (a.isDirectory && !b.isDirectory) return -1
+            if (!a.isDirectory && b.isDirectory) return 1
+            return a.name.localeCompare(b.name)
+          })
+
+          return { success: true, items: entries }
+        } catch (err) {
+          console.error('[fs:listDir] SSH command failed:', err)
+          return { success: false, error: String(err) }
+        }
+      }
+    }
+
+    // Local file system path
     const fsPath = resolvePathForFs(dirPath)
     console.log('[fs:listDir] Resolved path:', fsPath)
 
@@ -1892,6 +2176,7 @@ ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) =
   sshManager.markProjectMasterConnected(projectId)
   return { success: true }
 })
+
 
 // Helper function to extract findings from Claude output
 function extractFindingsFromOutput(output: string): any[] {

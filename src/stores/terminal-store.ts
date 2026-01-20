@@ -58,6 +58,7 @@ interface TerminalStore {
 
   // Selectors
   getSessionsByProject: (projectId: string) => TerminalSession[]
+  getGlobalSessions: () => TerminalSession[]
 }
 
 export const useTerminalStore = create<TerminalStore>()(
@@ -91,9 +92,9 @@ export const useTerminalStore = create<TerminalStore>()(
             ...session,
             isActive: true,
             status: 'running',
-            lastActivityTime: now,
+            lastActivityTime: 0, // Start with no activity
             lastActivityLevel: 'idle',
-            lastSubstantialActivityTime: now,
+            lastSubstantialActivityTime: 0, // Start with no substantial activity
           }
           return {
             sessions: [...state.sessions, newSession],
@@ -103,14 +104,13 @@ export const useTerminalStore = create<TerminalStore>()(
 
       addSessionsBatch: (sessions) =>
         set((state) => {
-          const now = Date.now()
           const newSessions = sessions.map((session) => ({
             ...session,
             isActive: true,
             status: 'running' as const,
-            lastActivityTime: now,
+            lastActivityTime: 0, // Start with no activity
             lastActivityLevel: 'idle' as const,
-            lastSubstantialActivityTime: now,
+            lastSubstantialActivityTime: 0, // Start with no substantial activity
           }))
           return {
             sessions: [...state.sessions, ...newSessions],
@@ -212,6 +212,9 @@ export const useTerminalStore = create<TerminalStore>()(
 
       getSessionsByProject: (projectId) =>
         get().sessions.filter((s) => s.projectId === projectId),
+
+      getGlobalSessions: () =>
+        get().sessions.filter((s) => s.projectId === '' && s.shell !== ''),
     }),
     {
       name: 'toolchain-terminals',

@@ -16,6 +16,8 @@ interface GitTabProps {
   ahead: number
   behind: number
   onRefreshGitInfo: () => Promise<void>
+  isSSHProject?: boolean
+  connectionStatus?: 'disconnected' | 'connecting' | 'connected' | 'error'
 }
 
 // Helper function to get file status icon and color
@@ -34,7 +36,8 @@ function getFileStatusIcon(status: ChangedFile['status']) {
   }
 }
 
-export function GitTab({ projectId, projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo }: GitTabProps) {
+export function GitTab({ projectId, projectPath, gitBranch, gitHasChanges, changedFiles, ahead, behind, onRefreshGitInfo, isSSHProject, connectionStatus }: GitTabProps) {
+  console.log('[GitTab] Rendered with:', { projectId, isSSHProject, connectionStatus, gitBranch })
   const { openFile, setShowDiff } = useFileViewerStore()
 
   // Use selectors to properly track changes
@@ -806,7 +809,23 @@ export function GitTab({ projectId, projectPath, gitBranch, gitHasChanges, chang
             )}
           </div>
         ) : (
-          <p className="text-xs text-zinc-600 px-2 py-1">Not a git repository</p>
+          <div className="px-2 py-2">
+            {isSSHProject ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-zinc-500">
+                  No git found (SSH project - status: {connectionStatus || 'unknown'})
+                </p>
+                <button
+                  onClick={onRefreshGitInfo}
+                  className="px-2 py-1 text-xs rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 hover:text-white transition-colors"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-zinc-600">Not a git repository</p>
+            )}
+          </div>
         )}
       </div>
 

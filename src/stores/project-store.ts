@@ -11,6 +11,7 @@ export interface Project {
   createdAt: number
   isExpanded: boolean
   activeTab: ProjectTab
+  isHidden?: boolean // Whether the project is temporarily hidden from view
   // SSH project fields
   isSSHProject?: boolean // Whether this project uses SSH
   sshConnectionId?: string // ID of the SSH connection to use
@@ -28,6 +29,8 @@ interface ProjectStore {
   // Actions
   addProject: (project: Omit<Project, 'id' | 'createdAt' | 'isExpanded' | 'activeTab'>) => string
   removeProject: (id: string) => void
+  hideProject: (id: string) => void
+  showProject: (id: string) => void
   setActiveProject: (id: string | null) => void
   toggleProjectExpanded: (id: string) => void
   setProjectTab: (id: string, tab: ProjectTab) => void
@@ -79,6 +82,28 @@ export const useProjectStore = create<ProjectStore>()(
             activeProjectId: newActiveId,
           }
         }),
+
+      hideProject: (id) =>
+        set((state) => {
+          const visibleProjects = state.projects.filter((p) => p.id !== id && !p.isHidden)
+          const newActiveId =
+            state.activeProjectId === id
+              ? visibleProjects[0]?.id ?? null
+              : state.activeProjectId
+          return {
+            projects: state.projects.map((p) =>
+              p.id === id ? { ...p, isHidden: true } : p
+            ),
+            activeProjectId: newActiveId,
+          }
+        }),
+
+      showProject: (id) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, isHidden: false } : p
+          ),
+        })),
 
       setActiveProject: (id) =>
         set((state) => {

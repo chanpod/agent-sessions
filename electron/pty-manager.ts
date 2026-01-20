@@ -190,7 +190,7 @@ export class PtyManager {
   /**
    * Create terminal with custom command (used for SSH)
    */
-  createTerminalWithCommand(shell: string, shellArgs: string[], displayCwd: string, id?: string): TerminalInfo {
+  createTerminalWithCommand(shell: string, shellArgs: string[], displayCwd: string, id?: string, hidden?: boolean): TerminalInfo {
     const terminalId = id || randomUUID()
 
     // Clean environment for SSH - remove SSH_ASKPASS and related vars
@@ -199,7 +199,32 @@ export class PtyManager {
     delete cleanEnv.SSH_ASKPASS_REQUIRE
     delete cleanEnv.DISPLAY // Force SSH to use terminal prompts, not GUI
 
-    const ptyProcess = pty.spawn(shell, shellArgs, {
+    // On Windows, wrap SSH commands in a shell to avoid "getsocketname failed: Not a socket" error
+    // This happens because ssh.exe has issues detecting PTY sockets when spawned directly
+    let actualShell = shell
+    let actualArgs = shellArgs
+
+    if (process.platform === 'win32' && shell.toLowerCase().includes('ssh')) {
+      // Use bash.exe (Git Bash/MinGW) which is usually in PATH on Windows
+      // Don't use process.env.SHELL as it might be a Unix path like /usr/bin/bash
+      const preferredShell = 'bash.exe'
+
+      // Build the full SSH command as a string
+      const sshCommand = `${shell} ${shellArgs.map(arg => {
+        // Quote arguments that contain spaces or special characters
+        if (arg.includes(' ') || arg.includes('&') || arg.includes('|')) {
+          return `"${arg.replace(/"/g, '\\"')}"`
+        }
+        return arg
+      }).join(' ')}`
+
+      console.log(`[PTYManager] Wrapping SSH in shell: ${preferredShell} -c "${sshCommand}"`)
+
+      actualShell = preferredShell
+      actualArgs = ['-c', sshCommand]
+    }
+
+    const ptyProcess = pty.spawn(actualShell, actualArgs, {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -218,9 +243,10 @@ export class PtyManager {
       cwd: displayCwd,
       title: 'SSH',
       createdAt: Date.now(),
+      hidden,
     }
 
-    const instance: TerminalInstance = { info, ptyProcess }
+    const instance: TerminalInstance = { info, ptyProcess, hidden }
     this.terminals.set(terminalId, instance)
 
     // Forward PTY data to renderer
@@ -228,7 +254,7 @@ export class PtyManager {
       // Process through detectors
       this.detectorManager.processOutput(terminalId, data)
 
-      if (!this.window.isDestroyed()) {
+      if (!hidden && !this.window.isDestroyed()) {
         this.window.webContents.send('pty:data', terminalId, data)
       }
     })
@@ -240,7 +266,7 @@ export class PtyManager {
       // Notify detectors of exit
       this.detectorManager.handleTerminalExit(terminalId, exitCode)
 
-      if (!this.window.isDestroyed()) {
+      if (!hidden && !this.window.isDestroyed()) {
         this.window.webContents.send('pty:exit', terminalId, exitCode)
       }
       this.terminals.delete(terminalId)

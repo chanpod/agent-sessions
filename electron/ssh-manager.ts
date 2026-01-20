@@ -29,7 +29,7 @@ interface SSHConnection {
 interface ProjectMasterConnection {
   projectId: string
   sshConnectionId: string
-  controlPath: string
+  controlPath: string // ControlMaster control socket path
   connected: boolean
   connectedAt: number
   lastUsed: number
@@ -40,17 +40,69 @@ export class SSHManager extends EventEmitter {
   private connections: Map<string, SSHConnection> = new Map()
   private projectMasterConnections: Map<string, ProjectMasterConnection> = new Map()
   private controlDir: string
+  private ptyManager?: any // Will be set by main.ts
 
   constructor() {
     super()
-    // Use OS temp directory for SSH control sockets
-    this.controlDir = path.join(os.tmpdir(), 'agent-sessions-ssh')
+    // Use Git Bash compatible path for SSH control sockets
+    // Git Bash can access /tmp which is usually mapped to C:\Users\<user>\AppData\Local\Temp
+    // But we'll use a Unix-style path that Git Bash understands
+    if (process.platform === 'win32') {
+      // On Windows with Git Bash, use /tmp which Git Bash understands
+      this.controlDir = '/tmp/agent-sessions-ssh'
+    } else {
+      // On Unix, use standard tmp directory
+      this.controlDir = path.join(os.tmpdir(), 'agent-sessions-ssh')
+    }
     this.ensureControlDir()
+  }
+
+  /**
+   * Set the PTY manager reference (called from main.ts)
+   */
+  setPtyManager(ptyManager: any) {
+    this.ptyManager = ptyManager
+  }
+
+  /**
+   * Find an available port for SSH tunneling
+   */
+  private async findAvailablePort(startPort: number = 50000, endPort: number = 60000): Promise<number> {
+    const net = await import('net')
+
+    return new Promise((resolve, reject) => {
+      const tryPort = (port: number) => {
+        if (port > endPort) {
+          reject(new Error('No available ports found'))
+          return
+        }
+
+        const server = net.createServer()
+        server.listen(port, '127.0.0.1', () => {
+          server.once('close', () => {
+            resolve(port)
+          })
+          server.close()
+        })
+        server.on('error', () => {
+          tryPort(port + 1)
+        })
+      }
+
+      tryPort(startPort)
+    })
   }
 
   private async ensureControlDir() {
     try {
-      await fs.mkdir(this.controlDir, { recursive: true })
+      if (process.platform === 'win32') {
+        // On Windows, use bash to create the directory in Git Bash's filesystem
+        const { execAsync } = await import('child_process').then(m => ({ execAsync: promisify(m.exec) }))
+        await execAsync(`bash.exe -c "mkdir -p ${this.controlDir}"`)
+        console.log('[SSHManager] Created control directory via Git Bash:', this.controlDir)
+      } else {
+        await fs.mkdir(this.controlDir, { recursive: true })
+      }
     } catch (error) {
       console.error('[SSHManager] Failed to create control directory:', error)
     }
@@ -75,19 +127,29 @@ export class SSHManager extends EventEmitter {
     }
 
     // SSH Multiplexing (ControlMaster)
-    if (isControlMaster) {
+    // With Git Bash on Windows, ControlMaster now works properly
+    if (controlPath) {
+      if (isControlMaster) {
+        args.push(
+          '-o', 'ControlMaster=auto',
+          '-o', 'ControlPersist=10m',
+          '-o', `ControlPath=${controlPath}`,
+          '-o', 'ServerAliveInterval=60',
+          '-o', 'ServerAliveCountMax=3',
+          '-o', 'StrictHostKeyChecking=accept-new'
+        )
+      } else {
+        args.push(
+          '-o', 'ControlMaster=no',
+          '-o', `ControlPath=${controlPath}`
+        )
+      }
+    } else {
+      // No control path, use basic SSH options
       args.push(
-        '-o', 'ControlMaster=auto',
-        '-o', 'ControlPersist=10m',
-        '-o', `ControlPath=${controlPath}`,
         '-o', 'ServerAliveInterval=60',
         '-o', 'ServerAliveCountMax=3',
         '-o', 'StrictHostKeyChecking=accept-new'
-      )
-    } else {
-      args.push(
-        '-o', 'ControlMaster=no',
-        '-o', `ControlPath=${controlPath}`
       )
     }
 
@@ -106,7 +168,40 @@ export class SSHManager extends EventEmitter {
    * Get control socket path for a connection
    */
   private getControlPath(connectionId: string): string {
+    if (process.platform === 'win32') {
+      // Use Unix-style path for Git Bash
+      return `${this.controlDir}/ssh-${connectionId}.sock`
+    }
     return path.join(this.controlDir, `ssh-${connectionId}.sock`)
+  }
+
+  /**
+   * Execute SSH command through bash on Windows (for Git Bash compatibility)
+   * On Unix, execute directly
+   */
+  private async execSSH(args: string[]): Promise<{ stdout: string; stderr: string }> {
+    if (process.platform === 'win32') {
+      // On Windows, wrap SSH command in bash to use Git Bash's SSH
+      // The last argument is typically the remote command, handle it specially
+      const sshOptions = args.slice(0, -1)
+      const remoteCommand = args[args.length - 1]
+
+      // Build SSH options (these don't need complex escaping)
+      const sshOptsStr = sshOptions.join(' ')
+
+      // Use base64 encoding to avoid all quoting hell
+      // Encode the command and decode it on the remote side
+      const base64Command = Buffer.from(remoteCommand).toString('base64')
+      const wrappedCommand = `echo ${base64Command} | base64 -d | bash`
+
+      const bashCommand = `bash.exe -c 'ssh ${sshOptsStr} "${wrappedCommand}"'`
+
+      console.log(`[SSHManager] Executing: ${bashCommand}`)
+      return execAsync(bashCommand)
+    } else {
+      // On Unix, execute SSH directly
+      return execAsync(`ssh ${args.join(' ')}`)
+    }
   }
 
   /**
@@ -139,7 +234,7 @@ export class SSHManager extends EventEmitter {
     args.push(`${config.username}@${config.host}`, 'exit')
 
     try {
-      await execAsync(`ssh ${args.join(' ')}`)
+      await this.execSSH(args)
       return {
         success: true,
         message: `Successfully connected to ${config.username}@${config.host}:${config.port}`
@@ -187,7 +282,7 @@ export class SSHManager extends EventEmitter {
 
     try {
       console.log('[SSHManager] Establishing SSH connection:', config.name)
-      await execAsync(`ssh ${args.join(' ')}`)
+      await this.execSSH(args)
 
       const connection: SSHConnection = {
         config,
@@ -228,13 +323,22 @@ export class SSHManager extends EventEmitter {
 
     try {
       // Send exit command to control master
-      await execAsync(`ssh -O exit -o ControlPath=${connection.controlPath} ${connection.config.username}@${connection.config.host}`)
+      const args = ['-O', 'exit', '-o', `ControlPath=${connection.controlPath}`, `${connection.config.username}@${connection.config.host}`]
+      await this.execSSH(args)
 
-      // Clean up control socket
-      try {
-        await fs.unlink(connection.controlPath)
-      } catch (err) {
-        // Ignore errors if file doesn't exist
+      // Clean up control socket (may not exist on Windows/Git Bash filesystem from Node perspective)
+      if (process.platform === 'win32') {
+        try {
+          await execAsync(`bash.exe -c "rm -f ${connection.controlPath}"`)
+        } catch (err) {
+          // Ignore errors
+        }
+      } else {
+        try {
+          await fs.unlink(connection.controlPath)
+        } catch (err) {
+          // Ignore errors if file doesn't exist
+        }
       }
 
       connection.connected = false
@@ -259,7 +363,8 @@ export class SSHManager extends EventEmitter {
 
     // Check if control socket is still valid
     try {
-      await execAsync(`ssh -O check -o ControlPath=${connection.controlPath} ${connection.config.username}@${connection.config.host}`)
+      const args = ['-O', 'check', '-o', `ControlPath=${connection.controlPath}`, `${connection.config.username}@${connection.config.host}`]
+      await this.execSSH(args)
       connection.connected = true
       connection.lastUsed = Date.now()
       return { connected: true }
@@ -271,7 +376,29 @@ export class SSHManager extends EventEmitter {
   }
 
   /**
+   * Build SSH command for creating a PTY through a project's ControlMaster connection
+   */
+  buildSSHCommandForProject(projectId: string, remoteCwd?: string): { shell: string; args: string[] } | null {
+    const master = this.projectMasterConnections.get(projectId)
+
+    console.log(`[SSHManager] buildSSHCommandForProject for ${projectId}:`, {
+      hasMaster: !!master,
+      connected: master?.connected,
+      sshConnectionId: master?.sshConnectionId
+    })
+
+    if (!master || !master.connected) {
+      console.error('[SSHManager] No project master connection found')
+      return null
+    }
+
+    // Use the ControlMaster connection via the SSH connection ID
+    return this.buildSSHCommand(master.sshConnectionId, remoteCwd)
+  }
+
+  /**
    * Build SSH command for creating a PTY (used by pty-manager)
+   * LEGACY: Direct connection - prefer buildSSHCommandForProject when possible
    */
   buildSSHCommand(connectionId: string, remoteCwd?: string): { shell: string; args: string[] } | null {
     const connection = this.connections.get(connectionId)
@@ -280,45 +407,12 @@ export class SSHManager extends EventEmitter {
       return null
     }
 
-    let args: string[]
+    // Use ControlMaster for all auth types
+    // The ControlMaster should already be established by connectProjectMaster()
+    const args = this.buildSSHArgs(connection.config, connection.controlPath, false)
 
-    // For password auth, don't use ControlMaster (it won't work in background mode)
-    // Instead, create a direct SSH connection (password prompt will appear in terminal)
-    if (connection.config.authMethod === 'password') {
-      args = []
-
-      // Port
-      if (connection.config.port !== 22) {
-        args.push('-p', connection.config.port.toString())
-      }
-
-      // Force password/keyboard-interactive authentication
-      args.push(
-        '-o', 'PreferredAuthentications=keyboard-interactive,password',
-        '-o', 'PubkeyAuthentication=no', // Disable key-based auth
-        '-o', 'ServerAliveInterval=60',
-        '-o', 'ServerAliveCountMax=3',
-        '-o', 'StrictHostKeyChecking=accept-new',
-        '-o', 'NumberOfPasswordPrompts=3' // Allow 3 password attempts
-      )
-
-      // Custom options
-      if (connection.config.options && connection.config.options.length > 0) {
-        args.push(...connection.config.options)
-      }
-
-      // User@host
-      args.push(`${connection.config.username}@${connection.config.host}`)
-
-      // Force TTY allocation for interactive shell
-      args.push('-t')
-    } else {
-      // For key/agent auth, use ControlMaster
-      args = this.buildSSHArgs(connection.config, connection.controlPath, false)
-
-      // Force TTY allocation for interactive shell
-      args.push('-t')
-    }
+    // Force TTY allocation for interactive shell
+    args.push('-t')
 
     // Add command to cd to remote directory if specified
     if (remoteCwd) {
@@ -327,14 +421,29 @@ export class SSHManager extends EventEmitter {
     }
     // Note: If no remoteCwd, SSH will automatically start the user's default login shell
 
-    // On Windows, node-pty needs the .exe extension
-    const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
+    // On Windows with Git Bash, use bash.exe to wrap SSH
+    // This ensures we use Git Bash's SSH which has ControlMaster support
+    if (process.platform === 'win32') {
+      const sshCommand = `ssh ${args.map(arg => {
+        // Quote arguments that contain spaces or special characters
+        if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('$')) {
+          return `"${arg.replace(/"/g, '\\"')}"`
+        }
+        return arg
+      }).join(' ')}`
+
+      return {
+        shell: 'bash.exe',
+        args: ['-c', sshCommand]
+      }
+    }
 
     return {
-      shell: sshCommand,
+      shell: 'ssh',
       args
     }
   }
+
 
   /**
    * Cleanup all connections
@@ -362,9 +471,10 @@ export class SSHManager extends EventEmitter {
   }
 
   /**
-   * Establish a master SSH connection for a project
+   * Establish a master SSH connection for a project using ControlMaster
+   * With Git Bash on Windows, ControlMaster now works properly
    */
-  async connectProjectMaster(projectId: string, sshConnectionId: string): Promise<{ success: boolean; error?: string }> {
+  async connectProjectMaster(projectId: string, sshConnectionId: string): Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }> {
     console.log(`[SSHManager] Connecting project master: ${projectId} using SSH connection: ${sshConnectionId}`)
 
     // Check if already connected
@@ -382,73 +492,105 @@ export class SSHManager extends EventEmitter {
       return { success: false, error }
     }
 
-    console.log(`[SSHManager] SSH connection auth method: ${sshConnection.config.authMethod}`)
-
-    // Create a dedicated control path for this project
-    const controlPath = path.join(this.controlDir, `project-${projectId}.sock`)
-
-    // Build SSH args for the master connection
-    const args = this.buildSSHArgs(sshConnection.config, controlPath, true)
-
-    // For password auth, we need an interactive terminal to establish the master
+    // For password authentication, we need an interactive terminal to establish ControlMaster
     if (sshConnection.config.authMethod === 'password') {
-      // Store as pending - frontend will need to create an interactive terminal
+      console.log('[SSHManager] Password auth detected - requires interactive ControlMaster setup')
+
+      // Store the project connection info but mark as not connected yet
       this.projectMasterConnections.set(projectId, {
         projectId,
         sshConnectionId,
-        controlPath,
-        connected: false,
+        controlPath: sshConnection.controlPath,
+        connected: false, // Not connected until user authenticates interactively
         connectedAt: Date.now(),
         lastUsed: Date.now(),
       })
-      console.log('[SSHManager] Project master (password auth) requires interactive terminal')
-      return {
-        success: false,
-        error: 'PASSWORD_AUTH_REQUIRED',
-        requiresInteractive: true
-      } as any
+
+      // Tell frontend to create an interactive terminal for ControlMaster setup
+      return { success: false, requiresInteractive: true }
     }
 
-    // For key/agent auth, establish a background ControlMaster
-    try {
-      const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
-      const command = `${sshCommand} ${args.join(' ')} -fN`
+    // For key/agent auth, ensure the SSH connection is established (ControlMaster is running)
+    if (!sshConnection.connected) {
+      console.log('[SSHManager] SSH connection not established, establishing now...')
+      const result = await this.connect(sshConnection.config)
+      if (!result.success) {
+        return { success: false, error: result.error || 'Failed to establish SSH connection' }
+      }
+    }
 
-      console.log(`[SSHManager] Executing: ${command}`)
-      await execAsync(command, { timeout: 30000 })
+    // Store the project master connection info
+    this.projectMasterConnections.set(projectId, {
+      projectId,
+      sshConnectionId,
+      controlPath: sshConnection.controlPath,
+      connected: true,
+      connectedAt: Date.now(),
+      lastUsed: Date.now(),
+    })
 
-      // Store the project master connection
-      this.projectMasterConnections.set(projectId, {
-        projectId,
-        sshConnectionId,
-        controlPath,
-        connected: true,
-        connectedAt: Date.now(),
-        lastUsed: Date.now(),
-      })
+    console.log(`[SSHManager] Project master connection established using ControlMaster`)
+    return { success: true }
+  }
 
-      console.log(`[SSHManager] Project master connected for ${projectId}`)
-      return { success: true }
-    } catch (error: any) {
-      const errorMsg = error.message || String(error)
-      console.error(`[SSHManager] Failed to connect project master:`, errorMsg)
+  /**
+   * Get the SSH command for establishing ControlMaster interactively (for password auth)
+   */
+  getInteractiveMasterCommand(projectId: string): { shell: string; args: string[] } | null {
+    const master = this.projectMasterConnections.get(projectId)
+    if (!master) {
+      return null
+    }
 
-      this.projectMasterConnections.set(projectId, {
-        projectId,
-        sshConnectionId,
-        controlPath,
-        connected: false,
-        connectedAt: Date.now(),
-        lastUsed: Date.now(),
-        error: errorMsg,
-      })
+    const sshConnection = this.connections.get(master.sshConnectionId)
+    if (!sshConnection) {
+      return null
+    }
 
-      return { success: false, error: errorMsg }
+    // Build SSH command with ControlMaster options
+    const args = this.buildSSHArgs(sshConnection.config, master.controlPath, true)
+
+    // Add -t for interactive terminal (required for password prompt)
+    args.push('-t')
+
+    // On Windows with Git Bash, wrap in bash.exe
+    if (process.platform === 'win32') {
+      const sshCommand = `ssh ${args.map(arg => {
+        if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('$')) {
+          return `"${arg.replace(/"/g, '\\"')}"`
+        }
+        return arg
+      }).join(' ')}`
+
+      return {
+        shell: 'bash.exe',
+        args: ['-c', sshCommand]
+      }
+    }
+
+    return {
+      shell: 'ssh',
+      args
+    }
+  }
+
+  /**
+   * Mark a project master connection as successfully established
+   * (called after interactive terminal successfully connects for password auth)
+   */
+  markProjectMasterConnected(projectId: string): void {
+    const connection = this.projectMasterConnections.get(projectId)
+    if (connection) {
+      connection.connected = true
+      connection.connectedAt = Date.now()
+      console.log(`[SSHManager] Project master marked as connected: ${projectId}`)
     }
   }
 
   /**
    * Disconnect a project master connection
+   * With ControlMaster, we just remove the project mapping
+   * The underlying SSH connection stays alive for reuse
    */
   async disconnectProjectMaster(projectId: string): Promise<{ success: boolean; error?: string }> {
     console.log(`[SSHManager] Disconnecting project master: ${projectId}`)
@@ -458,20 +600,9 @@ export class SSHManager extends EventEmitter {
       return { success: true } // Already disconnected
     }
 
-    try {
-      // Kill the control master
-      const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
-      const killCommand = `${sshCommand} -O exit -o ControlPath=${connection.controlPath} localhost 2>&1`
-
-      await execAsync(killCommand, { timeout: 5000 })
-      console.log(`[SSHManager] Project master disconnected: ${projectId}`)
-    } catch (error) {
-      // It's okay if this fails; the control socket might already be gone
-      console.log(`[SSHManager] Control socket cleanup warning (non-fatal):`, error)
-    }
-
-    // Remove from map
+    // Remove from map (the underlying SSH ControlMaster connection stays alive)
     this.projectMasterConnections.delete(projectId)
+    console.log(`[SSHManager] Project master disconnected: ${projectId}`)
     return { success: true }
   }
 
@@ -500,91 +631,16 @@ export class SSHManager extends EventEmitter {
       throw new Error('SSH connection not found')
     }
 
-    // Build SSH command using the control socket
-    const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
+    // Build SSH command using the ControlMaster connection
     const args = this.buildSSHArgs(sshConnection.config, connection.controlPath, false)
-    const fullCommand = `${sshCommand} ${args.join(' ')} "${command.replace(/"/g, '\\"')}"`
+    args.push(command)
 
-    console.log(`[SSHManager] Executing command via project master: ${fullCommand}`)
+    console.log(`[SSHManager] Executing command via project master ControlMaster`)
 
-    const { stdout } = await execAsync(fullCommand, { timeout: 30000 })
+    const { stdout } = await this.execSSH(args)
     connection.lastUsed = Date.now()
 
     return stdout
   }
 
-  /**
-   * Get the SSH command to create an interactive master connection (for password auth)
-   */
-  getInteractiveMasterCommand(projectId: string): { shell: string; args: string[] } | null {
-    const connection = this.projectMasterConnections.get(projectId)
-    if (!connection) {
-      return null
-    }
-
-    const sshConnection = this.connections.get(connection.sshConnectionId)
-    if (!sshConnection) {
-      return null
-    }
-
-    // Build base SSH args (without host)
-    const args: string[] = []
-
-    // Port
-    if (sshConnection.config.port !== 22) {
-      args.push('-p', sshConnection.config.port.toString())
-    }
-
-    // Authentication
-    if (sshConnection.config.authMethod === 'key' && sshConnection.config.identityFile) {
-      args.push('-i', sshConnection.config.identityFile)
-    } else if (sshConnection.config.authMethod === 'agent') {
-      args.push('-A')
-    }
-
-    // ControlMaster settings
-    args.push(
-      '-o', 'ControlMaster=auto',
-      '-o', 'ControlPersist=10m',
-      '-o', `ControlPath=${connection.controlPath}`,
-      '-o', 'ServerAliveInterval=60',
-      '-o', 'ServerAliveCountMax=3',
-      '-o', 'StrictHostKeyChecking=accept-new'
-    )
-
-    // Custom options
-    if (sshConnection.config.options) {
-      sshConnection.config.options.forEach(opt => {
-        args.push('-o', opt)
-      })
-    }
-
-    // Add -t for TTY allocation (required for password prompts)
-    args.push('-t')
-
-    // Finally, add the host
-    args.push(`${sshConnection.config.username}@${sshConnection.config.host}`)
-
-    const sshCommand = process.platform === 'win32' ? 'ssh.exe' : 'ssh'
-
-    console.log(`[SSHManager] Interactive master command: ${sshCommand} ${args.join(' ')}`)
-
-    return {
-      shell: sshCommand,
-      args: args
-    }
-  }
-
-  /**
-   * Mark a project master connection as successfully established
-   * (called after interactive terminal successfully connects)
-   */
-  markProjectMasterConnected(projectId: string): void {
-    const connection = this.projectMasterConnections.get(projectId)
-    if (connection) {
-      connection.connected = true
-      connection.connectedAt = Date.now()
-      console.log(`[SSHManager] Project master marked as connected: ${projectId}`)
-    }
-  }
 }

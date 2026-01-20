@@ -96,12 +96,8 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation()
     removeTerminalFromGrid(gridId, session.id)
-    // If this was the only terminal in the grid, create a new grid for it
-    // (so it doesn't disappear entirely)
-    const gridState = useGridStore.getState()
-    if (!gridState.getGridForTerminal(session.id)) {
-      createGrid(session.id)
-    }
+    // Terminal is removed from grid but session stays alive
+    // User can access it from sidebar if needed
   }
 
   return (

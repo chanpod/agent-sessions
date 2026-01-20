@@ -5,11 +5,13 @@ import { cn } from '../lib/utils'
 import type { DirEntry } from '../types/electron'
 
 interface FileBrowserProps {
+  projectId: string
   rootPath: string
   maxDepth?: number
 }
 
 interface TreeNodeProps {
+  projectId: string
   entry: DirEntry
   depth: number
   maxDepth: number
@@ -31,7 +33,7 @@ const HIDDEN_ENTRIES = new Set([
   'Thumbs.db',
 ])
 
-function TreeNode({ entry, depth, maxDepth, rootPath }: TreeNodeProps) {
+function TreeNode({ projectId, entry, depth, maxDepth, rootPath }: TreeNodeProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [children, setChildren] = useState<DirEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -41,7 +43,7 @@ function TreeNode({ entry, depth, maxDepth, rootPath }: TreeNodeProps) {
     if (!window.electron || !entry.isDirectory) return
 
     setIsLoading(true)
-    const result = await window.electron.fs.listDir(entry.path)
+    const result = await window.electron.fs.listDir(entry.path, projectId)
     setIsLoading(false)
 
     if (result.success && result.items) {
@@ -60,7 +62,7 @@ function TreeNode({ entry, depth, maxDepth, rootPath }: TreeNodeProps) {
     } else {
       // Open file
       if (!window.electron) return
-      const result = await window.electron.fs.readFile(entry.path)
+      const result = await window.electron.fs.readFile(entry.path, projectId)
       if (result.success && result.content !== undefined) {
         openFile(entry.path, entry.name, result.content, rootPath)
       }
@@ -113,6 +115,7 @@ function TreeNode({ entry, depth, maxDepth, rootPath }: TreeNodeProps) {
           {children.map((child) => (
             <TreeNode
               key={child.path}
+              projectId={projectId}
               entry={child}
               depth={depth + 1}
               maxDepth={maxDepth}
@@ -161,7 +164,7 @@ function FileIcon({ filename }: { filename: string }) {
   return <File className={cn('w-3.5 h-3.5 flex-shrink-0', colorClass)} />
 }
 
-export function FileBrowser({ rootPath, maxDepth = 4 }: FileBrowserProps) {
+export function FileBrowser({ projectId, rootPath, maxDepth = 4 }: FileBrowserProps) {
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -173,7 +176,7 @@ export function FileBrowser({ rootPath, maxDepth = 4 }: FileBrowserProps) {
       setIsLoading(true)
       setError(null)
 
-      const result = await window.electron.fs.listDir(rootPath)
+      const result = await window.electron.fs.listDir(rootPath, projectId)
 
       setIsLoading(false)
 
@@ -187,7 +190,7 @@ export function FileBrowser({ rootPath, maxDepth = 4 }: FileBrowserProps) {
     }
 
     loadRoot()
-  }, [rootPath])
+  }, [projectId, rootPath])
 
   if (isLoading) {
     return <div className="px-2 py-1 text-xs text-zinc-600">Loading...</div>
@@ -204,7 +207,7 @@ export function FileBrowser({ rootPath, maxDepth = 4 }: FileBrowserProps) {
   return (
     <div className="py-1">
       {entries.map((entry) => (
-        <TreeNode key={entry.path} entry={entry} depth={0} maxDepth={maxDepth} rootPath={rootPath} />
+        <TreeNode key={entry.path} projectId={projectId} entry={entry} depth={0} maxDepth={maxDepth} rootPath={rootPath} />
       ))}
     </div>
   )
