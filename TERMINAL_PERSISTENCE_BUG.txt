@@ -1,0 +1,3 @@
+Terminal System Analysis
+
+BUG: Terminal names don't persist across app restarts

@@ -168,6 +168,10 @@ export const useTerminalStore = create<TerminalStore>()(
           sessions: state.sessions.map((s) =>
             s.id === id ? { ...s, title } : s
           ),
+          // Also update savedConfigs to persist the name change across restarts
+          savedConfigs: state.savedConfigs.map((c) =>
+            c.id === id ? { ...c, shellName: title } : c
+          ),
         })),
 
       updateSessionPid: (id, pid) =>

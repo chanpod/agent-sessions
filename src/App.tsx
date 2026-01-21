@@ -10,6 +10,7 @@ import {
   PointerSensor,
 } from '@dnd-kit/core'
 import { Terminal as TerminalIcon } from 'lucide-react'
+import { TitleBar } from './components/TitleBar'
 import { ProjectHeader } from './components/ProjectHeader'
 import { ProjectSubHeader } from './components/ProjectSubHeader'
 import { Sidebar } from './components/Sidebar'
@@ -831,6 +832,8 @@ function App() {
       onDragEnd={handleDragEnd}
     >
       <div className="flex flex-col h-screen overflow-hidden">
+        {/* Custom title bar (Windows only) */}
+        <TitleBar />
         {/* Top header with project tabs */}
         <ProjectHeader
           onCreateProject={handleCreateProject}

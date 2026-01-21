@@ -180,3 +180,14 @@ body {
 [data-dragging="true"] {
   opacity: 0.5;
 }
+
+/* Window drag region styles */
+.app-drag-region {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}

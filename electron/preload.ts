@@ -378,6 +378,32 @@ const electronAPI = {
       return () => ipcRenderer.removeListener('update:progress', handler)
     },
   },
+  window: {
+    minimize: (): Promise<void> =>
+      ipcRenderer.invoke('window:minimize'),
+    maximize: (): Promise<void> =>
+      ipcRenderer.invoke('window:maximize'),
+    close: (): Promise<void> =>
+      ipcRenderer.invoke('window:close'),
+    isMaximized: (): Promise<boolean> =>
+      ipcRenderer.invoke('window:isMaximized'),
+    onMaximize: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('window:maximize', handler)
+      return () => ipcRenderer.removeListener('window:maximize', handler)
+    },
+    onUnmaximize: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('window:unmaximize', handler)
+      return () => ipcRenderer.removeListener('window:unmaximize', handler)
+    },
+  },
+  menu: {
+    executeRole: (role: string): Promise<void> =>
+      ipcRenderer.invoke('menu:executeRole', role),
+    checkForUpdates: (): Promise<void> =>
+      ipcRenderer.invoke('menu:checkForUpdates'),
+  },
 }
 
 contextBridge.exposeInMainWorld('electron', electronAPI)
