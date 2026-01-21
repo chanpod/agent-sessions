@@ -436,9 +436,10 @@ interface GitWatcherSet {
   debounceTimer: NodeJS.Timeout | null
   lastHeadContent: string
   lastIndexMtime: number
+  lastLogsHeadMtime: number
 }
 const gitWatchers = new Map<string, GitWatcherSet>()
-const GIT_DEBOUNCE_MS = 300 // Debounce rapid changes
+const GIT_DEBOUNCE_MS = 500 // Debounce rapid changes (increased to allow git operations to complete)
 
 async function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js')
@@ -1010,7 +1011,9 @@ ipcMain.handle('dialog:open-directory', async () => {
 })
 
 // Get package.json scripts from a directory
-ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
+ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projectId?: string) => {
+  console.log(`[project:get-scripts] Called with projectPath="${projectPath}", projectId="${projectId}"`)
+
   interface ScriptInfo {
     name: string
     command: string
@@ -1085,6 +1088,107 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string) => {
   }
 
   try {
+    // For SSH projects, use remote execution
+    if (projectId && sshManager) {
+      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      console.log(`[project:get-scripts] SSH manager exists, project master status:`, projectMasterStatus)
+
+      if (projectMasterStatus.connected) {
+        console.log(`[project:get-scripts] Using SSH execution for project ${projectId}`)
+
+        // Create a Node.js script to find and read package.json files remotely
+        // This is much simpler and more reliable than using bash
+        const findPackagesScript = `node -e "
+const fs = require('fs');
+const path = require('path');
+
+const rootDir = '${projectPath}';
+const excludeDirs = ['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo'];
+
+function findPackageJsonFiles(dir, depth = 0) {
+  if (depth > 10) return [];
+  const results = [];
+
+  try {
+    if (fs.existsSync(path.join(dir, 'package.json'))) {
+      results.push(dir);
+    }
+
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+        results.push(...findPackageJsonFiles(path.join(dir, entry.name), depth + 1));
+      }
+    }
+  } catch (err) {
+    // Ignore errors
+  }
+
+  return results;
+}
+
+function detectPackageManager(dir) {
+  if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
+  if (fs.existsSync(path.join(dir, 'bun.lockb'))) return 'bun';
+  return 'npm';
+}
+
+try {
+  if (!fs.existsSync(path.join(rootDir, 'package.json'))) {
+    console.log(JSON.stringify({ hasPackageJson: false, packages: [], scripts: [] }));
+    process.exit(0);
+  }
+
+  const packageDirs = findPackageJsonFiles(rootDir);
+  const packages = [];
+
+  for (const pkgDir of packageDirs) {
+    try {
+      const pkgPath = path.join(pkgDir, 'package.json');
+      const content = fs.readFileSync(pkgPath, 'utf8');
+      const pkg = JSON.parse(content);
+
+      if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
+        const scripts = Object.entries(pkg.scripts).map(([name, command]) => ({ name, command }));
+        const relativePath = path.relative(rootDir, pkgDir) || '.';
+
+        packages.push({
+          packagePath: relativePath,
+          packageName: pkg.name || '',
+          scripts: scripts,
+          packageManager: detectPackageManager(pkgDir)
+        });
+      }
+    } catch (err) {
+      // Ignore individual package errors
+    }
+  }
+
+  console.log(JSON.stringify({ hasPackageJson: true, packages, scripts: [] }));
+} catch (err) {
+  console.error(JSON.stringify({ hasPackageJson: false, packages: [], scripts: [], error: err.message }));
+  process.exit(1);
+}
+"`
+
+        try {
+          console.log(`[project:get-scripts] Executing remote Node.js script...`)
+          const result = await sshManager.execViaProjectMaster(projectId, findPackagesScript)
+          console.log(`[project:get-scripts] Remote script output:`, result.substring(0, 200))
+          const parsed = JSON.parse(result.trim())
+          console.log(`[project:get-scripts] Parsed result:`, parsed)
+          return parsed
+        } catch (error: any) {
+          console.error('[project:get-scripts] SSH execution failed:', error)
+          return { hasPackageJson: false, packages: [], scripts: [], error: error.message }
+        }
+      } else {
+        console.log(`[project:get-scripts] SSH project master not connected, falling back to local`)
+      }
+    }
+
+    // For local/WSL projects, use filesystem operations
     const fsPath = resolvePathForFs(projectPath)
     const rootPackageJsonPath = path.join(fsPath, 'package.json')
 
@@ -1437,9 +1541,10 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
     // Read initial state to detect changes
     let lastHeadContent = ''
     let lastIndexMtime = 0
+    let lastLogsHeadMtime = 0
 
     try {
-      lastHeadContent = fs.readFileSync(headPath, 'utf-8')
+      lastHeadContent = fs.readFileSync(headPath, 'utf-8').trim()
     } catch (err) {
       // HEAD might not exist yet
     }
@@ -1449,6 +1554,14 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
       lastIndexMtime = indexStats.mtimeMs
     } catch (err) {
       // index might not exist yet
+    }
+
+    try {
+      const logsHeadPath = path.join(gitDir, 'logs', 'HEAD')
+      const logsHeadStats = fs.statSync(logsHeadPath)
+      lastLogsHeadMtime = logsHeadStats.mtimeMs
+    } catch (err) {
+      // logs/HEAD might not exist yet
     }
 
     // Notify function with debouncing
@@ -1469,10 +1582,11 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
 
           // Check HEAD (branch changes)
           try {
-            const currentHeadContent = fs.readFileSync(headPath, 'utf-8')
+            const currentHeadContent = fs.readFileSync(headPath, 'utf-8').trim()
             if (currentHeadContent !== watcherSet.lastHeadContent) {
               watcherSet.lastHeadContent = currentHeadContent
               hasChanged = true
+              console.log(`[Git Watch] HEAD changed for ${projectPath}: ${currentHeadContent}`)
             }
           } catch (err) {
             // Ignore errors reading HEAD
@@ -1484,9 +1598,23 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
             if (indexStats.mtimeMs !== watcherSet.lastIndexMtime) {
               watcherSet.lastIndexMtime = indexStats.mtimeMs
               hasChanged = true
+              console.log(`[Git Watch] index changed for ${projectPath}`)
             }
           } catch (err) {
             // Ignore errors reading index
+          }
+
+          // Check logs/HEAD (reflog - most reliable for branch changes)
+          try {
+            const logsHeadPath = path.join(gitDir, 'logs', 'HEAD')
+            const logsHeadStats = fs.statSync(logsHeadPath)
+            if (logsHeadStats.mtimeMs !== watcherSet.lastLogsHeadMtime) {
+              watcherSet.lastLogsHeadMtime = logsHeadStats.mtimeMs
+              hasChanged = true
+              console.log(`[Git Watch] logs/HEAD changed for ${projectPath}`)
+            }
+          } catch (err) {
+            // Ignore errors - logs/HEAD might not exist yet
           }
 
           // Only notify if something actually changed
@@ -1509,7 +1637,12 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
       }
 
       const fileStr = filename.toString()
-      if (fileStr === 'HEAD' || fileStr === 'index' || fileStr.startsWith('refs')) {
+      if (fileStr === 'HEAD' ||
+          fileStr === 'index' ||
+          fileStr.startsWith('refs') ||
+          fileStr.startsWith('logs/HEAD') ||
+          fileStr === 'logs' ||
+          (fileStr.startsWith('logs') && fileStr.includes('HEAD'))) {
         notifyChange()
       }
     })
@@ -1520,6 +1653,7 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
       debounceTimer: null,
       lastHeadContent,
       lastIndexMtime,
+      lastLogsHeadMtime,
     })
 
     console.log(`[Git Watch] Started watching ${projectPath}`)

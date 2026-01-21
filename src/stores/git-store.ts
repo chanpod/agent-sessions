@@ -16,7 +16,7 @@ interface GitStore {
   gitInfo: Record<string, GitInfo>
 
   // Currently watched paths and their project IDs
-  watchedProjects: Map<string, string> // path -> projectId
+  watchedProjects: Record<string, string> // path -> projectId
 
   // Set git info for a project
   setGitInfo: (projectId: string, info: GitInfo) => void
@@ -43,7 +43,7 @@ let globalUnsubscribe: (() => void) | null = null
 
 export const useGitStore = create<GitStore>((set, get) => ({
   gitInfo: {},
-  watchedProjects: new Map(),
+  watchedProjects: {},
 
   setGitInfo: (projectId: string, info: GitInfo) => {
     set((state) => ({
@@ -77,7 +77,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       globalListenerSetup = true
       globalUnsubscribe = window.electron.git.onChanged((changedPath) => {
         const { watchedProjects } = get()
-        const projectId = watchedProjects.get(changedPath)
+        const projectId = watchedProjects[changedPath]
         if (projectId) {
           console.log(`[GitStore] Git changed for path ${changedPath}, refreshing project ${projectId}`)
           get().refreshGitInfo(projectId, changedPath)
@@ -86,13 +86,13 @@ export const useGitStore = create<GitStore>((set, get) => ({
     }
 
     // Only watch if not already watching
-    if (!watchedProjects.has(projectPath)) {
+    if (!watchedProjects[projectPath]) {
       console.log(`[GitStore] Starting git watch for ${projectPath}`)
       window.electron.git.watch(projectPath)
 
       set((state) => {
-        const newWatchedProjects = new Map(state.watchedProjects)
-        newWatchedProjects.set(projectPath, projectId)
+        const newWatchedProjects = { ...state.watchedProjects }
+        newWatchedProjects[projectPath] = projectId
         return { watchedProjects: newWatchedProjects }
       })
 
@@ -109,12 +109,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
     const { watchedProjects } = get()
 
-    if (watchedProjects.has(projectPath)) {
+    if (watchedProjects[projectPath]) {
       window.electron.git.unwatch(projectPath)
 
       set((state) => {
-        const newWatchedProjects = new Map(state.watchedProjects)
-        newWatchedProjects.delete(projectPath)
+        const newWatchedProjects = { ...state.watchedProjects }
+        delete newWatchedProjects[projectPath]
         return { watchedProjects: newWatchedProjects }
       })
     }

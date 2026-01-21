@@ -211,7 +211,7 @@ export interface ElectronAPI {
     openDirectory: () => Promise<string | null>
   }
   project: {
-    getScripts: (projectPath: string) => Promise<ProjectScripts>
+    getScripts: (projectPath: string, projectId?: string) => Promise<ProjectScripts>
   }
   git: {
     getInfo: (projectPath: string, projectId?: string) => Promise<GitInfo>

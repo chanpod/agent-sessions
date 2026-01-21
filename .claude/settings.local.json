@@ -9,7 +9,14 @@
       "Bash(cat:*)",
       "WebSearch",
       "WebFetch(domain:stackoverflow.com)",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(while read file)",
+      "Bash(do grep -L \"useGitStore\\|git-store\" \"$file\")",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(for file in \"C:/git/agent-sessions/src/components/ReviewPanel.tsx\" \"C:/git/agent-sessions/src/components/ProjectHeader.tsx\" \"C:/git/agent-sessions/src/components/ProjectItem.tsx\")",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(npm run type-check:*)"
     ],
     "deny": [],
     "ask": []

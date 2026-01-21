@@ -73,19 +73,40 @@ export function TerminalsTab({
 
   // Fetch package.json scripts
   const fetchScripts = async () => {
-    if (!window.electron) return
+    console.log('[TerminalsTab] fetchScripts called', {
+      isSSHProject,
+      connectionStatus: project.connectionStatus,
+      projectPath,
+      projectId
+    })
 
-    const result = await window.electron!.project.getScripts(projectPath)
+    if (!window.electron) {
+      console.log('[TerminalsTab] No electron API available')
+      return
+    }
+
+    // For SSH projects, only fetch scripts when connected
+    if (isSSHProject && project.connectionStatus !== 'connected') {
+      console.log('[TerminalsTab] SSH project not connected, skipping script fetch')
+      return
+    }
+
+    console.log('[TerminalsTab] Calling electron.project.getScripts...')
+    const result = await window.electron!.project.getScripts(projectPath, projectId)
+    console.log('[TerminalsTab] Got result:', result)
+
     if (result.hasPackageJson && result.packages) {
+      console.log('[TerminalsTab] Setting packages:', result.packages)
       setPackages(result.packages)
     }
   }
 
   useEffect(() => {
     fetchScripts()
-  }, [projectPath])
+  }, [projectPath, project.connectionStatus])
 
   const handleRescanScripts = async () => {
+    console.log('[TerminalsTab] handleRescanScripts clicked')
     setIsRescanningScripts(true)
     try {
       await fetchScripts()

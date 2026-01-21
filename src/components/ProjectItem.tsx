@@ -47,15 +47,15 @@ export function ProjectItem({
   const { sessions, activeSessionId } = useTerminalStore()
   const { servers } = useServerStore()
   const { getConnection } = useSSHStore()
-  const { gitInfo, refreshGitInfo } = useGitStore()
+  const refreshGitInfo = useGitStore((state) => state.refreshGitInfo)
 
   // Get SSH connection info if this is an SSH project
   const sshConnection = project.isSSHProject && project.sshConnectionId
     ? getConnection(project.sshConnectionId)
     : null
 
-  // Get git info for this project from the centralized store
-  const projectGitInfo = gitInfo[project.id]
+  // Get git info for this project from the centralized store - use selector to only subscribe to this project's data
+  const projectGitInfo = useGitStore((state) => state.gitInfo[project.id])
   const gitBranch = projectGitInfo?.branch || null
   const gitHasChanges = projectGitInfo?.hasChanges || false
   const changedFiles = projectGitInfo?.changedFiles || []

@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown, Sparkles, Loader2, XCircle, Folder, Search } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
-import { useGitStore } from '../stores/git-store'
+import { useGitStore, type GitInfo } from '../stores/git-store'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { useReviewStore } from '../stores/review-store'
 import { FileBrowser } from './FileBrowser'
@@ -13,6 +13,17 @@ import type { ChangedFile } from '../types/electron'
 const MIN_WIDTH = 200
 const MAX_WIDTH = 600
 const DEFAULT_WIDTH = 350
+
+// Stable empty git info object to prevent infinite render loops
+const EMPTY_GIT_INFO: GitInfo = {
+  branch: null,
+  branches: [],
+  isGitRepo: false,
+  hasChanges: false,
+  ahead: 0,
+  behind: 0,
+  changedFiles: [],
+}
 
 // Helper function to get file status icon and color
 function getFileStatusIcon(status: ChangedFile['status']) {
@@ -32,7 +43,6 @@ function getFileStatusIcon(status: ChangedFile['status']) {
 
 export function ChangedFilesPanel() {
   const { activeProjectId, projects } = useProjectStore()
-  const { gitInfo } = useGitStore()
   const { openFile, setShowDiff } = useFileViewerStore()
 
   const activeReviewId = useReviewStore((state) => state.activeReviewId)
@@ -83,23 +93,13 @@ export function ChangedFilesPanel() {
     })
   }
 
-  const projectGitInfo = activeProjectId ? (gitInfo[activeProjectId] || {
-    branch: null,
-    branches: [],
-    isGitRepo: false,
-    hasChanges: false,
-    ahead: 0,
-    behind: 0,
-    changedFiles: [],
-  }) : {
-    branch: null,
-    branches: [],
-    isGitRepo: false,
-    hasChanges: false,
-    ahead: 0,
-    behind: 0,
-    changedFiles: [],
-  }
+  // Use selector to only subscribe to the active project's git info
+  // Use stable EMPTY_GIT_INFO to prevent infinite render loops
+  const projectGitInfo = useGitStore((state) =>
+    activeProjectId && state.gitInfo[activeProjectId]
+      ? state.gitInfo[activeProjectId]
+      : EMPTY_GIT_INFO
+  )
 
   // Resizing logic
   const startResizing = useCallback((e: React.MouseEvent) => {

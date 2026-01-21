@@ -7,6 +7,27 @@ interface TerminalInstance {
   isOpened: boolean
 }
 
+// Whitelisted keyboard shortcuts that should work even when terminal is focused
+// Returns true if the event should be allowed to bubble up (not consumed by terminal)
+function isWhitelistedShortcut(event: KeyboardEvent): boolean {
+  // Ctrl+P or Cmd+P (file search)
+  if ((event.ctrlKey || event.metaKey) && event.key === 'p' && !event.altKey && !event.shiftKey) {
+    return true
+  }
+
+  // Ctrl+1-9 (project switching)
+  if (event.ctrlKey && !event.altKey && !event.metaKey && /^[1-9]$/.test(event.key)) {
+    return true
+  }
+
+  // Alt+1-9 (terminal focus switching)
+  if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-9]$/.test(event.key)) {
+    return true
+  }
+
+  return false
+}
+
 // Manual fit function - calculates terminal dimensions based on container size
 function fitTerminalManually(terminal: XTerm, container: HTMLDivElement): boolean {
   if (!container.isConnected) return false
@@ -147,6 +168,28 @@ export function getOrCreateTerminal(
   })
 
   terminal.open(container)
+
+  // Attach custom key event handler to allow whitelisted shortcuts
+  terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+    // If this is a whitelisted shortcut, return false to prevent xterm from handling it
+    // This allows the event to bubble up to window listeners
+    if (isWhitelistedShortcut(event)) {
+      // Dispatch the event to window so our App.tsx listener can handle it
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        bubbles: true,
+        cancelable: true
+      }))
+      return false // Prevent xterm from handling it
+    }
+    // For all other keys, let xterm handle them normally
+    return true
+  })
 
   // Initial fit with retry logic
   const attemptInitialFit = (retries = 0) => {

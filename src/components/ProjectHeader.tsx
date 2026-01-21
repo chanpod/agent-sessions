@@ -17,7 +17,9 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   onDeleteProject,
 }) => {
   const { projects, activeProjectId, setActiveProject, flashingProjects, clearProjectFlash, hideProject, showProject } = useProjectStore()
-  const { gitInfo, watchProject, unwatchProject, refreshGitInfo } = useGitStore()
+  const watchProject = useGitStore((state) => state.watchProject)
+  const unwatchProject = useGitStore((state) => state.unwatchProject)
+  const refreshGitInfo = useGitStore((state) => state.refreshGitInfo)
   const { addToast } = useToastStore()
   const [hoveredProjectId, setHoveredProjectId] = useState<string | null>(null)
 
@@ -148,7 +150,9 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
       {/* Project Tabs */}
       <div className="flex items-stretch overflow-x-auto no-drag">
         {projects.filter(p => !p.isHidden).map((project, index) => {
-          const projectGitInfo = gitInfo[project.id]
+          // Use selector to only subscribe to this specific project's git info
+          // eslint-disable-next-line react-hooks/rules-of-hooks
+          const projectGitInfo = useGitStore((state) => state.gitInfo[project.id])
           const isFlashing = flashingProjects.has(project.id)
           return (
             <div
@@ -237,9 +241,13 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
       <div className="flex-1" />
 
       {/* Branch Menu Dropdown - positioned with fixed positioning */}
-      {showBranchMenu && gitInfo[showBranchMenu] && (() => {
+      {showBranchMenu && (() => {
+        // Use selector to only subscribe to the specific project being shown in the menu
+        // eslint-disable-next-line react-hooks/rules-of-hooks
+        const menuGitInfo = useGitStore((state) => state.gitInfo[showBranchMenu])
+        if (!menuGitInfo) return null
         const buttonRect = branchButtonRefs.current[showBranchMenu]?.getBoundingClientRect()
-        const filteredBranches = gitInfo[showBranchMenu].branches.filter(branch =>
+        const filteredBranches = menuGitInfo.branches.filter(branch =>
           branch.toLowerCase().includes(branchFilter.toLowerCase())
         )
         return (
@@ -275,25 +283,25 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
 
           {/* Branch list - scrollable */}
           <div className="overflow-y-auto flex-1">
-            {gitInfo[showBranchMenu].branches.length > 0 ? (
+            {menuGitInfo.branches.length > 0 ? (
               <>
                 <div className="px-3 py-1 text-xs text-zinc-500 uppercase">
-                  Local branches {filteredBranches.length !== gitInfo[showBranchMenu].branches.length && `(${filteredBranches.length}/${gitInfo[showBranchMenu].branches.length})`}
+                  Local branches {filteredBranches.length !== menuGitInfo.branches.length && `(${filteredBranches.length}/${menuGitInfo.branches.length})`}
                 </div>
                 {filteredBranches.length > 0 ? (
                   filteredBranches.map((branch) => (
                     <button
                       key={branch}
                       onClick={() => handleSwitchBranch(showBranchMenu, branch)}
-                      disabled={isCheckingOut || branch === gitInfo[showBranchMenu].branch}
+                      disabled={isCheckingOut || branch === menuGitInfo.branch}
                       className={cn(
                         'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left',
-                        branch === gitInfo[showBranchMenu].branch
+                        branch === menuGitInfo.branch
                           ? 'text-green-400 bg-green-500/10'
                           : 'text-zinc-300 hover:bg-zinc-700 hover:text-white'
                       )}
                     >
-                      {branch === gitInfo[showBranchMenu].branch ? (
+                      {branch === menuGitInfo.branch ? (
                         <Check className="w-3 h-3 text-green-400" />
                       ) : (
                         <GitBranch className="w-3 h-3" />

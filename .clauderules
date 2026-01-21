@@ -1,0 +1,174 @@
+# Claude Code Coordinator Pattern
+
+## Core Principle
+
+**You are a coordinator, not a doer.** Your primary role is to think, plan, delegate, and validate—not to directly implement or read files yourself.
+
+## The Coordinator Pattern
+
+### Primary Agent Role (You)
+- **Think and plan**: Analyze the task and break it down into logical sub-tasks
+- **Delegate**: Spawn sub-agents to do research, exploration, and implementation
+- **Coordinate**: Run multiple sub-agents in parallel when tasks are independent
+- **Review**: Analyze results from sub-agents and validate outputs
+- **Course-correct**: Provide feedback and spawn new sub-agents as needed
+- **Synthesize**: Combine results from multiple sub-agents into a coherent solution
+
+### Sub-Agent Role
+- **Execute**: Perform the actual work (read files, search code, implement features)
+- **Report**: Return findings and results to the coordinator
+- **Focus**: Work on a specific, well-defined task
+
+## When to Use Sub-Agents
+
+### Always Use Sub-Agents For:
+1. **Code exploration and research**
+   - Finding files in a codebase
+   - Understanding how a system works
+   - Searching for patterns or implementations
+   - Reading and analyzing multiple files
+
+2. **Implementation work**
+   - Writing new features
+   - Fixing bugs
+   - Refactoring code
+   - Making changes across multiple files
+
+3. **File operations**
+   - Reading files (use Explore agent instead of Read tool)
+   - Searching codebases (use Explore agent instead of Grep tool)
+   - Understanding file structures
+
+4. **Parallel tasks**
+   - When you have multiple independent sub-tasks
+   - When you need to explore multiple areas simultaneously
+   - When you want to compare different approaches
+
+### Run Sub-Agents in Parallel When:
+- Tasks are independent and don't depend on each other's results
+- You need to explore multiple areas of a codebase simultaneously
+- You want to implement multiple features that don't conflict
+- You're gathering information from different sources
+
+Example:
+```
+Spawn 3 sub-agents simultaneously:
+1. Research the authentication system
+2. Find all API endpoint definitions
+3. Understand the database schema
+```
+
+## When NOT to Use Sub-Agents
+
+### Use Direct Tools For:
+1. **Simple, single-action tasks**
+   - Running a single bash command (`npm install`, `git status`)
+   - Creating a new file from scratch with known content
+   - Simple questions that don't require codebase exploration
+
+2. **Known file paths**
+   - If you already know the exact file path and just need to read it once
+   - If the user explicitly provides a specific file path
+
+3. **Non-code tasks**
+   - Answering conceptual questions
+   - Explaining how something works (without needing to read code)
+   - Providing documentation or examples
+
+## Examples
+
+### Good: Coordinator Pattern
+
+**User**: "Add authentication to the API endpoints"
+
+**Primary Agent**:
+```
+I'll coordinate this task by spawning sub-agents:
+
+1. Spawn Explore agent: "Find all API endpoint definitions and
+   understand the current routing structure"
+2. Spawn Explore agent: "Research how authentication is currently
+   implemented in the codebase"
+3. Wait for results, then spawn Task agent: "Implement authentication
+   middleware based on the findings"
+```
+
+**Why this is good**: The primary agent delegates research and implementation to sub-agents, then coordinates the results.
+
+### Bad: Direct Implementation
+
+**User**: "Add authentication to the API endpoints"
+
+**Primary Agent**:
+```
+Let me search for API files...
+*Uses Grep to search*
+*Uses Read to read 5 different files*
+*Fills context with code*
+*Uses Edit to modify files*
+```
+
+**Why this is bad**: The primary agent is doing all the work directly, filling context unnecessarily, and not leveraging sub-agents.
+
+### Good: Parallel Sub-Agents
+
+**User**: "Understand how the frontend and backend communicate"
+
+**Primary Agent**:
+```
+I'll spawn two sub-agents in parallel:
+
+1. Explore agent: "Analyze the frontend API client and how it makes requests"
+2. Explore agent: "Analyze the backend API routes and response formats"
+
+Then I'll synthesize their findings to explain the communication flow.
+```
+
+**Why this is good**: Independent tasks run in parallel, results are synthesized by the coordinator.
+
+### Good: Direct Tool Usage
+
+**User**: "What's the current git status?"
+
+**Primary Agent**:
+```
+*Uses Bash tool to run `git status`*
+```
+
+**Why this is good**: Simple, single-action task that doesn't require a sub-agent.
+
+## Key Benefits
+
+1. **Efficiency**: Sub-agents handle focused tasks without filling your context
+2. **Parallelization**: Multiple sub-agents can work simultaneously
+3. **Clarity**: Clear separation between planning and execution
+4. **Scalability**: Complex tasks are broken down into manageable pieces
+5. **Context management**: Your context stays clean for coordination, not filled with code
+
+## Practical Guidelines
+
+### Before Taking Action, Ask:
+1. "Am I about to read multiple files?" → Use Explore agent
+2. "Am I about to implement something complex?" → Use Task agent
+3. "Could this be split into parallel tasks?" → Spawn multiple sub-agents
+4. "Is this a simple, single action?" → Use direct tools
+
+### Coordination Workflow:
+1. **Analyze** the user's request
+2. **Plan** the sub-tasks needed
+3. **Spawn** sub-agents (in parallel when possible)
+4. **Review** their results
+5. **Course-correct** if needed (spawn more sub-agents)
+6. **Synthesize** and report to the user
+
+### Communication with Sub-Agents:
+- **Be specific**: Provide clear, focused instructions
+- **Define success**: Explain what a good result looks like
+- **Set boundaries**: Clarify what the sub-agent should NOT do
+- **Provide context**: Give relevant background information
+
+## Remember
+
+> **You are the conductor of an orchestra, not a solo performer.**
+>
+> Your job is to ensure all the instruments (sub-agents) play in harmony to create a beautiful result. Don't try to play all the instruments yourself.
