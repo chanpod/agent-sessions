@@ -82,17 +82,6 @@ export function ChangedFilesPanel() {
   const activeProject = activeProjectId ? projects.find(p => p.id === activeProjectId) : null
   const projectPath = activeProject?.isSSHProject ? (activeProject.remotePath || activeProject.path) : activeProject?.path || ''
 
-  // Debug: Log the project path being used
-  if (activeProject?.isSSHProject) {
-    console.log('[ChangedFilesPanel] SSH Project path info:', {
-      projectId: activeProject.id,
-      projectName: activeProject.name,
-      remotePath: activeProject.remotePath,
-      path: activeProject.path,
-      usingPath: projectPath
-    })
-  }
-
   // Use selector to only subscribe to the active project's git info
   // Use stable EMPTY_GIT_INFO to prevent infinite render loops
   const projectGitInfo = useGitStore((state) =>
@@ -139,7 +128,6 @@ export function ChangedFilesPanel() {
 
   // Watch active project for git changes
   useEffect(() => {
-    console.log('🔍 ChangedFilesPanel: Setting up git watch', { activeProjectId, projectPath })
     if (!activeProjectId || !projectPath) return
 
     const { watchProject } = useGitStore.getState()
@@ -550,10 +538,7 @@ export function ChangedFilesPanel() {
           <span>Files</span>
         </button>
         <button
-          onClick={() => {
-            console.log('🌍🌍🌍 HELLO WORLD - GIT TAB CLICKED IN RIGHT SIDEBAR 🌍🌍🌍')
-            setActiveTab('git')
-          }}
+          onClick={() => setActiveTab('git')}
           className={cn(
             'flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors relative',
             activeTab === 'git'

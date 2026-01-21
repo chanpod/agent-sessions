@@ -1,0 +1,194 @@
+================================================================================
+GIT DATAFLOW - QUICK REFERENCE DIAGRAM
+================================================================================
+
+COMPLETE CHAIN (from file system to UI):
+
+User Action / Git Operation
+        |
+        v
+   [Git File Modified]
+        |
+        v
+   [fs.watch() in electron/main.ts]
+        |
+        +---> [BREAK #1: SSH projects - NO WATCH]
+        +---> [BREAK #2: WSL projects - NO WATCH]
+        |
+        v
+   [Debounce Timer: 300ms] ---> [BREAK #7: Timer orphans possible]
+        |
+        v
+   [Validation: Check HEAD/index content]
+        |
+        v
+   [Send IPC: 'git:changed' event with projectPath]
+        |
+        v
+   [Renderer: Global listener fires] ---> [BREAK #3: Race condition on setup]
+        |
+        v
+   [watchedProjects.get(projectPath)] ---> [BREAK #4: Path normalization]
+        |
+        v
+   [refreshGitInfo(projectId)] ---> [BREAK #8: Stale map entries]
+        |
+        v
+   [IPC: getInfo, listBranches, getChangedFiles]
+        |
+        v
+   [Zustand: setGitInfo(projectId, newInfo)]
+        |
+        v
+   [gitInfo[projectId] = { branch, branches, changedFiles[] }]
+        |
+        v
+   [Zustand notifies subscribers]
+        |
+        v
+   [ProjectHeader, ChangedFilesPanel, ProjectItem re-render]
+        |
+        +---> [BREAK #5: No unmount cleanup]
+        |
+        v
+   [UI Updates with new git state]
+
+
+ALTERNATIVE CHAIN (User Action Direct):
+
+User clicks "Stage File" Button
+        |
+        v
+   [handleStageFile() in ChangedFilesPanel.tsx]
+        |
+        v
+   [IPC: window.electron.git.stageFile()] 
+        |
+        +---> [BREAK #6: Must manually call handleRefreshGitInfo()] <---+
+              (No automatic update)                                    |
+              (User must wait for manual refresh)                      |
+        |                                                              |
+        v                                                              |
+   [git index file updated in electron]                               |
+        |                                                              |
+        v                                                              |
+   handleRefreshGitInfo() called (manually) -----------------------+
+        |
+        v
+   [IPC: getInfo, listBranches, getChangedFiles]
+        |
+        v
+   [setGitInfo triggers update]
+        |
+        v
+   [Components re-render]
+        |
+        v
+   [UI shows staged file]
+
+
+CRITICAL PATH FOR AUTO-UPDATE (fs.watch):
+
+fs.watch enabled for?
+        |
+        +---> SSH Project? ---> NO WATCH ---> MUST REFRESH MANUALLY
+        |
+        +---> WSL Project (Windows)? ---> NO WATCH ---> MUST REFRESH MANUALLY
+        |
+        +---> Local Project? ---> WATCH ENABLED
+                |
+                v
+         Path normalized correctly?
+                |
+                +---> NO ---> [BREAK #4] Events silently dropped
+                |
+                +---> YES ---> Continue
+                       |
+                       v
+                  Global listener setup?
+                       |
+                       +---> NO ---> [BREAK #3] May miss events
+                       |
+                       +---> YES ---> Continue
+                              |
+                              v
+                         Debounce fires
+                              |
+                              v
+                         Components update
+                              |
+                              v
+                         UI reflects changes
+
+
+BREAK SEVERITY HEAT MAP:
+
+CRITICAL (Project won't work):
+  #1: SSH auto-update - DISABLED
+  #2: WSL auto-update - DISABLED
+
+HIGH (Data loss/corruption):
+  #3: Global listener race condition
+  #4: Path normalization mismatch
+  #5: No unmount cleanup
+
+MEDIUM (UX/Performance):
+  #6: Manual refresh needed
+  #7: Orphaned timer leaks
+  #8: Stale map entries
+
+
+WHERE UPDATES ARE LOST:
+
+1. SSH projects: ALL git watch events lost
+   - Watcher not created
+   - Must use manual refresh button
+
+2. WSL projects on Windows: ALL git watch events lost
+   - Watcher not created
+   - Must use manual refresh button
+
+3. Local projects with path mismatch: Events silently ignored
+   - fs.watch fires
+   - Global listener ready
+   - watchedProjects.get(projectPath) returns undefined
+   - refreshGitInfo never called
+
+4. Rapid multi-project setup: May miss first project's events
+   - Race condition on global listener setup
+   - Flag not atomic
+   - Multiple watchProject() calls could race
+
+5. After component unmount/remount: Duplicate listeners accumulate
+   - useEffect has no cleanup
+   - Each mount adds new listener
+   - Memory leak and duplicate processing
+
+
+KEY INSIGHT:
+
+The system has TWO separate update mechanisms:
+
+1. AUTOMATIC (fs.watch + global listener):
+   - Watches .git directory for changes
+   - Debounces events
+   - Calls refreshGitInfo automatically
+   - BROKEN for SSH and WSL
+
+2. MANUAL (direct refresh calls):
+   - User clicks refresh button
+   - Or component manually calls refreshGitInfo()
+   - Called after every git operation
+   - Currently required for reliable updates
+
+Best Practice Flow (Current):
+  1. User stages file
+  2. Manual call: handleRefreshGitInfo()
+  3. IPC: fetch new git info
+  4. setGitInfo: update store
+  5. UI: re-renders with new state
+
+This explains why manual refresh is needed - automatic mechanism is disabled
+for 2 major platforms (SSH/WSL) and has race conditions on others.
+
+================================================================================

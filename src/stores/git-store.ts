@@ -63,9 +63,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   watchProject: async (projectId: string, projectPath: string) => {
-    console.log(`[GitStore] watchProject called for projectId=${projectId}, projectPath=${projectPath}`)
     if (!window.electron || !projectPath) {
-      console.log(`[GitStore] Skipping watchProject - no electron or projectPath`)
       return
     }
 
@@ -73,13 +71,11 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
     // Set up global listener once
     if (!globalListenerSetup) {
-      console.log(`[GitStore] Setting up global git change listener`)
       globalListenerSetup = true
       globalUnsubscribe = window.electron.git.onChanged((changedPath) => {
         const { watchedProjects } = get()
         const projectId = watchedProjects[changedPath]
         if (projectId) {
-          console.log(`[GitStore] Git changed for path ${changedPath}, refreshing project ${projectId}`)
           get().refreshGitInfo(projectId, changedPath)
         }
       })
@@ -87,8 +83,17 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
     // Only watch if not already watching
     if (!watchedProjects[projectPath]) {
-      console.log(`[GitStore] Starting git watch for ${projectPath}`)
-      window.electron.git.watch(projectPath)
+      try {
+        const watchResult = await window.electron.git.watch(projectPath)
+
+        if (!watchResult.success) {
+          console.error(`[GitStore] Watch failed:`, watchResult.error)
+          return
+        }
+      } catch (err) {
+        console.error(`[GitStore] Exception calling watch:`, err)
+        return
+      }
 
       set((state) => {
         const newWatchedProjects = { ...state.watchedProjects }
@@ -97,10 +102,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       })
 
       // Fetch initial git info only for new watches
-      console.log(`[GitStore] Fetching initial git info for new watch`)
       await get().refreshGitInfo(projectId, projectPath)
-    } else {
-      console.log(`[GitStore] Already watching ${projectPath}, skipping refresh`)
     }
   },
 
@@ -123,25 +125,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   refreshGitInfo: async (projectId: string, projectPath: string) => {
-    console.log('🌍 HELLO WORLD - GIT REFRESH STARTING 🌍')
-    console.log(`[GitStore] refreshGitInfo called for projectId=${projectId}, projectPath=${projectPath}`)
     if (!window.electron || !projectPath) {
-      console.log(`[GitStore] Skipping - no electron or projectPath`)
       return
     }
 
-    // Log project details for debugging
-    const projects = (window as any).__project_store__?.getState?.()?.projects
-    const project = projects?.find((p: any) => p.id === projectId)
-    console.log(`[GitStore] Project details:`, { isSSHProject: project?.isSSHProject, connectionStatus: project?.connectionStatus })
-
-    // Note: We don't check connection status here anymore - let the backend decide if it can handle the request
-    // The backend will use SSH if connected, or fail appropriately if not
-
     try {
-      console.log(`[GitStore] Calling window.electron.git.getInfo with projectPath=${projectPath}, projectId=${projectId}`)
       const result = await window.electron.git.getInfo(projectPath, projectId)
-      console.log(`[GitStore] getInfo result:`, result)
 
       if (result.isGitRepo) {
         // Fetch branches

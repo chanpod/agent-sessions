@@ -432,8 +432,9 @@ const activeReviews = new Map<string, ActiveReview>()
 
 // Git watching for detecting branch and file changes
 interface GitWatcherSet {
-  watcher: fs.FSWatcher
+  watcher: fs.FSWatcher | null  // null for WSL projects using polling
   debounceTimer: NodeJS.Timeout | null
+  pollingInterval?: NodeJS.Timeout  // Optional: only for WSL projects
   lastHeadContent: string
   lastIndexMtime: number
   lastLogsHeadMtime: number
@@ -542,9 +543,14 @@ async function createWindow() {
     sshManager = null
     // Clean up all git watchers
     for (const watcherSet of gitWatchers.values()) {
-      watcherSet.watcher.close()
+      if (watcherSet.watcher) {
+        watcherSet.watcher.close()
+      }
       if (watcherSet.debounceTimer) {
         clearTimeout(watcherSet.debounceTimer)
+      }
+      if (watcherSet.pollingInterval) {
+        clearInterval(watcherSet.pollingInterval)
       }
     }
     gitWatchers.clear()
@@ -1521,13 +1527,6 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
     }
   }
 
-  // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
-  const wslInfo = detectWslPath(projectPath)
-  if (wslInfo.isWslPath) {
-    console.log('[Git Watch] Skipping git watch for WSL path (not supported on Windows):', projectPath)
-    return { success: false, error: 'Git watching is not supported for WSL paths' }
-  }
-
   const fsPath = resolvePathForFs(projectPath)
   const gitDir = path.join(fsPath, '.git')
   const headPath = path.join(gitDir, 'HEAD')
@@ -1564,6 +1563,84 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
       // logs/HEAD might not exist yet
     }
 
+    // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
+    // Use polling fallback instead
+    const wslInfo = detectWslPath(projectPath)
+    if (wslInfo.isWslPath) {
+      console.log('[Git Watch] WSL path detected, using polling fallback:', projectPath)
+
+      // Set up polling interval for WSL projects
+      const pollingInterval = setInterval(async () => {
+        // Check if project still exists in watchers
+        if (!gitWatchers.has(projectPath)) {
+          clearInterval(pollingInterval)
+          return
+        }
+
+        // Manually check for changes and notify
+        try {
+          let hasChanged = false
+
+          // Check HEAD (branch changes)
+          try {
+            const currentHeadContent = fs.readFileSync(headPath, 'utf-8').trim()
+            const watcherSet = gitWatchers.get(projectPath)
+            if (watcherSet && currentHeadContent !== watcherSet.lastHeadContent) {
+              watcherSet.lastHeadContent = currentHeadContent
+              hasChanged = true
+            }
+          } catch (err) {
+            // Ignore errors reading HEAD
+          }
+
+          // Check index mtime (staging changes)
+          try {
+            const indexStats = fs.statSync(indexPath)
+            const watcherSet = gitWatchers.get(projectPath)
+            if (watcherSet && indexStats.mtimeMs !== watcherSet.lastIndexMtime) {
+              watcherSet.lastIndexMtime = indexStats.mtimeMs
+              hasChanged = true
+            }
+          } catch (err) {
+            // Ignore errors reading index
+          }
+
+          // Check logs/HEAD (reflog)
+          try {
+            const logsHeadPath = path.join(gitDir, 'logs', 'HEAD')
+            const logsHeadStats = fs.statSync(logsHeadPath)
+            const watcherSet = gitWatchers.get(projectPath)
+            if (watcherSet && logsHeadStats.mtimeMs !== watcherSet.lastLogsHeadMtime) {
+              watcherSet.lastLogsHeadMtime = logsHeadStats.mtimeMs
+              hasChanged = true
+            }
+          } catch (err) {
+            // logs/HEAD might not exist
+          }
+
+          if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
+            console.log('[Git Watch] Polling detected changes for WSL project:', projectPath)
+            mainWindow.webContents.send('git:changed', projectPath)
+          }
+        } catch (err) {
+          console.error('[Git Watch] Polling error for WSL project:', err)
+        }
+      }, 3000) // Poll every 3 seconds
+
+      // Store the polling interval in the GitWatcherSet
+      gitWatchers.set(projectPath, {
+        watcher: null, // No fs.watch for WSL
+        debounceTimer: null,
+        pollingInterval,
+        lastHeadContent,
+        lastIndexMtime,
+        lastLogsHeadMtime,
+      })
+
+      console.log(`[Git Watch] Started polling for WSL project ${projectPath}`)
+      return { success: true, isPolling: true }
+    }
+
     // Notify function with debouncing
     const notifyChange = () => {
       const watcherSet = gitWatchers.get(projectPath)
@@ -1586,7 +1663,6 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
             if (currentHeadContent !== watcherSet.lastHeadContent) {
               watcherSet.lastHeadContent = currentHeadContent
               hasChanged = true
-              console.log(`[Git Watch] HEAD changed for ${projectPath}: ${currentHeadContent}`)
             }
           } catch (err) {
             // Ignore errors reading HEAD
@@ -1598,7 +1674,6 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
             if (indexStats.mtimeMs !== watcherSet.lastIndexMtime) {
               watcherSet.lastIndexMtime = indexStats.mtimeMs
               hasChanged = true
-              console.log(`[Git Watch] index changed for ${projectPath}`)
             }
           } catch (err) {
             // Ignore errors reading index
@@ -1611,7 +1686,6 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
             if (logsHeadStats.mtimeMs !== watcherSet.lastLogsHeadMtime) {
               watcherSet.lastLogsHeadMtime = logsHeadStats.mtimeMs
               hasChanged = true
-              console.log(`[Git Watch] logs/HEAD changed for ${projectPath}`)
             }
           } catch (err) {
             // Ignore errors - logs/HEAD might not exist yet
@@ -1656,7 +1730,6 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
       lastLogsHeadMtime,
     })
 
-    console.log(`[Git Watch] Started watching ${projectPath}`)
     return { success: true }
   } catch (err) {
     console.error('Failed to start git watching:', err)
@@ -1668,12 +1741,17 @@ ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: stri
 ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
   const watcherSet = gitWatchers.get(projectPath)
   if (watcherSet) {
-    watcherSet.watcher.close()
+    if (watcherSet.watcher) {
+      watcherSet.watcher.close()
+    }
     if (watcherSet.debounceTimer) {
       clearTimeout(watcherSet.debounceTimer)
     }
+    if (watcherSet.pollingInterval) {
+      clearInterval(watcherSet.pollingInterval)
+      console.log('[Git Watch] Stopped polling for WSL project:', projectPath)
+    }
     gitWatchers.delete(projectPath)
-    console.log(`[Git Watch] Stopped watching ${projectPath}`)
   }
   return { success: true }
 })

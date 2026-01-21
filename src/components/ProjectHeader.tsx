@@ -20,6 +20,7 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   const watchProject = useGitStore((state) => state.watchProject)
   const unwatchProject = useGitStore((state) => state.unwatchProject)
   const refreshGitInfo = useGitStore((state) => state.refreshGitInfo)
+  const gitInfo = useGitStore((state) => state.gitInfo)
   const { addToast } = useToastStore()
   const [hoveredProjectId, setHoveredProjectId] = useState<string | null>(null)
 
@@ -241,11 +242,8 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
       <div className="flex-1" />
 
       {/* Branch Menu Dropdown - positioned with fixed positioning */}
-      {showBranchMenu && (() => {
-        // Use selector to only subscribe to the specific project being shown in the menu
-        // eslint-disable-next-line react-hooks/rules-of-hooks
-        const menuGitInfo = useGitStore((state) => state.gitInfo[showBranchMenu])
-        if (!menuGitInfo) return null
+      {showBranchMenu && gitInfo[showBranchMenu] && (() => {
+        const menuGitInfo = gitInfo[showBranchMenu]
         const buttonRect = branchButtonRefs.current[showBranchMenu]?.getBoundingClientRect()
         const filteredBranches = menuGitInfo.branches.filter(branch =>
           branch.toLowerCase().includes(branchFilter.toLowerCase())

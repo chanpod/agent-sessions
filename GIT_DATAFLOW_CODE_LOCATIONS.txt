@@ -1,0 +1,114 @@
+================================================================================
+GIT DATAFLOW - SPECIFIC CODE LOCATIONS
+================================================================================
+
+1. FILE SYSTEM WATCHER SETUP
+File: electron/main.ts, Lines: 1505-1634
+
+Key functions:
+  - ipcMain.handle(git:watch) at line 1505
+  - fs.watch() creation at line 1607
+  - notifyChange() callback at line 1558
+  - Debounce timer at line 1568
+  - IPC send at line 1597
+
+Breaks:
+  - Break #1: SSH check at line 1515-1520
+  - Break #2: WSL check at line 1524-1528
+  - Break #7: Timer cleanup at lines 1562-1602
+
+
+2. GLOBAL LISTENER SETUP
+File: src/stores/git-store.ts, Lines: 74-86
+
+globalListenerSetup = false at line 41
+window.electron.git.onChanged() callback
+
+Breaks:
+  - Break #3: Race condition at line 75
+  - Break #4: Path key at line 80
+  - Break #8: watchedProjects Map at lines 18-19
+
+
+3. STATE MANAGEMENT
+File: src/stores/git-store.ts
+
+Store state:
+  - GitInfo interface at lines 4-12
+  - useGitStore at line 44
+  - gitInfo state at line 45
+  - watchedProjects at line 46
+
+Key methods:
+  - setGitInfo() at line 48
+  - watchProject() at line 65
+  - refreshGitInfo() at line 125
+    - getInfo() at line 143
+    - listBranches() at line 148
+    - getChangedFiles() at line 153
+
+
+4. COMPONENT SUBSCRIPTIONS
+ProjectHeader.tsx (lines 1-378):
+  - useGitStore at line 20
+  - watchProject call at line 48 (NO CLEANUP)
+  - Renders gitInfo at line 151
+
+ChangedFilesPanel.tsx (lines 1-824):
+  - useGitStore at line 35
+  - watchProject call at line 148 (NO CLEANUP)
+  - Manual refresh calls at lines 333, 340, 370
+  - Renders changedFiles at line 86
+
+ProjectItem.tsx:
+  - useGitStore at line 19
+
+
+5. IPC API
+File: electron/preload.ts, Lines: 241-275
+
+Exposed methods:
+  - git.getInfo() at line 242
+  - git.watch() at line 250
+  - git.stageFile() at line 258
+  - git.onChanged() at line 270
+
+
+6. CRITICAL PATHS
+
+Path A: User stages file
+  1. ChangedFilesPanel line 330: handleStageFile
+  2. IPC: stageFile
+  3. fs.watch fires
+  4. Global listener (RACE CONDITION)
+  5. watchedProjects.get() (PATH MISMATCH)
+  6. refreshGitInfo called
+  7. Components re-render
+
+Path B: User clicks refresh
+  1. ChangedFilesPanel line 278: handleRefreshGitInfo
+  2. git-store line 280: refreshGitInfo
+  3. IPC calls
+  4. setGitInfo
+  5. Components re-render
+
+
+7. WHERE UPDATES LOST
+
+SSH projects:
+  - electron/main.ts line 1518: return error
+
+WSL projects:
+  - electron/main.ts line 1526: return error
+
+Path mismatch:
+  - git-store line 80: watchedProjects.get() returns undefined
+
+Race condition:
+  - git-store line 75: globalListenerSetup timing
+
+No cleanup:
+  - ProjectHeader line 52: useEffect no return cleanup
+  - ChangedFilesPanel line 152: useEffect no return cleanup
+
+================================================================================
