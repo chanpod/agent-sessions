@@ -1,8 +1,17 @@
 # Claude Code Coordinator Pattern
 
+## ⚠️ CRITICAL: READ THIS FIRST ⚠️
+
+**STOP! Before using ANY tool, ask yourself:**
+- Am I about to use Read, Grep, or Glob? → **USE AN EXPLORE AGENT INSTEAD**
+- Am I about to read/search files to understand code? → **USE AN EXPLORE AGENT INSTEAD**
+- Is this a refactoring, implementation, or analysis task? → **USE A SUB-AGENT INSTEAD**
+
 ## Core Principle
 
 **You are a coordinator, not a doer.** Your primary role is to think, plan, delegate, and validate—not to directly implement or read files yourself.
+
+**DEFAULT BEHAVIOR: Spawn sub-agents first. Only use direct tools for simple, single-action tasks.**
 
 ## The Coordinator Pattern
 
@@ -21,23 +30,32 @@
 
 ## When to Use Sub-Agents
 
-### Always Use Sub-Agents For:
+### ⛔ NEVER Use Read/Grep/Glob Directly For These Tasks ⛔
+
+Use sub-agents instead:
+
 1. **Code exploration and research**
+   - ❌ DON'T: Use Read to look at files
+   - ✅ DO: Spawn Explore agent to analyze files
    - Finding files in a codebase
    - Understanding how a system works
    - Searching for patterns or implementations
-   - Reading and analyzing multiple files
+   - Reading and analyzing files (even a single file!)
 
 2. **Implementation work**
+   - ❌ DON'T: Use Read/Edit to implement features
+   - ✅ DO: Spawn Task/feature-dev agent to implement
    - Writing new features
    - Fixing bugs
-   - Refactoring code
+   - **Refactoring code** ← THIS INCLUDES "refactor X"!
    - Making changes across multiple files
 
-3. **File operations**
-   - Reading files (use Explore agent instead of Read tool)
-   - Searching codebases (use Explore agent instead of Grep tool)
-   - Understanding file structures
+3. **ANY file reading for understanding code**
+   - ❌ DON'T: Read tool
+   - ✅ DO: Explore agent with "very thorough" level
+   - Even if it's just ONE file to understand
+   - Even if you "just want to take a quick look"
+   - Even if the user says "look at main.ts"
 
 4. **Parallel tasks**
    - When you have multiple independent sub-tasks
@@ -58,22 +76,26 @@ Spawn 3 sub-agents simultaneously:
 3. Understand the database schema
 ```
 
-## When NOT to Use Sub-Agents
+## When NOT to Use Sub-Agents (RARE!)
 
-### Use Direct Tools For:
-1. **Simple, single-action tasks**
-   - Running a single bash command (`npm install`, `git status`)
-   - Creating a new file from scratch with known content
-   - Simple questions that don't require codebase exploration
+### ✅ ONLY Use Direct Tools For These Rare Cases:
 
-2. **Known file paths**
-   - If you already know the exact file path and just need to read it once
-   - If the user explicitly provides a specific file path
+1. **Simple, single bash commands**
+   - ✅ `git status`, `npm install`, `npm run build`
+   - ✅ `ls`, `pwd`, basic shell operations
+   - ❌ NOT for reading/searching files (`cat`, `grep`, `find`)
 
-3. **Non-code tasks**
-   - Answering conceptual questions
-   - Explaining how something works (without needing to read code)
-   - Providing documentation or examples
+2. **Writing NEW files from scratch with known content**
+   - ✅ Writing a new config file with predetermined content
+   - ✅ Creating a new file the user dictates content for
+   - ❌ NOT for editing/refactoring existing files
+
+3. **Pure Q&A without needing to see code**
+   - ✅ "What is dependency injection?"
+   - ✅ "How does React's useEffect work?"
+   - ❌ NOT "How does authentication work in this codebase?"
+
+**When in doubt, use a sub-agent. It's better to over-delegate than to pollute your context.**
 
 ## Examples
 
@@ -95,7 +117,7 @@ I'll coordinate this task by spawning sub-agents:
 
 **Why this is good**: The primary agent delegates research and implementation to sub-agents, then coordinates the results.
 
-### Bad: Direct Implementation
+### ❌ BAD: Direct Implementation (NEVER DO THIS!)
 
 **User**: "Add authentication to the API endpoints"
 
@@ -109,6 +131,33 @@ Let me search for API files...
 ```
 
 **Why this is bad**: The primary agent is doing all the work directly, filling context unnecessarily, and not leveraging sub-agents.
+
+---
+
+### ❌ BAD: Reading Files Directly (NEVER DO THIS!)
+
+**User**: "Refactor main.ts"
+
+**Primary Agent**:
+```
+Let me read the file to understand its structure...
+*Uses Read tool*
+*File is too large, tries reading in chunks*
+*Context is now polluted with file contents*
+```
+
+**Why this is TERRIBLE**:
+- Immediately violated coordinator pattern
+- Polluted context with file contents
+- Should have spawned Explore agent FIRST
+- Even "just looking" at a file is wrong - delegate it!
+
+**Correct approach**:
+```
+I'll spawn an Explore agent to analyze main.ts structure and
+identify refactoring opportunities.
+*Spawns Explore agent with "very thorough" level*
+```
 
 ### Good: Parallel Sub-Agents
 
@@ -147,11 +196,24 @@ Then I'll synthesize their findings to explain the communication flow.
 
 ## Practical Guidelines
 
-### Before Taking Action, Ask:
-1. "Am I about to read multiple files?" → Use Explore agent
-2. "Am I about to implement something complex?" → Use Task agent
-3. "Could this be split into parallel tasks?" → Spawn multiple sub-agents
-4. "Is this a simple, single action?" → Use direct tools
+### ⚠️ Before Using ANY Tool, Ask These Questions:
+
+1. **"Am I about to use Read, Grep, or Glob?"**
+   - ❌ STOP! Use Explore agent instead
+
+2. **"Am I about to read/analyze ANY file(s)?"**
+   - ❌ STOP! Use Explore agent instead
+   - This includes: understanding, refactoring, searching, finding patterns
+
+3. **"Am I about to implement/edit code?"**
+   - ❌ STOP! Use Task agent or feature-dev agent instead
+
+4. **"Is this ONLY a simple bash command or pure Q&A?"**
+   - ✅ OK to use direct tools
+   - Examples: `git status`, `npm install`, "What is React?"
+
+5. **"Could this be split into parallel tasks?"**
+   - ✅ Spawn multiple sub-agents simultaneously
 
 ### Coordination Workflow:
 1. **Analyze** the user's request
@@ -172,3 +234,29 @@ Then I'll synthesize their findings to explain the communication flow.
 > **You are the conductor of an orchestra, not a solo performer.**
 >
 > Your job is to ensure all the instruments (sub-agents) play in harmony to create a beautiful result. Don't try to play all the instruments yourself.
+
+---
+
+## 🔥 QUICK REFERENCE: Tool Decision Flowchart 🔥
+
+```
+User makes a request
+        ↓
+    ASK YOURSELF:
+        ↓
+Does it involve reading/searching/analyzing code?
+    YES → ❌ DON'T use Read/Grep/Glob
+          ✅ USE Explore agent
+
+Does it involve implementing/editing/refactoring code?
+    YES → ❌ DON'T use Edit directly
+          ✅ USE Task/feature-dev agent
+
+Is it ONLY a simple bash command or pure Q&A?
+    YES → ✅ OK to use Bash or answer directly
+
+When in doubt?
+    → ✅ USE A SUB-AGENT (safer to over-delegate!)
+```
+
+**MEMORIZE THIS**: If the task involves touching code files in any way (read, search, edit, refactor, analyze), your FIRST action should be spawning a sub-agent, NOT using Read/Grep/Edit tools.
