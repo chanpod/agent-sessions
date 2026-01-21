@@ -310,7 +310,7 @@ export function ChangedFilesPanel() {
     const result = await window.electron.fs.readFile(fullPath)
 
     if (result.success && result.content !== undefined) {
-      openFile(fullPath, fileName, result.content, projectPath)
+      openFile(fullPath, fileName, result.content, projectPath, activeProjectId)
       setShowDiff(true)
     }
   }

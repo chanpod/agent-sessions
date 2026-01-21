@@ -228,7 +228,7 @@ export function FileViewer() {
   const handleSave = useCallback(async () => {
     if (!activeFile || !window.electron) return
 
-    const result = await window.electron.fs.writeFile(activeFile.path, activeFile.content)
+    const result = await window.electron.fs.writeFile(activeFile.path, activeFile.content, activeFile.projectId)
     if (result.success) {
       markFileSaved(activeFile.path)
     } else {

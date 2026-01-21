@@ -160,6 +160,7 @@ export function ReviewPanel({ projectPath }: ReviewPanelProps) {
             <LowRiskResultsStage
               findings={review.lowRiskFindings}
               projectPath={projectPath}
+              projectId={review.projectId}
               onToggleSelection={(id) => toggleFindingSelection(activeReviewId, id)}
               onSelectAll={(selected) => selectAllFindings(activeReviewId, selected)}
               onApplySelected={() => applySelectedFindings(activeReviewId)}
@@ -377,6 +378,7 @@ function ReviewingLowRiskStage({ progress, fileCount }: { progress: any; fileCou
 function LowRiskResultsStage({
   findings,
   projectPath,
+  projectId,
   onToggleSelection,
   onSelectAll,
   onApplySelected,
@@ -386,6 +388,7 @@ function LowRiskResultsStage({
 }: {
   findings: ReviewFinding[]
   projectPath: string
+  projectId?: string
   onToggleSelection: (id: string) => void
   onSelectAll: (selected: boolean) => void
   onApplySelected: () => void
@@ -422,6 +425,7 @@ function LowRiskResultsStage({
                 key={finding.id}
                 finding={finding}
                 projectPath={projectPath}
+                projectId={projectId}
                 onToggleSelection={() => onToggleSelection(finding.id)}
                 onApply={() => onApply(finding.id)}
                 onDismiss={() => onDismiss(finding.id)}
@@ -471,12 +475,14 @@ function LowRiskFindingCard({
   onApply,
   onDismiss,
   projectPath,
+  projectId,
 }: {
   finding: ReviewFinding
   onToggleSelection: () => void
   onApply: () => void
   onDismiss: () => void
   projectPath: string
+  projectId?: string
 }) {
   const { openFile } = useFileViewerStore()
 
@@ -487,7 +493,7 @@ function LowRiskFindingCard({
     const result = await window.electron.git.getFileContent(projectPath, finding.file)
 
     if (result.success && result.content) {
-      openFile(fullPath, finding.file, result.content, projectPath)
+      openFile(fullPath, finding.file, result.content, projectPath, projectId)
     }
   }
 
@@ -624,7 +630,7 @@ function HighRiskReviewStage({ review, projectPath, onNext }: { review: any; pro
         ) : (
           <div className="space-y-4">
             {verifiedFindings.map((finding: ReviewFinding) => (
-              <HighRiskFindingCard key={finding.id} finding={finding} projectPath={projectPath} />
+              <HighRiskFindingCard key={finding.id} finding={finding} projectPath={projectPath} projectId={review.projectId} />
             ))}
           </div>
         )}
@@ -681,7 +687,7 @@ function MultiAgentProgress({ status, subAgentCount }: { status: string; subAgen
   )
 }
 
-function HighRiskFindingCard({ finding, projectPath }: { finding: ReviewFinding; projectPath: string }) {
+function HighRiskFindingCard({ finding, projectPath, projectId }: { finding: ReviewFinding; projectPath: string; projectId?: string }) {
   const confidencePercent = Math.round((finding.confidence || 0) * 100)
   const sourceAgentCount = finding.sourceAgents?.length || 1
   const [copied, setCopied] = useState(false)
@@ -710,7 +716,7 @@ function HighRiskFindingCard({ finding, projectPath }: { finding: ReviewFinding;
     const result = await window.electron.git.getFileContent(projectPath, finding.file)
 
     if (result.success && result.content) {
-      openFile(fullPath, finding.file, result.content, projectPath)
+      openFile(fullPath, finding.file, result.content, projectPath, projectId)
     }
   }
 

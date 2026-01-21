@@ -11,6 +11,7 @@ export interface OpenFile {
   gitContent?: string // Content from git HEAD
   gitContentLoaded?: boolean // Whether we've tried to load git content
   projectPath?: string // Project path for git operations
+  projectId?: string // Project ID for SSH file operations
 }
 
 interface FileViewerState {
@@ -20,7 +21,7 @@ interface FileViewerState {
   showDiff: boolean // Whether to show diff view
 
   // Actions
-  openFile: (path: string, name: string, content: string, projectPath?: string) => void
+  openFile: (path: string, name: string, content: string, projectPath?: string, projectId?: string) => void
   closeFile: (path: string) => void
   setActiveFile: (path: string) => void
   updateFileContent: (path: string, content: string) => void
@@ -84,7 +85,7 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
   isVisible: false,
   showDiff: false,
 
-  openFile: (path, name, content, projectPath) => {
+  openFile: (path, name, content, projectPath, projectId) => {
     const { openFiles } = get()
     const existing = openFiles.find((f) => f.path === path)
 
@@ -102,6 +103,7 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
       isDirty: false,
       originalContent: content,
       projectPath,
+      projectId,
       gitContentLoaded: false,
     }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronRight, File, Folder, FolderOpen, Search, X } from 'lucide-react'
+import { ChevronRight, File, Folder, FolderOpen, Search, X, PanelRightOpen } from 'lucide-react'
 import { useFileViewerStore } from '../stores/file-viewer-store'
 import { useFileCacheStore } from '../stores/file-cache-store'
 import { cn } from '../lib/utils'
@@ -140,7 +140,7 @@ function TreeNode({ projectId, entry, depth, maxDepth, rootPath, searchTerm = ''
       if (!window.electron) return
       const result = await window.electron.fs.readFile(entry.path, projectId)
       if (result.success && result.content !== undefined) {
-        openFile(entry.path, entry.name, result.content, rootPath)
+        openFile(entry.path, entry.name, result.content, rootPath, projectId)
       }
     }
   }
@@ -281,6 +281,7 @@ export function FileBrowser({ projectId, rootPath, maxDepth = 4 }: FileBrowserPr
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const { getCachedDir, setCachedDir, setLoading: setCacheLoading } = useFileCacheStore()
+  const { isVisible, openFiles, setVisibility } = useFileViewerStore()
 
   useEffect(() => {
     const loadRoot = async () => {
@@ -343,6 +344,19 @@ export function FileBrowser({ projectId, rootPath, maxDepth = 4 }: FileBrowserPr
 
   return (
     <div>
+      {/* Show Editor button - appears when panel is closed but files are open */}
+      {!isVisible && openFiles.length > 0 && (
+        <div className="px-2 py-1.5 border-b border-zinc-800">
+          <button
+            onClick={() => setVisibility(true)}
+            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+          >
+            <PanelRightOpen className="w-3.5 h-3.5" />
+            <span>Show Editor ({openFiles.length})</span>
+          </button>
+        </div>
+      )}
+
       {/* Search input */}
       <div className="px-2 py-1.5 border-b border-zinc-800">
         <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded px-2 py-1">

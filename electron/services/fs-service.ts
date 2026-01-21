@@ -1,9 +1,165 @@
 import { ipcMain } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { execSync } from 'child_process'
+import { execSync, exec } from 'child_process'
+import { promisify } from 'util'
 import type { SSHManager } from '../ssh-manager.js'
 import { resolvePathForFs, execInContextAsync } from '../main.js'
+
+const execAsync = promisify(exec)
+
+interface WslPathInfo {
+  isWslPath: boolean
+  distro?: string
+  linuxPath?: string
+}
+
+/**
+ * Project type for search operations
+ */
+type ProjectType = 'ssh' | 'wsl' | 'windows-local'
+
+/**
+ * Detect if a path is a WSL UNC path and extract the Linux path
+ * Handles formats like: \\wsl$\Ubuntu\home\user\project or \\wsl.localhost\Ubuntu\home\user\project
+ */
+function detectWslPath(inputPath: string): WslPathInfo {
+  // Check for UNC WSL paths: \\wsl$\Ubuntu\... or \\wsl.localhost\Ubuntu\...
+  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i)
+  if (uncMatch) {
+    return {
+      isWslPath: true,
+      distro: uncMatch[1],
+      linuxPath: uncMatch[2].replace(/\\/g, '/') || '/',
+    }
+  }
+
+  // Check for Linux-style paths that start with / (common when user types path manually)
+  if (process.platform === 'win32' && inputPath.startsWith('/') && !inputPath.startsWith('//')) {
+    return {
+      isWslPath: true,
+      linuxPath: inputPath,
+    }
+  }
+
+  return { isWslPath: false }
+}
+
+/**
+ * Determine the project type based on path and SSH connection status
+ */
+function getProjectType(projectPath: string, projectId: string | undefined, sshManager: SSHManager | null): ProjectType {
+  // Check SSH first
+  if (projectId && sshManager) {
+    const status = sshManager.getProjectMasterStatus(projectId)
+    if (status.connected) {
+      return 'ssh'
+    }
+  }
+
+  // Check WSL
+  const wslInfo = detectWslPath(projectPath)
+  if (wslInfo.isWslPath) {
+    return 'wsl'
+  }
+
+  // Default to Windows local
+  return 'windows-local'
+}
+
+/**
+ * Search files using Node.js (for Windows local projects where grep/rg aren't available)
+ * This is a fallback when shell-based search tools aren't available
+ */
+async function searchWithNodeJs(
+  projectPath: string,
+  query: string,
+  options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }
+): Promise<SearchResult[]> {
+  const results: SearchResult[] = []
+  const excludeDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo', 'coverage', '__pycache__', '.venv', 'venv'])
+  const maxFileSize = 1024 * 1024 // 1MB max file size to search
+  const maxResults = 1000 // Limit results
+
+  // Build regex for matching
+  let pattern: RegExp
+  try {
+    let regexStr = options.useRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (options.wholeWord) {
+      regexStr = `\\b${regexStr}\\b`
+    }
+    pattern = new RegExp(regexStr, options.caseSensitive ? 'g' : 'gi')
+  } catch (err) {
+    console.error('[searchWithNodeJs] Invalid regex pattern:', err)
+    return []
+  }
+
+  const fsPath = resolvePathForFs(projectPath)
+
+  // Recursive file walker
+  async function walkDir(dir: string, relativePath: string = ''): Promise<void> {
+    if (results.length >= maxResults) return
+
+    try {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+
+      for (const entry of entries) {
+        if (results.length >= maxResults) break
+
+        const fullPath = path.join(dir, entry.name)
+        const relPath = relativePath ? path.posix.join(relativePath, entry.name) : entry.name
+
+        if (entry.isDirectory()) {
+          if (!excludeDirs.has(entry.name) && !entry.name.startsWith('.')) {
+            await walkDir(fullPath, relPath)
+          }
+        } else if (entry.isFile()) {
+          // Skip binary files and large files
+          const ext = path.extname(entry.name).toLowerCase()
+          const binaryExtensions = new Set(['.exe', '.dll', '.so', '.dylib', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.avi', '.mov', '.webm'])
+          if (binaryExtensions.has(ext)) continue
+
+          try {
+            const stats = await fs.promises.stat(fullPath)
+            if (stats.size > maxFileSize) continue
+
+            const content = await fs.promises.readFile(fullPath, 'utf-8')
+            const lines = content.split('\n')
+
+            for (let lineNum = 0; lineNum < lines.length && results.length < maxResults; lineNum++) {
+              const line = lines[lineNum]
+              pattern.lastIndex = 0 // Reset regex state
+
+              let match: RegExpExecArray | null
+              while ((match = pattern.exec(line)) !== null && results.length < maxResults) {
+                results.push({
+                  file: relPath.replace(/\\/g, '/'), // Normalize to forward slashes
+                  line: lineNum + 1,
+                  column: match.index + 1,
+                  content: line.trim(),
+                  matchStart: match.index,
+                  matchEnd: match.index + match[0].length
+                })
+
+                // Prevent infinite loop for zero-length matches
+                if (match[0].length === 0) {
+                  pattern.lastIndex++
+                }
+              }
+            }
+          } catch (err) {
+            // Skip files that can't be read (binary, encoding issues, etc.)
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[searchWithNodeJs] Error reading directory ${dir}:`, err)
+    }
+  }
+
+  await walkDir(fsPath)
+  return results
+}
 
 interface SearchResult {
   file: string
@@ -103,9 +259,38 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
     }
   })
 
-  ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string) => {
+  ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string, projectId?: string) => {
     try {
+      console.log('[fs:writeFile] Original path:', filePath, 'projectId:', projectId)
+
+      // Check if this is an SSH project with active tunnel
+      if (projectId && sshManager) {
+        const status = sshManager.getProjectMasterStatus(projectId)
+        if (status.connected) {
+          console.log('[fs:writeFile] Using SSH tunnel for project:', projectId)
+          try {
+            // Encode content as base64 to safely transfer via SSH
+            const base64Content = Buffer.from(content).toString('base64')
+
+            // Write file via SSH using base64 decoding
+            // This handles special characters and binary content safely
+            await sshManager.execViaProjectMaster(
+              projectId,
+              `echo "${base64Content}" | base64 -d > "${filePath.replace(/"/g, '\\"')}"`
+            )
+
+            console.log('[fs:writeFile] Successfully wrote file via SSH:', filePath)
+            return { success: true }
+          } catch (err) {
+            console.error('[fs:writeFile] SSH command failed:', err)
+            return { success: false, error: String(err) }
+          }
+        }
+      }
+
+      // Local file system path
       const fsPath = resolvePathForFs(filePath)
+      console.log('[fs:writeFile] Resolved path:', fsPath)
       fs.writeFileSync(fsPath, content, 'utf-8')
 
       // Git status updates are now handled by interval-based polling
@@ -204,33 +389,53 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
     }
   })
 
-  // Search files content (using grep or ripgrep)
+  // Search files content (using grep, ripgrep, or Node.js fallback)
+  // Handles three project types: SSH, WSL, and Windows local
   ipcMain.handle('fs:searchContent', async (_event, projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }, projectId?: string) => {
     try {
       console.log('[fs:searchContent] Searching in:', projectPath, 'query:', query, 'options:', options)
 
+      // Determine project type to choose the right search strategy
+      const projectType = getProjectType(projectPath, projectId, sshManager)
+      console.log('[fs:searchContent] Project type:', projectType)
+
+      // For Windows local projects, use Node.js-based search (grep/rg not available)
+      if (projectType === 'windows-local') {
+        console.log('[fs:searchContent] Using Node.js search for Windows local project')
+        const results = await searchWithNodeJs(projectPath, query, options)
+        console.log(`[fs:searchContent] Found ${results.length} results`)
+        return { success: true, results }
+      }
+
+      // For SSH and WSL projects, use grep/ripgrep via shell commands
       const results: SearchResult[] = []
 
-      // Build grep/ripgrep command
-      let grepCmd = ''
-      const excludeDirs = 'node_modules|.git|dist|build|.next|out|.turbo|coverage'
+      // Detect if this is a WSL path and convert to Linux format for ripgrep/grep
+      const wslInfo = detectWslPath(projectPath)
+      const searchPath = wslInfo.isWslPath && wslInfo.linuxPath ? wslInfo.linuxPath : projectPath
+
+      console.log('[fs:searchContent] WSL info:', wslInfo, 'searchPath:', searchPath)
 
       // Check if ripgrep is available (faster and better)
       let useRipgrep = false
       try {
-        if (projectId && sshManager) {
-          const status = sshManager.getProjectMasterStatus(projectId)
-          if (status.connected) {
-            await sshManager.execViaProjectMaster(projectId, 'which rg')
-            useRipgrep = true
-          }
-        } else {
-          execSync('which rg || where rg', { stdio: 'ignore' })
+        if (projectType === 'ssh' && projectId && sshManager) {
+          await sshManager.execViaProjectMaster(projectId, 'which rg')
+          useRipgrep = true
+        } else if (projectType === 'wsl') {
+          // For WSL, check inside WSL environment
+          const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
+          await execAsync(`wsl ${distroArg}which rg`)
           useRipgrep = true
         }
       } catch {
         // ripgrep not available, will use grep
+        console.log('[fs:searchContent] ripgrep not available, falling back to grep')
       }
+
+      // Build the search command
+      let grepCmd = ''
+      const excludeDirs = 'node_modules|.git|dist|build|.next|out|.turbo|coverage'
 
       if (useRipgrep) {
         // Use ripgrep (faster, better)
@@ -242,7 +447,9 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
         // Escape query for shell
         const escapedQuery = query.replace(/'/g, "'\\''")
-        grepCmd = `rg ${flags.join(' ')} '${escapedQuery}' "${projectPath}"`
+        // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
+        // Using double quotes around the path would get corrupted by execInContextAsync's quote escaping for WSL.
+        grepCmd = `rg ${flags.join(' ')} '${escapedQuery}' .`
       } else {
         // Fallback to grep
         const flags: string[] = ['-r', '-n', '--exclude-dir={' + excludeDirs + '}']
@@ -253,12 +460,14 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
         // Escape query for shell
         const escapedQuery = query.replace(/'/g, "'\\''")
-        grepCmd = `grep ${flags.join(' ')} '${escapedQuery}' "${projectPath}" || true`
+        // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
+        // Using double quotes around the path would get corrupted by execInContextAsync's quote escaping for WSL.
+        grepCmd = `grep ${flags.join(' ')} '${escapedQuery}' . || true`
       }
 
       console.log('[fs:searchContent] Command:', grepCmd)
 
-      // Execute search command
+      // Execute search command using execInContextAsync which handles SSH/WSL routing
       let output = ''
       try {
         output = await execInContextAsync(grepCmd, projectPath, projectId)
@@ -286,9 +495,9 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
           match = line.match(/^(.+?):(\d+):(\d+):(.*)$/)
           if (match) {
             const [, file, lineNum, col, content] = match
-            const relativePath = file.startsWith(projectPath)
-              ? file.substring(projectPath.length).replace(/^[/\\]/, '')
-              : file
+            // Clean up the file path - since we search with '.', results will be relative paths
+            // Remove leading './' if present to normalize the path
+            const relativePath = file.replace(/^\.\//, '')
 
             // Find match position in content
             let matchStart = 0
@@ -328,9 +537,9 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
           match = line.match(/^(.+?):(\d+):(.*)$/)
           if (match) {
             const [, file, lineNum, content] = match
-            const relativePath = file.startsWith(projectPath)
-              ? file.substring(projectPath.length).replace(/^[/\\]/, '')
-              : file
+            // Clean up the file path - since we search with '.', results will be relative paths
+            // Remove leading './' if present to normalize the path
+            const relativePath = file.replace(/^\.\//, '')
 
             // Find match position in content
             let matchStart = 0

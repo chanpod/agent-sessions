@@ -161,10 +161,16 @@ export function SearchTab({ projectId, projectPath }: SearchTabProps) {
               <div
                 key={`${result.file}-${index}`}
                 className="cursor-pointer hover:bg-zinc-800/50 rounded p-2 transition-colors"
-                onClick={() => {
+                onClick={async () => {
                   // Open the file at the specific line
                   const fullPath = `${projectPath}/${result.file}`.replace(/\/+/g, '/')
-                  openFile(fullPath, result.line)
+                  if (!window.electron) return
+
+                  const fileResult = await window.electron.fs.readFile(fullPath, projectId)
+                  if (fileResult.success && fileResult.content !== undefined) {
+                    const fileName = result.file.split('/').pop() || result.file
+                    openFile(fullPath, fileName, fileResult.content, projectPath, projectId)
+                  }
                 }}
               >
                 <div className="flex items-center gap-2 mb-1">

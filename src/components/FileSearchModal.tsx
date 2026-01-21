@@ -140,7 +140,7 @@ export function FileSearchModal() {
     try {
       const result = await window.electron?.fs.readFile(fullPath)
       if (result?.success && result.content !== undefined) {
-        openFile(fullPath, fileName, result.content, activeProject.path)
+        openFile(fullPath, fileName, result.content, activeProject.path, activeProject.id)
         closeSearch()
       } else {
         console.error('Failed to read file:', result?.error)

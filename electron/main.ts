@@ -303,6 +303,13 @@ ipcMain.handle('update:dismiss', async (_event, version: string) => {
 
 function createMenu() {
   const isMac = process.platform === 'darwin'
+  const isWindows = process.platform === 'win32'
+
+  // On Windows, use custom TitleBar menus instead of native menu
+  if (isWindows) {
+    Menu.setApplicationMenu(null)
+    return
+  }
 
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only)
@@ -440,14 +447,20 @@ async function createWindow() {
   console.log('[Main] Preload path:', preloadPath)
   console.log('[Main] Preload exists:', fs.existsSync(preloadPath))
 
+  const isWindows = process.platform === 'win32'
+  const isMac = process.platform === 'darwin'
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
     backgroundColor: '#09090b',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 15, y: 15 },
+    frame: !isWindows,  // Frameless on Windows only
+    ...(isMac && {
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 15, y: 15 },
+    }),
     icon: path.join(__dirname, '../build/icon.png'),
     webPreferences: {
       preload: preloadPath,
@@ -1345,6 +1358,27 @@ ipcMain.handle('store:clear', async () => {
   }
 
   db.clear()
+})
+
+// Window control IPC handlers
+ipcMain.handle('window:minimize', async () => {
+  mainWindow?.minimize()
+})
+
+ipcMain.handle('window:maximize', async () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow?.unmaximize()
+  } else {
+    mainWindow?.maximize()
+  }
+})
+
+ipcMain.handle('window:close', async () => {
+  mainWindow?.close()
+})
+
+ipcMain.handle('window:isMaximized', async () => {
+  return mainWindow?.isMaximized() ?? false
 })
 
 // Open a path in the default code editor
