@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Plus, X, FolderGit2, GitBranch, RefreshCw, Check, Settings, Trash2, Eye, EyeOff } from 'lucide-react'
+import { Plus, X, FolderGit2, GitBranch, RefreshCw, Check, Settings, Trash2, Eye, EyeOff, LayoutDashboard } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore } from '../stores/git-store'
 import { useToastStore } from '../stores/toast-store'
+import { useViewStore } from '../stores/view-store'
+import { useGridStore } from '../stores/grid-store'
 import { cn } from '../lib/utils'
 
 interface ProjectHeaderProps {
@@ -17,6 +19,8 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   onDeleteProject,
 }) => {
   const { projects, activeProjectId, setActiveProject, flashingProjects, clearProjectFlash, hideProject, showProject } = useProjectStore()
+  const { activeView, setDashboardActive } = useViewStore()
+  const dashboardTerminalCount = useGridStore((s) => s.dashboard.terminalRefs.length)
   const watchProject = useGitStore((state) => state.watchProject)
   const unwatchProject = useGitStore((state) => state.unwatchProject)
   const refreshGitInfo = useGitStore((state) => state.refreshGitInfo)
@@ -150,6 +154,27 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     <div className="h-10 bg-[#1e1e1e] border-b border-gray-800 flex items-stretch app-drag-region">
       {/* Project Tabs */}
       <div className="flex items-stretch overflow-x-auto no-drag">
+        {/* Dashboard Tab - always first */}
+        <div
+          className={cn(
+            'relative flex items-center gap-2 px-3 border-r border-gray-800 cursor-pointer',
+            'transition-[background-color] duration-300 ease-out',
+            activeView.type === 'dashboard'
+              ? 'bg-[#252526] text-gray-200'
+              : 'bg-[#1e1e1e] text-gray-400 hover:bg-[#2a2a2b]'
+          )}
+          style={{ minWidth: '120px' }}
+          onClick={setDashboardActive}
+        >
+          <LayoutDashboard className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="text-xs font-medium">Dashboard</span>
+          {dashboardTerminalCount > 0 && (
+            <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded-full bg-blue-500/20 text-blue-300">
+              {dashboardTerminalCount}
+            </span>
+          )}
+        </div>
+
         {projects.filter(p => !p.isHidden).map((project, index) => {
           // Use selector to only subscribe to this specific project's git info
           // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -161,7 +186,7 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
               className={cn(
                 'relative flex items-center gap-2 px-3 border-r border-gray-800 cursor-pointer group',
                 'transition-[background-color,width] duration-300 ease-out',
-                activeProjectId === project.id
+                (activeView.type === 'project-grid' || activeView.type === 'project-terminal') && activeView.projectId === project.id
                   ? 'bg-[#252526] text-gray-200'
                   : 'bg-[#1e1e1e] text-gray-400 hover:bg-[#2a2a2b]',
                 isFlashing && 'animate-pulse bg-blue-500/20'
@@ -172,6 +197,7 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
                 maxWidth: '280px'
               }}
               onClick={() => {
+                // setActiveProject handles restoring the project's last view state
                 setActiveProject(project.id)
                 if (isFlashing) {
                   clearProjectFlash(project.id)

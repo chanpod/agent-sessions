@@ -1,23 +1,13 @@
 import { useEffect, useRef, useCallback } from 'react'
-import { useGridStore } from '../stores/grid-store'
-import {
-  getOrCreateTerminal,
-  detachTerminal,
-  resizeTerminal,
-  focusTerminal,
-} from '../lib/terminal-registry'
+import { getOrCreateTerminal, detachTerminal, resizeTerminal, focusTerminal } from '../lib/terminal-registry'
 import '@xterm/xterm/css/xterm.css'
 
 interface TerminalProps {
   sessionId: string
-  gridId: string
+  isFocused: boolean
 }
 
-export function Terminal({ sessionId, gridId }: TerminalProps) {
-  const { grids } = useGridStore()
-  const grid = grids.find((g) => g.id === gridId)
-  const isFocused = grid?.focusedTerminalId === sessionId
-
+export function Terminal({ sessionId, isFocused }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const initializedRef = useRef(false)
 
@@ -73,10 +63,6 @@ export function Terminal({ sessionId, gridId }: TerminalProps) {
   }, [isFocused, sessionId, handleResize])
 
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full bg-[#0c0c0c]"
-      onClick={() => focusTerminal(sessionId)}
-    />
+    <div ref={containerRef} className="h-full w-full bg-[#0c0c0c]" onClick={() => focusTerminal(sessionId)} />
   )
 }

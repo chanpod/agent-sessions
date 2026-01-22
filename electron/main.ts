@@ -39,6 +39,13 @@ import {
   buildWslCommand,
   type WslPathInfo
 } from './utils/wsl-utils.js'
+
+// Helper function to check if a path is a WSL path
+const isWslPath = (path?: string): boolean => {
+  if (!path) return false
+  return detectWslPath(path).isWslPath
+}
+
 import {
   parseFindings,
   consolidateFindings,
@@ -480,6 +487,57 @@ async function createWindow() {
       sandbox: false, // Required for node-pty
     },
   })
+
+  // Windows-specific keyboard shortcut handler
+  // On Windows, we use a frameless window (frame: false) and Menu.setApplicationMenu(null)
+  // which disables all built-in Electron keyboard shortcuts. We need to manually handle them.
+  if (process.platform === 'win32') {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown') {
+        // Ctrl+Shift+I or F12 - Toggle DevTools
+        if ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12') {
+          mainWindow.webContents.toggleDevTools()
+          event.preventDefault()
+          return
+        }
+
+        // Ctrl+R - Reload
+        if (input.control && !input.shift && input.key.toLowerCase() === 'r') {
+          mainWindow.webContents.reload()
+          event.preventDefault()
+          return
+        }
+
+        // Ctrl+Shift+R - Hard Reload (force reload, clear cache)
+        if (input.control && input.shift && input.key.toLowerCase() === 'r') {
+          mainWindow.webContents.reloadIgnoringCache()
+          event.preventDefault()
+          return
+        }
+
+        // F11 - Toggle Fullscreen
+        if (input.key === 'F11') {
+          mainWindow.setFullScreen(!mainWindow.isFullScreen())
+          event.preventDefault()
+          return
+        }
+
+        // Ctrl+W - Close window
+        if (input.control && !input.shift && input.key.toLowerCase() === 'w') {
+          mainWindow.close()
+          event.preventDefault()
+          return
+        }
+
+        // Alt+F4 - Close app (handled natively on Windows, but ensure it works)
+        if (input.alt && input.key === 'F4') {
+          app.quit()
+          event.preventDefault()
+          return
+        }
+      }
+    })
+  }
 
   ptyManager = new PtyManager(mainWindow)
   sshManager = new SSHManager()
@@ -923,7 +981,7 @@ ipcMain.handle('pty:create-with-command', async (_event, shell: string, args: st
   return ptyManager.createTerminalWithCommand(shell, args, displayCwd, undefined, hidden)
 })
 
-ipcMain.handle('system:get-shells', async () => {
+ipcMain.handle('system:get-shells', async (_event, projectPath?: string) => {
   const shells: ShellInfo[] = []
 
   // Helper to check if a shell exists
@@ -993,6 +1051,11 @@ ipcMain.handle('system:get-shells', async () => {
         addedNames.add(shell.name)
       }
     }
+  }
+
+  // Filter shells for WSL projects - only show WSL shells
+  if (process.platform === 'win32' && isWslPath(projectPath)) {
+    return shells.filter(shell => shell.name.includes('WSL'))
   }
 
   return shells

@@ -1,27 +1,36 @@
-import { X, Pencil, Check, Maximize2 } from 'lucide-react'
+import { X, Pencil, Check } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useProjectStore } from '../stores/project-store'
-import { useGridStore } from '../stores/grid-store'
 import { Terminal } from './Terminal'
 import { ActivityIndicator } from './ActivityIndicator'
 import { DetectedServers } from './DetectedServers'
 import { cn } from '../lib/utils'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { ViewType } from './TerminalGridView'
 
 interface GridTerminalCellProps {
   session: TerminalSession
-  gridId: string
+  viewType: ViewType
+  projectId?: string
+  isFocused: boolean
+  onFocusChange: (terminalId: string) => void
+  canRemove?: boolean
+  onRemove?: (terminalId: string) => void
 }
 
-export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
-  const { grids, setFocusedTerminal, removeTerminalFromGrid, createGrid } = useGridStore()
+export function GridTerminalCell({
+  session,
+  viewType,
+  projectId,
+  isFocused,
+  onFocusChange,
+  canRemove = true,
+  onRemove,
+}: GridTerminalCellProps) {
   const { updateSessionTitle, setActiveSession } = useTerminalStore()
   const { projects } = useProjectStore()
-
-  const grid = grids.find((g) => g.id === gridId)
-  const isFocused = grid?.focusedTerminalId === session.id
 
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(session.title)
@@ -60,17 +69,9 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
     }
   }
 
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-    isOver,
-  } = useSortable({
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isOver } = useSortable({
     id: session.id,
-    data: { gridId, terminalTitle: session.title },
+    data: { viewType, projectId, terminalTitle: session.title },
   })
 
   const style = {
@@ -82,22 +83,13 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
   const showDropIndicator = isOver && !isDragging
 
   const handleFocus = () => {
-    setFocusedTerminal(gridId, session.id)
+    onFocusChange(session.id)
     setActiveSession(session.id)
-  }
-
-  const handleEject = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    // Remove from current grid and create new grid for this terminal
-    removeTerminalFromGrid(gridId, session.id)
-    createGrid(session.id)
   }
 
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation()
-    removeTerminalFromGrid(gridId, session.id)
-    // Terminal is removed from grid but session stays alive
-    // User can access it from sidebar if needed
+    onRemove?.(session.id)
   }
 
   return (
@@ -126,9 +118,7 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
           </span>
 
           {/* Project name */}
-          <span className="text-[10px] text-zinc-500 truncate flex-shrink-0 max-w-[80px]">
-            {projectName}
-          </span>
+          <span className="text-[10px] text-zinc-500 truncate flex-shrink-0 max-w-[80px]">{projectName}</span>
 
           <span className="text-zinc-700">|</span>
 
@@ -180,25 +170,16 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
             </button>
           )}
           <ActivityIndicator sessionId={session.id} className="w-1.5 h-1.5" />
-          {/* Eject button - only show if grid has multiple terminals */}
-          {grid && grid.terminalIds.length > 1 && (
+          {canRemove && (
             <button
-              onClick={handleEject}
+              onClick={handleRemove}
               onPointerDown={(e) => e.stopPropagation()}
-              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 opacity-0 group-hover:opacity-100"
-              title="Pop out to own view"
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+              title={viewType === 'dashboard' ? 'Unpin from dashboard' : 'Remove from grid'}
             >
-              <Maximize2 className="w-3 h-3" />
+              <X className="w-3 h-3" />
             </button>
           )}
-          <button
-            onClick={handleRemove}
-            onPointerDown={(e) => e.stopPropagation()}
-            className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
-            title="Remove from grid"
-          >
-            <X className="w-3 h-3" />
-          </button>
         </div>
       </div>
 
@@ -207,7 +188,7 @@ export function GridTerminalCell({ session, gridId }: GridTerminalCellProps) {
 
       {/* Terminal */}
       <div className="flex-1 min-h-0 min-w-0 w-full">
-        <Terminal sessionId={session.id} gridId={gridId} />
+        <Terminal sessionId={session.id} isFocused={isFocused} />
       </div>
     </div>
   )

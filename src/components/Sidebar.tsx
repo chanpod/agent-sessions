@@ -80,14 +80,14 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
     async function loadShells() {
       if (!window.electron) return
       try {
-        const availableShells = await window.electron.system.getShells()
+        const availableShells = await window.electron.system.getShells(activeProject?.path)
         setShells(availableShells)
       } catch (err) {
         console.error('Failed to load shells:', err)
       }
     }
     loadShells()
-  }, [])
+  }, [activeProject])
 
   // Combine local shells with SSH connections for terminal creation
   const allShells = [

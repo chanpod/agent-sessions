@@ -1,65 +1,107 @@
+import { useCallback, useEffect, useMemo } from 'react'
 import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable'
-import { useEffect } from 'react'
-import { useTerminalStore } from '../stores/terminal-store'
+import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useGridStore, LayoutMode } from '../stores/grid-store'
+import { useProjectStore } from '../stores/project-store'
 import { GridTerminalCell } from './GridTerminalCell'
 import { cn } from '../lib/utils'
 import { Grid2X2, Grid3X3, LayoutGrid, Square } from 'lucide-react'
 import { resizeTerminal } from '../lib/terminal-registry'
 
+export type ViewType = 'dashboard' | 'project'
+
 interface TerminalGridViewProps {
-  gridId: string
+  viewType: ViewType
+  projectId?: string
+  terminalIds: string[]
+  layoutMode: LayoutMode
+  focusedTerminalId: string | null
   showHeader?: boolean
 }
 
-export function TerminalGridView({ gridId, showHeader = true }: TerminalGridViewProps) {
-  const { sessions } = useTerminalStore()
-  const { grids, setGridLayoutMode } = useGridStore()
+export function TerminalGridView({
+  viewType,
+  projectId,
+  terminalIds,
+  layoutMode,
+  focusedTerminalId,
+  showHeader = true,
+}: TerminalGridViewProps) {
+  const sessions = useTerminalStore((s) => s.sessions)
 
-  const grid = grids.find((g) => g.id === gridId)
-  if (!grid) return null
+  // Get sessions for terminals in the grid
+  const displaySessions = useMemo(() => {
+    return terminalIds
+      .map((id) => sessions.find((s) => s.id === id))
+      .filter((s): s is TerminalSession => s !== undefined)
+  }, [terminalIds, sessions])
+
+  // Action handlers based on view type
+  const handleLayoutModeChange = useCallback(
+    (mode: LayoutMode) => {
+      if (viewType === 'dashboard') {
+        useGridStore.getState().setDashboardLayoutMode(mode)
+      } else if (projectId) {
+        useProjectStore.getState().setProjectLayoutMode(projectId, mode)
+      }
+    },
+    [viewType, projectId]
+  )
+
+  const handleFocusChange = useCallback(
+    (terminalId: string) => {
+      if (viewType === 'dashboard') {
+        useGridStore.getState().setDashboardFocusedTerminal(terminalId)
+      } else if (projectId) {
+        useProjectStore.getState().setProjectFocusedTerminal(projectId, terminalId)
+      }
+    },
+    [viewType, projectId]
+  )
+
+  const handleRemove = useCallback(
+    (terminalId: string) => {
+      if (viewType === 'dashboard') {
+        useGridStore.getState().removeTerminalFromDashboard(terminalId)
+      } else if (projectId) {
+        useProjectStore.getState().removeTerminalFromProject(projectId, terminalId)
+      }
+    },
+    [viewType, projectId]
+  )
 
   const { isOver, setNodeRef } = useDroppable({
-    id: `grid-drop-zone-${gridId}`,
-    data: { gridId },
+    id: viewType === 'dashboard' ? 'dashboard-drop-zone' : `project-drop-zone-${projectId}`,
+    data: { viewType, projectId },
   })
 
-  // Get the actual sessions for terminals in the grid
-  const gridSessions = grid.terminalIds
-    .map((id) => sessions.find((s) => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => s !== undefined)
-
   // Determine the data-count for CSS grid layout
-  const count = Math.min(gridSessions.length, 6)
+  const count = Math.min(displaySessions.length, 6)
 
   // Determine layout attribute - only apply manual layout if not auto
-  const dataLayout = grid.layoutMode !== 'auto' ? grid.layoutMode : undefined
+  const dataLayout = layoutMode !== 'auto' ? layoutMode : undefined
 
   // Trigger resize when grid layout or terminal count changes
   useEffect(() => {
-    // Wait for layout to settle, then resize all terminals in this grid
     const timer = setTimeout(() => {
-      grid.terminalIds.forEach((terminalId) => {
+      terminalIds.forEach((terminalId) => {
         resizeTerminal(terminalId)
       })
     }, 100)
     return () => clearTimeout(timer)
-  }, [count, dataLayout, grid.terminalIds.length])
+  }, [count, dataLayout, terminalIds])
 
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 w-full h-full">
       {/* Grid header with layout controls */}
-      {showHeader && gridSessions.length > 1 && (
+      {showHeader && displaySessions.length > 1 && (
         <div className="h-10 flex items-center px-4 border-b border-zinc-800 bg-zinc-900/30">
           <span className="text-sm text-zinc-400">
-            Terminal Grid ({gridSessions.length})
+            {viewType === 'dashboard' ? 'Dashboard' : 'Terminal Grid'} ({displaySessions.length})
           </span>
           <div className="ml-auto flex items-center gap-1">
-            <LayoutSelector
-              currentMode={grid.layoutMode}
-              onSelect={(mode) => setGridLayoutMode(gridId, mode)}
-            />
+            <LayoutSelector currentMode={layoutMode} onSelect={handleLayoutModeChange} />
           </div>
         </div>
       )}
@@ -67,14 +109,11 @@ export function TerminalGridView({ gridId, showHeader = true }: TerminalGridView
       {/* Grid area */}
       <div
         ref={setNodeRef}
-        className={cn(
-          'terminal-grid flex-1',
-          isOver && 'ring-2 ring-inset ring-blue-500 bg-blue-500/10'
-        )}
+        className={cn('terminal-grid flex-1', isOver && 'ring-2 ring-inset ring-blue-500 bg-blue-500/10')}
         data-count={count}
         data-layout={dataLayout}
       >
-        {gridSessions.length === 0 ? (
+        {displaySessions.length === 0 ? (
           <div className="grid-drop-placeholder">
             <div className="text-center">
               <LayoutGrid className="w-8 h-8 mx-auto mb-2 opacity-50" />
@@ -82,9 +121,18 @@ export function TerminalGridView({ gridId, showHeader = true }: TerminalGridView
             </div>
           </div>
         ) : (
-          <SortableContext items={grid.terminalIds} strategy={rectSortingStrategy}>
-            {gridSessions.map((session) => (
-              <GridTerminalCell key={session.id} session={session} gridId={gridId} />
+          <SortableContext items={terminalIds} strategy={rectSortingStrategy}>
+            {displaySessions.map((session) => (
+              <GridTerminalCell
+                key={session.id}
+                session={session}
+                viewType={viewType}
+                projectId={projectId}
+                isFocused={focusedTerminalId === session.id}
+                onFocusChange={handleFocusChange}
+                canRemove={displaySessions.length > 1 || viewType === 'dashboard'}
+                onRemove={handleRemove}
+              />
             ))}
           </SortableContext>
         )}
@@ -115,9 +163,7 @@ function LayoutSelector({ currentMode, onSelect }: LayoutSelectorProps) {
           onClick={() => onSelect(mode)}
           className={cn(
             'p-1 rounded text-xs',
-            currentMode === mode
-              ? 'bg-zinc-700 text-white'
-              : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700/50'
+            currentMode === mode ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700/50'
           )}
           title={label}
         >

@@ -221,8 +221,8 @@ const electronAPI = {
     },
   },
   system: {
-    getShells: (): Promise<ShellInfo[]> =>
-      ipcRenderer.invoke('system:get-shells'),
+    getShells: (projectPath?: string): Promise<ShellInfo[]> =>
+      ipcRenderer.invoke('system:get-shells', projectPath),
     getInfo: (): Promise<SystemInfo> =>
       ipcRenderer.invoke('system:get-info'),
     openInEditor: (projectPath: string): Promise<{ success: boolean; editor?: string; error?: string }> =>

@@ -203,7 +203,7 @@ export interface ElectronAPI {
     onEvent: (callback: (event: DetectorEvent) => void) => () => void
   }
   system: {
-    getShells: () => Promise<ShellInfo[]>
+    getShells: (projectPath?: string) => Promise<ShellInfo[]>
     getInfo: () => Promise<SystemInfo>
     openInEditor: (projectPath: string) => Promise<{ success: boolean; editor?: string; error?: string }>
   }

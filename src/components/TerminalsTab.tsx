@@ -1,11 +1,13 @@
-import { Terminal, Plus, Server, Play, Command, RefreshCw, Package, ChevronDown, ChevronRight, Pin } from 'lucide-react'
+import { Terminal, Plus, Server, Play, Command, RefreshCw, Package, ChevronDown, ChevronRight, LayoutGrid } from 'lucide-react'
 import { useState, useEffect, useMemo } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore } from '../stores/server-store'
 import { usePackageUIStore } from '../stores/package-ui-store'
+import { useViewStore } from '../stores/view-store'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem, ServerItem } from './ProjectItem'
 import { Project } from '../stores/project-store'
+import { cn } from '../lib/utils'
 
 interface ShellInfo {
   name: string
@@ -54,6 +56,10 @@ export function TerminalsTab({
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { servers } = useServerStore()
   const { packageStates, toggleMinimized, togglePinned, isMinimized, isPinned } = usePackageUIStore()
+  const { activeView, setProjectGridActive } = useViewStore()
+
+  // Check if currently in project grid view for this project
+  const isInGridView = activeView.type === 'project-grid' && activeView.projectId === projectId
 
   const [showShellMenu, setShowShellMenu] = useState(false)
 
@@ -176,6 +182,23 @@ export function TerminalsTab({
     <>
       {/* Terminals Section */}
       <div className="mb-3 bg-zinc-800/20 rounded-md p-2">
+        {/* Project Dashboard Button */}
+        {projectSessions.length > 0 && (
+          <button
+            onClick={() => setProjectGridActive(projectId)}
+            className={cn(
+              'w-full flex items-center gap-2 px-2 py-2 mb-2 rounded-md transition-colors',
+              isInGridView
+                ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                : 'bg-zinc-700/30 text-zinc-300 hover:bg-zinc-700/50 border border-transparent'
+            )}
+          >
+            <LayoutGrid className="w-4 h-4" />
+            <span className="text-sm font-medium">Project Dashboard</span>
+            <span className="ml-auto text-xs text-zinc-500">{projectSessions.length}</span>
+          </button>
+        )}
+
         <div className="flex items-center justify-between px-2 py-2">
           <span className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
             Terminals

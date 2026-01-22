@@ -3,7 +3,6 @@ import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore } from '../stores/server-store'
 import { useSSHStore } from '../stores/ssh-store'
-import { useGridStore } from '../stores/grid-store'
 import { useGitStore } from '../stores/git-store'
 import { TerminalsTab } from './TerminalsTab'
 import { ProjectConnectionScreen } from './ProjectConnectionScreen'
@@ -41,7 +40,6 @@ export function ProjectContent({
   const { sessions } = useTerminalStore()
   const { servers } = useServerStore()
   const { getConnection } = useSSHStore()
-  const { createGrid, addTerminalToGrid } = useGridStore()
   const { refreshGitInfo } = useGitStore()
 
   // State for password authentication flow

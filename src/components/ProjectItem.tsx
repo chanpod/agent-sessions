@@ -1,8 +1,9 @@
-import { ChevronRight, Terminal, X, Server, GitBranch, Folder, Square, RefreshCw, Check, Cloud, GripVertical, Pencil, ExternalLink, Trash2 } from 'lucide-react'
+import { ChevronRight, Terminal, X, Server, GitBranch, Folder, Square, RefreshCw, Check, Cloud, GripVertical, Pencil, ExternalLink, Trash2, LayoutDashboard } from 'lucide-react'
 import { Project, useProjectStore } from '../stores/project-store'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useServerStore, ServerInstance } from '../stores/server-store'
 import { useGridStore } from '../stores/grid-store'
+import { useViewStore } from '../stores/view-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { useGitStore } from '../stores/git-store'
 import { ActivityIndicator } from './ActivityIndicator'
@@ -424,9 +425,13 @@ export interface TerminalItemProps {
 }
 
 export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect, dragHandleProps }: TerminalItemProps) {
-  const { setFocusedTerminal, setActiveGrid } = useGridStore()
-  const grid = useGridStore((state) => state.grids.find((g) => g.terminalIds.includes(session.id)))
+  const { setProjectTerminalActive } = useViewStore()
+  const dashboard = useGridStore((state) => state.dashboard)
+  const addTerminalToDashboard = useGridStore((state) => state.addTerminalToDashboard)
+  const removeTerminalFromDashboard = useGridStore((state) => state.removeTerminalFromDashboard)
   const { updateSessionTitle } = useTerminalStore()
+
+  const isInDashboard = dashboard.terminalRefs.includes(session.id)
 
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(session.title)
@@ -442,10 +447,9 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
   const handleSelect = () => {
     if (isEditing) return
     onSelect()
-    // If terminal is in a grid, make that grid active and focus the terminal
-    if (grid) {
-      setActiveGrid(grid.id)
-      setFocusedTerminal(grid.id, session.id)
+    // Switch to single terminal view for this terminal
+    if (session.projectId) {
+      setProjectTerminalActive(session.projectId, session.id)
     }
   }
 
@@ -521,11 +525,30 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
         {isActive && !isEditing && (
           <span className="text-xs text-green-400 font-medium">focused</span>
         )}
-        {grid && grid.terminalIds.length > 1 && !isActive && !isEditing && (
-          <span className="text-xs text-blue-400">+{grid.terminalIds.length - 1}</span>
-        )}
         {session.status === 'exited' && !isEditing && (
           <span className="text-xs text-zinc-600">exited</span>
+        )}
+
+        {/* Add to Dashboard button */}
+        {!isEditing && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              if (isInDashboard) {
+                removeTerminalFromDashboard(session.id)
+              } else {
+                addTerminalToDashboard(session.id)
+              }
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={cn(
+              'p-0.5 rounded hover:bg-zinc-700 transition-colors',
+              isInDashboard ? 'text-blue-400' : 'text-zinc-500 opacity-0 group-hover:opacity-100'
+            )}
+            title={isInDashboard ? 'Remove from Dashboard' : 'Add to Dashboard'}
+          >
+            <LayoutDashboard className="w-3 h-3" />
+          </button>
         )}
 
         {/* Edit button */}
@@ -580,8 +603,7 @@ export interface ServerItemProps {
 }
 
 export function ServerItem({ server, isActive, onSelect, onStop, onRestart, onDelete }: ServerItemProps) {
-  const { setFocusedTerminal, setActiveGrid } = useGridStore()
-  const grid = useGridStore((state) => state.grids.find((g) => g.terminalIds.includes(server.terminalId)))
+  const { setProjectTerminalActive } = useViewStore()
 
   const statusColors = {
     starting: 'text-yellow-500',
@@ -592,10 +614,9 @@ export function ServerItem({ server, isActive, onSelect, onStop, onRestart, onDe
 
   const handleClick = () => {
     onSelect()
-    // Also focus in grid and make it active
-    if (grid) {
-      setActiveGrid(grid.id)
-      setFocusedTerminal(grid.id, server.terminalId)
+    // Switch to single terminal view for this server's terminal
+    if (server.projectId) {
+      setProjectTerminalActive(server.projectId, server.terminalId)
     }
   }
 

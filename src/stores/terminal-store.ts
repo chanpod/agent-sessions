@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
-import { removeTerminalFromAllGrids } from './grid-store'
+import { useGridStore } from './grid-store'
 
 // Config that gets persisted (no runtime state like pid)
 export interface SavedTerminalConfig {
@@ -119,8 +119,8 @@ export const useTerminalStore = create<TerminalStore>()(
         }),
 
       removeSession: (id) => {
-        // Also remove from any grid
-        removeTerminalFromAllGrids(id)
+        // Also remove from dashboard
+        useGridStore.getState().cleanupTerminalReferences(id)
         return set((state) => {
           const filtered = state.sessions.filter((s) => s.id !== id)
           const newActiveId =
@@ -136,13 +136,13 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       removeSessionsByProject: (projectId) => {
-        // Remove all project sessions from grids
+        // Remove all project sessions from dashboard
         const state = get()
         const projectSessionIds = state.sessions
           .filter((s) => s.projectId === projectId)
           .map((s) => s.id)
         projectSessionIds.forEach((id) => {
-          removeTerminalFromAllGrids(id)
+          useGridStore.getState().cleanupTerminalReferences(id)
         })
 
         return set((state) => {

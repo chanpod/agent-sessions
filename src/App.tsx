@@ -26,6 +26,7 @@ import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
+import { useViewStore } from './stores/view-store'
 import { useSSHStore } from './stores/ssh-store'
 import { useFileSearchStore } from './stores/file-search-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
@@ -60,17 +61,16 @@ function App() {
     saveConfig: saveServerConfig,
   } = useServerStore()
   const {
-    grids,
-    activeGridId,
-    createGrid,
-    addTerminalToGrid,
-    moveTerminal,
-    reorderInGrid,
-    setFocusedTerminal,
-    setActiveGrid,
-    getGridForTerminal,
+    dashboard,
+    addTerminalToDashboard,
+    removeTerminalFromDashboard,
+    reorderDashboardTerminals,
+    setDashboardFocusedTerminal,
+    cleanupTerminalReferences,
+    validateDashboardState,
   } = useGridStore()
-  const { setActiveProject, activeProjectId, removeProject, disconnectProject } = useProjectStore()
+  const { isDashboardActive, activeView } = useViewStore()
+  const { setActiveProject, activeProjectId, removeProject, disconnectProject, addTerminalToProject, setProjectFocusedTerminal, removeTerminalFromProject } = useProjectStore()
   const { openSearch } = useFileSearchStore()
 
   // Configure drag sensors with a distance threshold
@@ -155,7 +155,7 @@ function App() {
       // Step 2: Now restore terminals with connections ready
       const sessionsToAdd: Parameters<typeof addSession>[0][] = []
       const configUpdates: { oldId: string; newConfig: Parameters<typeof saveConfig>[0] }[] = []
-      const gridsToCreate: string[] = []
+      const terminalsToAddToProjects: { projectId: string; terminalId: string }[] = []
 
       for (const config of configs) {
         try {
@@ -186,10 +186,9 @@ function App() {
             createdAt: Date.now(),
           })
 
-          // Check if terminal already has a grid (from persisted state)
-          const existingGrid = useGridStore.getState().getGridForTerminal(info.id)
-          if (!existingGrid) {
-            gridsToCreate.push(info.id)
+          // Add terminal to its project grid
+          if (config.projectId) {
+            terminalsToAddToProjects.push({ projectId: config.projectId, terminalId: info.id })
           }
 
           configUpdates.push({
@@ -213,9 +212,9 @@ function App() {
         addSessionsBatch(sessionsToAdd)
       }
 
-      // Create grids for terminals that need them
-      for (const terminalId of gridsToCreate) {
-        createGrid(terminalId)
+      // Add terminals to their project grids
+      for (const { projectId, terminalId } of terminalsToAddToProjects) {
+        addTerminalToProject(projectId, terminalId)
       }
 
       // Update configs
@@ -223,8 +222,11 @@ function App() {
         removeSavedConfig(oldId)
         saveConfig(newConfig)
       }
+
+      // Validate dashboard state after terminals are restored
+      validateDashboardState()
     })()
-  }, [isElectron, addSessionsBatch, saveConfig, removeSavedConfig, createGrid, projects, getConnection])
+  }, [isElectron, addSessionsBatch, saveConfig, removeSavedConfig, addTerminalToProject, projects, getConnection, validateDashboardState])
 
   useEffect(() => {
     if (!isElectron || !window.electron) return
@@ -290,16 +292,13 @@ function App() {
         return
       }
 
-      // Alt+N: Focus terminal N in active grid
+      // Alt+N: Focus terminal N in dashboard
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         e.preventDefault()
-        const activeGrid = grids.find((g) => g.id === activeGridId)
-        if (activeGrid) {
-          const terminalIndex = num - 1
-          const terminalId = activeGrid.terminalIds[terminalIndex]
-          if (terminalId) {
-            setFocusedTerminal(activeGrid.id, terminalId)
-          }
+        const terminalIndex = num - 1
+        const terminalId = dashboard.terminalRefs[terminalIndex]
+        if (terminalId) {
+          setDashboardFocusedTerminal(terminalId)
         }
         return
       }
@@ -307,7 +306,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [projects, grids, activeGridId, setActiveProject, setFocusedTerminal, openSearch])
+  }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal, openSearch])
 
   const handleCreateTerminal = async (projectId: string, shell: { name: string; path: string }) => {
     if (!window.electron) return
@@ -429,8 +428,9 @@ function App() {
       sshConnectionId: sessionSshConnectionId,
     })
 
-    // Create a new grid for this terminal
-    createGrid(info.id)
+    // Add terminal to project grid and focus it
+    addTerminalToProject(projectId, info.id)
+    setProjectFocusedTerminal(projectId, info.id)
   }
 
   const handleCreateQuickTerminal = async (shell: { name: string; path: string }) => {
@@ -501,12 +501,23 @@ function App() {
       createdAt: info.createdAt,
     })
 
-    // Create a new grid for this terminal
-    createGrid(info.id)
+    // Add terminal to dashboard
+    addTerminalToDashboard(info.id)
   }
 
   const handleCloseTerminal = async (id: string) => {
     if (!window.electron) return
+
+    // Get session to find its project
+    const session = sessions.find((s) => s.id === id)
+
+    // Remove from project grid if it belongs to one
+    if (session?.projectId) {
+      removeTerminalFromProject(session.projectId, id)
+    }
+
+    // Remove from dashboard if it was pinned there
+    cleanupTerminalReferences(id)
 
     // Dispose the xterm instance from registry
     disposeTerminal(id)
@@ -616,8 +627,8 @@ function App() {
       createdAt: Date.now(),
     })
 
-    // Create a grid for the server terminal
-    createGrid(info.id)
+    // Add server terminal to project grid
+    addTerminalToProject(projectId, info.id)
 
     // Add server to store
     addServer({
@@ -754,57 +765,62 @@ function App() {
 
     const draggedId = active.id as string
     const overId = over.id as string
-    const overData = over.data.current
+    const overData = over.data.current as { viewType?: string; projectId?: string } | undefined
 
-    // Get the grid the dragged terminal is currently in
-    const sourceGrid = getGridForTerminal(draggedId)
+    // Get the dragged terminal's session to know its project
+    const draggedSession = sessions.find((s) => s.id === draggedId)
 
-    // Handle dropping on the empty terminal area
+    // Handle dropping on empty terminal area - depends on current view
     if (overId === 'empty-terminal-area-drop-zone') {
-      // If terminal is already in a grid, just make that grid active
-      if (sourceGrid) {
-        setActiveGrid(sourceGrid.id)
-      } else {
-        // Create new grid for this terminal
-        createGrid(draggedId)
-      }
-      return
-    }
-
-    // Handle dropping on a grid drop zone
-    if (overId.startsWith('grid-drop-zone-')) {
-      const targetGridId = overData?.gridId as string
-      if (!targetGridId) return
-
-      if (sourceGrid && sourceGrid.id !== targetGridId) {
-        // Move from one grid to another
-        moveTerminal(draggedId, sourceGrid.id, targetGridId)
-      } else if (!sourceGrid) {
-        // Terminal not in any grid, add to target grid
-        addTerminalToGrid(targetGridId, draggedId)
-      }
-      // If already in target grid, do nothing
-      return
-    }
-
-    // Handle dropping on another terminal (either in same grid or different grid)
-    const targetGrid = getGridForTerminal(overId)
-
-    if (targetGrid) {
-      if (sourceGrid && sourceGrid.id === targetGrid.id) {
-        // Reordering within the same grid
-        const fromIndex = sourceGrid.terminalIds.indexOf(draggedId)
-        const toIndex = sourceGrid.terminalIds.indexOf(overId)
-        if (fromIndex !== toIndex && fromIndex !== -1 && toIndex !== -1) {
-          reorderInGrid(sourceGrid.id, fromIndex, toIndex)
+      if (activeView.type === 'dashboard') {
+        if (!dashboard.terminalRefs.includes(draggedId)) {
+          addTerminalToDashboard(draggedId)
         }
-      } else if (sourceGrid) {
-        // Moving from one grid to another by dropping on a terminal
-        moveTerminal(draggedId, sourceGrid.id, targetGrid.id)
-      } else {
-        // Terminal not in any grid, add to target's grid
-        addTerminalToGrid(targetGrid.id, draggedId)
+      } else if (activeView.type === 'project-grid' && draggedSession?.projectId === activeView.projectId) {
+        // Terminal already belongs to this project, ensure it's in the grid
+        const project = projects.find((p) => p.id === activeView.projectId)
+        if (project && !project.gridTerminalIds.includes(draggedId)) {
+          addTerminalToProject(activeView.projectId, draggedId)
+        }
       }
+      return
+    }
+
+    // Handle dropping on dashboard drop zone
+    if (overId === 'dashboard-drop-zone') {
+      if (!dashboard.terminalRefs.includes(draggedId)) {
+        addTerminalToDashboard(draggedId)
+      }
+      return
+    }
+
+    // Handle dropping on project drop zone
+    if (overId.startsWith('project-drop-zone-')) {
+      const targetProjectId = overData?.projectId
+      if (targetProjectId && draggedSession?.projectId === targetProjectId) {
+        // Terminal belongs to this project - add to its grid
+        const project = projects.find((p) => p.id === targetProjectId)
+        if (project && !project.gridTerminalIds.includes(draggedId)) {
+          addTerminalToProject(targetProjectId, draggedId)
+        }
+      }
+      return
+    }
+
+    // Handle dropping on another terminal (reordering)
+    const isInDashboard = dashboard.terminalRefs.includes(draggedId)
+    const targetIsInDashboard = dashboard.terminalRefs.includes(overId)
+
+    if (targetIsInDashboard && isInDashboard) {
+      // Reordering within the dashboard
+      const fromIndex = dashboard.terminalRefs.indexOf(draggedId)
+      const toIndex = dashboard.terminalRefs.indexOf(overId)
+      if (fromIndex !== toIndex && fromIndex !== -1 && toIndex !== -1) {
+        reorderDashboardTerminals(fromIndex, toIndex)
+      }
+    } else if (targetIsInDashboard && !isInDashboard) {
+      // Terminal not in dashboard, add it
+      addTerminalToDashboard(draggedId)
     }
   }
 
@@ -840,22 +856,25 @@ function App() {
           onEditProject={handleEditProject}
           onDeleteProject={handleDeleteProject}
         />
-        {/* Project-specific sub-header */}
-        <ProjectSubHeader onEditProject={handleEditProject} />
+        {/* Project-specific sub-header - hidden in dashboard view */}
+        {!isDashboardActive() && <ProjectSubHeader onEditProject={handleEditProject} />}
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
-          <Sidebar
-            onCreateTerminal={handleCreateTerminal}
-            onCreateQuickTerminal={handleCreateQuickTerminal}
-            onCloseTerminal={handleCloseTerminal}
-            onReconnectTerminal={handleReconnectTerminal}
-            onStartServer={handleStartServer}
-            onStopServer={handleStopServer}
-            onRestartServer={handleRestartServer}
-            onDeleteServer={handleDeleteServer}
-          />
+          {/* Sidebars hidden in dashboard view */}
+          {!isDashboardActive() && (
+            <Sidebar
+              onCreateTerminal={handleCreateTerminal}
+              onCreateQuickTerminal={handleCreateQuickTerminal}
+              onCloseTerminal={handleCloseTerminal}
+              onReconnectTerminal={handleReconnectTerminal}
+              onStartServer={handleStartServer}
+              onStopServer={handleStopServer}
+              onRestartServer={handleRestartServer}
+              onDeleteServer={handleDeleteServer}
+            />
+          )}
           <TerminalArea />
-          <ChangedFilesPanel />
+          {!isDashboardActive() && <ChangedFilesPanel />}
         </div>
       </div>
       <DragOverlay>
