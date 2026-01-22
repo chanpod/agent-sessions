@@ -6,7 +6,7 @@ import { createHash } from 'crypto'
 import { generateFileId } from '../file-id-util.js'
 import { BackgroundClaudeManager } from '../background-claude-manager.js'
 import { PtyManager } from '../pty-manager.js'
-import { detectWslPath } from '../utils/wsl-utils.js'
+import { detectWslPath, convertToWslUncPath } from '../utils/wsl-utils.js'
 
 // ============================================================================
 // Review Types
@@ -53,15 +53,26 @@ function execInContext(command: string, projectPath: string, options: { encoding
 
 // Resolve path for file system operations (converts WSL paths to UNC on Windows)
 function resolvePathForFs(inputPath: string): string {
-  const wslInfo = detectWslPath(inputPath)
+  if (process.platform !== 'win32') return inputPath
 
-  if (process.platform === 'win32' && wslInfo.isWslPath) {
-    const uncPath = wslInfo.uncPath
-    if (uncPath) {
-      return uncPath
-    }
+  // Already a valid UNC path, return as-is
+  if (inputPath.startsWith('\\\\wsl')) {
+    return inputPath
   }
 
+  // Already a Windows path (e.g., C:\...), return as-is
+  if (/^[a-zA-Z]:\\/.test(inputPath)) {
+    return inputPath
+  }
+
+  // Detect WSL paths and convert them
+  const wslInfo = detectWslPath(inputPath)
+  if (wslInfo.isWslPath && wslInfo.linuxPath) {
+    const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
+    return uncPath
+  }
+
+  // Fallback: return original path
   return inputPath
 }
 

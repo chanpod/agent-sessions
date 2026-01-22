@@ -9,6 +9,8 @@ import {
   convertToWslUncPath,
   getDefaultWslDistro,
   getWslDistros,
+  buildWslCommand,
+  isWslEnvironment,
   type WslPathInfo,
 } from '../utils/wsl-utils'
 
@@ -781,5 +783,169 @@ describe('getWslDistros', () => {
       const result = getWslDistros()
       expect(result).toEqual([])
     })
+  })
+})
+
+describe('buildWslCommand', () => {
+  describe('With WSL path info', () => {
+    it('should build correct WSL command with distro', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home/user' }
+      const result = buildWslCommand('ls -la', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain('wsl')
+      expect(result.cmd).toContain('-d Ubuntu')
+      expect(result.cmd).toContain('bash -c')
+      expect(result.cmd).toContain("cd '/home/user'")
+      expect(result.cmd).toContain('ls -la')
+      expect(result.cwd).toBeUndefined()
+    })
+
+    it('should build WSL command without distro when not specified', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, linuxPath: '/home/user' }
+      const result = buildWslCommand('ls -la', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain('wsl ')
+      expect(result.cmd).not.toContain('-d ')
+      expect(result.cmd).toContain('bash -c')
+      expect(result.cwd).toBeUndefined()
+    })
+
+    it('should escape double quotes in command', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home' }
+      const result = buildWslCommand('echo "hello world"', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain('\\"hello world\\"')
+    })
+
+    it('should escape multiple quotes in command', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home' }
+      const result = buildWslCommand('git commit -m "fix: resolve \"bug\" issue"', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain('git commit -m \\"fix: resolve \\"bug\\" issue\\"')
+    })
+
+    it('should use projectPath as fallback when linuxPath is not specified', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu' }
+      const result = buildWslCommand('pwd', '/home/user', wslInfo)
+
+      expect(result.cmd).toContain("cd '/home/user'")
+    })
+
+    it('should handle complex commands with pipes', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home/user' }
+      const result = buildWslCommand('ls -la | grep "test"', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain('ls -la | grep \\"test\\"')
+    })
+
+    it('should handle deep Linux paths', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home/user/projects/myapp/src' }
+      const result = buildWslCommand('cat index.ts', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain("cd '/home/user/projects/myapp/src'")
+    })
+  })
+
+  describe('With non-WSL path info', () => {
+    it('should return original command for non-WSL paths', () => {
+      const wslInfo: WslPathInfo = { isWslPath: false }
+      const result = buildWslCommand('ls -la', 'C:\\Users\\test', wslInfo)
+
+      expect(result.cmd).toBe('ls -la')
+      expect(result.cwd).toBe('C:\\Users\\test')
+    })
+
+    it('should preserve command as-is for local execution', () => {
+      const wslInfo: WslPathInfo = { isWslPath: false }
+      const result = buildWslCommand('npm run build', 'D:\\Projects\\myapp', wslInfo)
+
+      expect(result.cmd).toBe('npm run build')
+      expect(result.cwd).toBe('D:\\Projects\\myapp')
+    })
+
+    it('should not modify quotes in non-WSL commands', () => {
+      const wslInfo: WslPathInfo = { isWslPath: false }
+      const result = buildWslCommand('git commit -m "test"', 'C:\\repo', wslInfo)
+
+      expect(result.cmd).toBe('git commit -m "test"')
+    })
+  })
+
+  describe('Edge cases', () => {
+    it('should handle empty command', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home' }
+      const result = buildWslCommand('', 'C:\\path', wslInfo)
+
+      expect(result.cmd).toContain('wsl')
+      expect(result.cmd).toContain("cd '/home' && ")
+    })
+
+    it('should handle command with single quotes', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home' }
+      const result = buildWslCommand("echo 'hello'", 'C:\\path', wslInfo)
+
+      // Single quotes should not be escaped
+      expect(result.cmd).toContain("echo 'hello'")
+    })
+
+    it('should handle path with spaces', () => {
+      const wslInfo: WslPathInfo = { isWslPath: true, distro: 'Ubuntu', linuxPath: '/home/user/my project' }
+      const result = buildWslCommand('ls', 'C:\\path', wslInfo)
+
+      // Path is wrapped in single quotes, so spaces are safe
+      expect(result.cmd).toContain("cd '/home/user/my project'")
+    })
+  })
+})
+
+describe('isWslEnvironment', () => {
+  let originalPlatform: string
+
+  beforeEach(() => {
+    originalPlatform = process.platform
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', {
+      value: originalPlatform,
+      writable: true,
+      configurable: true,
+    })
+  })
+
+  it('should return true on Windows', () => {
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
+      writable: true,
+      configurable: true,
+    })
+    expect(isWslEnvironment()).toBe(true)
+  })
+
+  it('should return false on Linux', () => {
+    Object.defineProperty(process, 'platform', {
+      value: 'linux',
+      writable: true,
+      configurable: true,
+    })
+    expect(isWslEnvironment()).toBe(false)
+  })
+
+  it('should return false on macOS', () => {
+    Object.defineProperty(process, 'platform', {
+      value: 'darwin',
+      writable: true,
+      configurable: true,
+    })
+    expect(isWslEnvironment()).toBe(false)
+  })
+
+  it('should return false on FreeBSD', () => {
+    Object.defineProperty(process, 'platform', {
+      value: 'freebsd',
+      writable: true,
+      configurable: true,
+    })
+    expect(isWslEnvironment()).toBe(false)
   })
 })

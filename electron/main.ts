@@ -6,76 +6,54 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { PtyManager } from './pty-manager.js'
-import { SSHManager } from './ssh-manager.js'
+import { SSHManager, type SSHConnectionConfig } from './ssh-manager.js'
 import { ToolChainDB } from './database.js'
 import { ReviewDetector } from './output-monitors/review-detector.js'
 import { BackgroundClaudeManager } from './background-claude-manager.js'
 import { readFileSync } from 'fs'
-import { join, basename } from 'path'
+import { join } from 'path'
 import { createHash } from 'crypto'
 import { generateFileId, type FileId } from './file-id-util.js'
 import { registerGitHandlers, cleanupGitWatchers } from './services/git-service.js'
 import { registerFsHandlers } from './services/fs-service.js'
+import {
+  getPackageScriptsLocal,
+  getPackageScriptsRemote,
+  type PackageScripts,
+  type ScriptInfo,
+} from './services/package-scripts.js'
+import { CONSTANTS } from './constants.js'
+import {
+  type Finding,
+  type ExecOptions,
+  type FileClassification,
+  type SubAgentReview,
+  type ExecError,
+  getErrorMessage,
+  isExecError
+} from './types/index.js'
+import {
+  detectWslPath,
+  convertToWslUncPath,
+  getWslDistros,
+  buildWslCommand,
+  type WslPathInfo
+} from './utils/wsl-utils.js'
+import {
+  parseFindings,
+  consolidateFindings,
+  filterVerifiedFindings,
+  generateFindingId
+} from './services/code-review.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// WSL path detection and conversion utilities
-interface WslPathInfo {
-  isWslPath: boolean
-  distro?: string
-  linuxPath?: string
+interface ShellInfo {
+  name: string
+  path: string
 }
 
-function detectWslPath(inputPath: string): WslPathInfo {
-  // Check for UNC WSL paths: \\wsl$\Ubuntu\... or \\wsl.localhost\Ubuntu\...
-  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i)
-  if (uncMatch) {
-    return {
-      isWslPath: true,
-      distro: uncMatch[1],
-      linuxPath: uncMatch[2].replace(/\\/g, '/') || '/',
-    }
-  }
-
-  // Check for Linux-style paths that start with / (common when user types path manually)
-  if (process.platform === 'win32' && inputPath.startsWith('/') && !inputPath.startsWith('//')) {
-    return {
-      isWslPath: true,
-      linuxPath: inputPath,
-    }
-  }
-
-  return { isWslPath: false }
-}
-
-function convertToWslUncPath(linuxPath: string, distro?: string): string {
-  const dist = distro || getDefaultWslDistro()
-  if (!dist) return linuxPath
-  return `\\\\wsl$\\${dist}${linuxPath.replace(/\//g, '\\')}`
-}
-
-function getDefaultWslDistro(): string | null {
-  if (process.platform !== 'win32') return null
-  try {
-    // Get the default WSL distribution
-    const output = execSync('wsl -l -q', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-    // Output has UTF-16 encoding issues on Windows, clean it up
-    const lines = output.replace(/\0/g, '').split('\n').map(l => l.trim()).filter(l => l.length > 0)
-    return lines[0] || null
-  } catch {
-    return null
-  }
-}
-
-function getWslDistros(): string[] {
-  if (process.platform !== 'win32') return []
-  try {
-    const output = execSync('wsl -l -q', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-    return output.replace(/\0/g, '').split('\n').map(l => l.trim()).filter(l => l.length > 0)
-  } catch {
-    return []
-  }
-}
+// ScriptInfo and PackageScripts interfaces moved to services/package-scripts.ts
 
 // Execute a command in the appropriate context (local, WSL, or SSH)
 // This is the main abstraction that routes commands correctly
@@ -83,11 +61,8 @@ function execInContext(command: string, projectPath: string, options: { encoding
   const wslInfo = detectWslPath(projectPath)
 
   if (process.platform === 'win32' && wslInfo.isWslPath) {
-    const linuxPath = wslInfo.linuxPath || projectPath
-    const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
-    // Escape double quotes in the command for WSL
-    const escapedCmd = command.replace(/"/g, '\\"')
-    return execSync(`wsl ${distroArg}bash -c "cd '${linuxPath}' && ${escapedCmd}"`, {
+    const wslCommand = buildWslCommand(command, projectPath, wslInfo)
+    return execSync(wslCommand.cmd, {
       ...options,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -103,7 +78,11 @@ function execInContext(command: string, projectPath: string, options: { encoding
 // Execute a command asynchronously in the appropriate context (local, WSL, or SSH)
 // This automatically detects and routes to the correct execution method
 export async function execInContextAsync(command: string, projectPath: string, projectId?: string): Promise<string> {
-  console.log(`[execInContextAsync] Called with projectId=${projectId}, command="${command}"`)
+  console.log(`[execInContextAsync] Called with:`)
+  console.log(`  - projectId: ${projectId}`)
+  console.log(`  - projectPath: "${projectPath}"`)
+  console.log(`  - command: "${command}"`)
+  console.log(`  - platform: ${process.platform}`)
 
   // First check if this is an SSH project
   if (projectId && sshManager) {
@@ -116,9 +95,9 @@ export async function execInContextAsync(command: string, projectPath: string, p
         const result = await sshManager.execViaProjectMaster(projectId, `cd "${projectPath}" && ${command}`)
         console.log(`[execInContextAsync] SSH command result: ${result.substring(0, 100)}...`)
         return result
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error(`[execInContextAsync] SSH command failed:`, error)
-        throw new Error(`SSH command failed: ${error.message}`)
+        throw new Error(`SSH command failed: ${getErrorMessage(error)}`)
       }
     } else {
       console.log(`[execInContextAsync] Project ${projectId} master not connected, falling back to local/WSL`)
@@ -130,28 +109,59 @@ export async function execInContextAsync(command: string, projectPath: string, p
   // Fall back to local/WSL execution
   return new Promise((resolve, reject) => {
     const wslInfo = detectWslPath(projectPath)
+    console.log(`[execInContextAsync] WSL detection for path "${projectPath}":`, wslInfo)
 
     let cmd: string
-    let execOptions: any
+    let execOptions: ExecOptions
 
     if (process.platform === 'win32' && wslInfo.isWslPath) {
-      const linuxPath = wslInfo.linuxPath || projectPath
-      const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
-      const escapedCmd = command.replace(/"/g, '\\"')
-      cmd = `wsl ${distroArg}bash -c "cd '${linuxPath}' && ${escapedCmd}"`
-      execOptions = { encoding: 'utf-8' }
+      const wslCommand = buildWslCommand(command, projectPath, wslInfo)
+      cmd = wslCommand.cmd
+      execOptions = { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 } // 10MB buffer
+      console.log(`[execInContextAsync] WSL command built:`)
+      console.log(`  - Original command: ${command}`)
+      console.log(`  - Full WSL command: ${cmd}`)
     } else {
       cmd = command
-      execOptions = { cwd: projectPath, encoding: 'utf-8' }
+      execOptions = { cwd: projectPath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+      console.log(`[execInContextAsync] Local command: ${cmd}, cwd: ${projectPath}`)
     }
 
-    exec(cmd, execOptions, (error, stdout, stderr) => {
+    console.log(`[execInContextAsync] Executing command...`)
+    const startTime = Date.now()
+
+    try {
+      exec(cmd, execOptions, (error, stdout, stderr) => {
+      const duration = Date.now() - startTime
+      console.log(`[execInContextAsync] Command completed in ${duration}ms`)
+      console.log(`[execInContextAsync] stdout length: ${stdout?.length || 0}`)
+      console.log(`[execInContextAsync] stderr length: ${stderr?.length || 0}`)
+
+      if (stderr && stderr.trim()) {
+        console.log(`[execInContextAsync] stderr: ${stderr.substring(0, 500)}`)
+      }
+
+      if (stdout && stdout.trim()) {
+        console.log(`[execInContextAsync] stdout preview: ${stdout.substring(0, 200)}...`)
+      } else {
+        console.log(`[execInContextAsync] stdout is empty or whitespace only`)
+      }
+
       if (error) {
+        const execError = error as ExecError
+        console.error(`[execInContextAsync] Command error:`, execError.message)
+        console.error(`[execInContextAsync] Error code:`, execError.code)
+        console.error(`[execInContextAsync] Error signal:`, execError.signal)
         reject(error)
       } else {
+        console.log(`[execInContextAsync] Command succeeded, returning stdout`)
         resolve(stdout)
       }
     })
+    } catch (syncError: unknown) {
+      console.error(`[execInContextAsync] Synchronous error during exec:`, syncError)
+      reject(syncError)
+    }
   })
 }
 
@@ -159,9 +169,9 @@ export async function execInContextAsync(command: string, projectPath: string, p
 export function resolvePathForFs(inputPath: string): string {
   if (process.platform !== 'win32') return inputPath
 
-  // Already a valid UNC path, return as-is
+  // Already a valid UNC path - normalize any forward slashes to backslashes
   if (inputPath.startsWith('\\\\wsl')) {
-    return inputPath
+    return inputPath.replace(/\//g, '\\')
   }
 
   // Already a Windows path (e.g., C:\...), return as-is
@@ -173,12 +183,14 @@ export function resolvePathForFs(inputPath: string): string {
   const wslInfo = detectWslPath(inputPath)
   if (wslInfo.isWslPath && wslInfo.linuxPath) {
     const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
-    console.log(`[resolvePathForFs] Converted Linux path to UNC: ${inputPath} -> ${uncPath}`)
-    return uncPath
+    // Normalize any forward slashes to backslashes for Windows compatibility
+    const normalizedPath = uncPath.replace(/\//g, '\\')
+    console.log(`[resolvePathForFs] Converted Linux path to UNC: ${inputPath} -> ${normalizedPath}`)
+    return normalizedPath
   }
 
-  // Fallback: return original path
-  return inputPath
+  // Fallback: normalize slashes and return
+  return inputPath.replace(/\//g, '\\')
 }
 
 // Initialize SQLite database for persistent storage
@@ -214,10 +226,9 @@ async function isUpdateDismissed(version: string): Promise<boolean> {
 
   const dismissedAt = dismissalData.dismissedAt
   const now = Date.now()
-  const twentyFourHours = 24 * 60 * 60 * 1000
 
   // If dismissed within the last 24 hours, don't show it
-  const isDismissed = now - dismissedAt < twentyFourHours
+  const isDismissed = now - dismissedAt < CONSTANTS.UPDATE_DISMISS_TIMEOUT_MS
 
   if (isDismissed) {
     console.log(`[Update] Version ${version} was dismissed ${Math.floor((now - dismissedAt) / (60 * 60 * 1000))} hours ago, skipping notification`)
@@ -272,10 +283,9 @@ function setupAutoUpdater() {
   autoUpdater.checkForUpdatesAndNotify()
 
   // Poll for updates every 5 minutes for active development
-  const FIVE_MINUTES = 5 * 60 * 1000
   setInterval(() => {
     autoUpdater.checkForUpdatesAndNotify()
-  }, FIVE_MINUTES)
+  }, CONSTANTS.UPDATE_CHECK_INTERVAL_MS)
 }
 
 // IPC handler to install update when user clicks "Update Now"
@@ -431,10 +441,11 @@ interface ActiveReview {
   reviewId: string
   projectPath: string
   files: string[]
-  classifications?: any[]
+  classifications?: FileClassification[]
   lowRiskFiles?: string[]
   highRiskFiles?: string[]
   currentHighRiskIndex: number
+  terminalId?: string
 }
 
 const activeReviews = new Map<string, ActiveReview>()
@@ -451,10 +462,10 @@ async function createWindow() {
   const isMac = process.platform === 'darwin'
 
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
+    width: CONSTANTS.WINDOW_DEFAULT_WIDTH,
+    height: CONSTANTS.WINDOW_DEFAULT_HEIGHT,
+    minWidth: CONSTANTS.WINDOW_MIN_WIDTH,
+    minHeight: CONSTANTS.WINDOW_MIN_HEIGHT,
     backgroundColor: '#09090b',
     frame: !isWindows,  // Frameless on Windows only
     ...(isMac && {
@@ -493,7 +504,7 @@ async function createWindow() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('review:completed', {
           reviewId,
-          findings: findings.map((f: any, index: number) => ({
+          findings: findings.map((f: Finding, index: number) => ({
             ...f,
             id: `${reviewId}-finding-${index}`,
           })),
@@ -765,7 +776,7 @@ Output ONLY valid JSON:
 /**
  * Build coordinator prompt
  */
-function buildCoordinatorPrompt(subAgentReviews: any[], file: string, projectPath: string): string {
+function buildCoordinatorPrompt(subAgentReviews: SubAgentReview[], file: string, projectPath: string): string {
   const diff = getFileDiff(file, projectPath)
   const content = getFileContent(file, projectPath)
   const reviewsJson = JSON.stringify(subAgentReviews, null, 2)
@@ -825,7 +836,7 @@ IMPORTANT:
 /**
  * Build accuracy checker prompt
  */
-function buildAccuracyPrompt(finding: any, file: string, projectPath: string): string {
+function buildAccuracyPrompt(finding: Finding, file: string, projectPath: string): string {
   const diff = getFileDiff(file, projectPath)
   const content = getFileContent(file, projectPath)
   const findingJson = JSON.stringify(finding, null, 2)
@@ -913,11 +924,6 @@ ipcMain.handle('pty:create-with-command', async (_event, shell: string, args: st
 })
 
 ipcMain.handle('system:get-shells', async () => {
-  interface ShellInfo {
-    name: string
-    path: string
-  }
-
   const shells: ShellInfo[] = []
 
   // Helper to check if a shell exists
@@ -1017,81 +1023,9 @@ ipcMain.handle('dialog:open-directory', async () => {
 })
 
 // Get package.json scripts from a directory
+// Implementation extracted to services/package-scripts.ts
 ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projectId?: string) => {
   console.log(`[project:get-scripts] Called with projectPath="${projectPath}", projectId="${projectId}"`)
-
-  interface ScriptInfo {
-    name: string
-    command: string
-  }
-
-  interface PackageScripts {
-    packagePath: string
-    packageName?: string
-    scripts: ScriptInfo[]
-    packageManager?: string
-  }
-
-  // Recursively find all package.json files, excluding node_modules and other common directories
-  async function findPackageJsonFiles(dir: string, rootDir: string, depth: number = 0): Promise<string[]> {
-    if (depth > 10) return [] // Prevent infinite recursion
-
-    const results: string[] = []
-    const excludeDirs = ['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo']
-
-    try {
-      const packageJsonPath = path.join(dir, 'package.json')
-      try {
-        await fs.promises.access(packageJsonPath)
-        const relativePath = path.relative(rootDir, dir)
-        results.push(relativePath || '.')
-      } catch {
-        // package.json doesn't exist in this directory
-      }
-
-      const entries = await fs.promises.readdir(dir, { withFileTypes: true })
-      // Process subdirectories in parallel for better performance
-      const subdirPromises: Promise<string[]>[] = []
-      for (const entry of entries) {
-        if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
-          const subdirPath = path.join(dir, entry.name)
-          subdirPromises.push(findPackageJsonFiles(subdirPath, rootDir, depth + 1))
-        }
-      }
-      const subdirResults = await Promise.all(subdirPromises)
-      for (const subResults of subdirResults) {
-        results.push(...subResults)
-      }
-    } catch (err) {
-      // Ignore errors for directories we can't read
-    }
-
-    return results
-  }
-
-  // Detect package manager for a given directory
-  async function detectPackageManager(dir: string): Promise<string> {
-    const checkFile = async (filename: string): Promise<boolean> => {
-      try {
-        await fs.promises.access(path.join(dir, filename))
-        return true
-      } catch {
-        return false
-      }
-    }
-
-    // Check all lock files in parallel
-    const [hasPnpm, hasYarn, hasBun] = await Promise.all([
-      checkFile('pnpm-lock.yaml'),
-      checkFile('yarn.lock'),
-      checkFile('bun.lockb'),
-    ])
-
-    if (hasPnpm) return 'pnpm'
-    if (hasYarn) return 'yarn'
-    if (hasBun) return 'bun'
-    return 'npm'
-  }
 
   try {
     // For SSH projects, use remote execution
@@ -1101,93 +1035,11 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projec
 
       if (projectMasterStatus.connected) {
         console.log(`[project:get-scripts] Using SSH execution for project ${projectId}`)
-
-        // Create a Node.js script to find and read package.json files remotely
-        // This is much simpler and more reliable than using bash
-        const findPackagesScript = `node -e "
-const fs = require('fs');
-const path = require('path');
-
-const rootDir = '${projectPath}';
-const excludeDirs = ['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo'];
-
-function findPackageJsonFiles(dir, depth = 0) {
-  if (depth > 10) return [];
-  const results = [];
-
-  try {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
-      results.push(dir);
-    }
-
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
-        results.push(...findPackageJsonFiles(path.join(dir, entry.name), depth + 1));
-      }
-    }
-  } catch (err) {
-    // Ignore errors
-  }
-
-  return results;
-}
-
-function detectPackageManager(dir) {
-  if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (fs.existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
-  if (fs.existsSync(path.join(dir, 'bun.lockb'))) return 'bun';
-  return 'npm';
-}
-
-try {
-  if (!fs.existsSync(path.join(rootDir, 'package.json'))) {
-    console.log(JSON.stringify({ hasPackageJson: false, packages: [], scripts: [] }));
-    process.exit(0);
-  }
-
-  const packageDirs = findPackageJsonFiles(rootDir);
-  const packages = [];
-
-  for (const pkgDir of packageDirs) {
-    try {
-      const pkgPath = path.join(pkgDir, 'package.json');
-      const content = fs.readFileSync(pkgPath, 'utf8');
-      const pkg = JSON.parse(content);
-
-      if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
-        const scripts = Object.entries(pkg.scripts).map(([name, command]) => ({ name, command }));
-        const relativePath = path.relative(rootDir, pkgDir) || '.';
-
-        packages.push({
-          packagePath: relativePath,
-          packageName: pkg.name || '',
-          scripts: scripts,
-          packageManager: detectPackageManager(pkgDir)
-        });
-      }
-    } catch (err) {
-      // Ignore individual package errors
-    }
-  }
-
-  console.log(JSON.stringify({ hasPackageJson: true, packages, scripts: [] }));
-} catch (err) {
-  console.error(JSON.stringify({ hasPackageJson: false, packages: [], scripts: [], error: err.message }));
-  process.exit(1);
-}
-"`
-
         try {
-          console.log(`[project:get-scripts] Executing remote Node.js script...`)
-          const result = await sshManager.execViaProjectMaster(projectId, findPackagesScript)
-          console.log(`[project:get-scripts] Remote script output:`, result.substring(0, 200))
-          const parsed = JSON.parse(result.trim())
-          console.log(`[project:get-scripts] Parsed result:`, parsed)
-          return parsed
-        } catch (error: any) {
+          return await getPackageScriptsRemote(sshManager, projectId, projectPath)
+        } catch (error: unknown) {
           console.error('[project:get-scripts] SSH execution failed:', error)
-          return { hasPackageJson: false, packages: [], scripts: [], error: error.message }
+          return { hasPackageJson: false, packages: [], scripts: [], error: getErrorMessage(error) }
         }
       } else {
         console.log(`[project:get-scripts] SSH project master not connected, falling back to local`)
@@ -1196,86 +1048,12 @@ try {
 
     // For local/WSL projects, use filesystem operations
     const fsPath = resolvePathForFs(projectPath)
-    const rootPackageJsonPath = path.join(fsPath, 'package.json')
-
-    // Check if root package.json exists
-    try {
-      await fs.promises.access(rootPackageJsonPath)
-    } catch {
-      return { hasPackageJson: false, packages: [], scripts: [] }
-    }
-
-    // Find all package.json files in the project (async)
-    const packagePaths = await findPackageJsonFiles(fsPath, fsPath)
-    const packages: PackageScripts[] = []
-
-    // Read and process each package.json in parallel
-    const packagePromises = packagePaths.map(async (relativePath) => {
-      try {
-        const packageDir = path.join(fsPath, relativePath)
-        const packageJsonPath = path.join(packageDir, 'package.json')
-        const content = await fs.promises.readFile(packageJsonPath, 'utf-8')
-        const packageJson = JSON.parse(content)
-
-        const scripts: ScriptInfo[] = []
-        if (packageJson.scripts && typeof packageJson.scripts === 'object') {
-          for (const [name, command] of Object.entries(packageJson.scripts)) {
-            if (typeof command === 'string') {
-              scripts.push({ name, command })
-            }
-          }
-        }
-
-        // Only include packages that have scripts
-        if (scripts.length > 0) {
-          return {
-            packagePath: relativePath,
-            packageName: packageJson.name,
-            scripts,
-            packageManager: await detectPackageManager(packageDir),
-          }
-        }
-        return null
-      } catch (err) {
-        console.error(`Failed to read package.json at ${relativePath}:`, err)
-        return null
-      }
-    })
-
-    const packageResults = await Promise.all(packagePromises)
-    for (const pkg of packageResults) {
-      if (pkg) packages.push(pkg)
-    }
-
-    // Get legacy fields from root package.json for backward compatibility
-    const rootContent = await fs.promises.readFile(rootPackageJsonPath, 'utf-8')
-    const rootPackageJson = JSON.parse(rootContent)
-    const rootScripts: ScriptInfo[] = []
-    if (rootPackageJson.scripts && typeof rootPackageJson.scripts === 'object') {
-      for (const [name, command] of Object.entries(rootPackageJson.scripts)) {
-        if (typeof command === 'string') {
-          rootScripts.push({ name, command })
-        }
-      }
-    }
-
-    return {
-      hasPackageJson: true,
-      packages,
-      // Keep legacy fields for backward compatibility
-      scripts: rootScripts,
-      packageManager: await detectPackageManager(fsPath),
-      projectName: rootPackageJson.name || path.basename(projectPath),
-    }
+    return await getPackageScriptsLocal(fsPath, projectPath)
   } catch (err) {
     console.error('Failed to read package.json:', err)
     return { hasPackageJson: false, packages: [], scripts: [], error: String(err) }
   }
 })
-
-// Get git info for a directory (supports local, WSL, and SSH projects)
-
-
 
 /**
  * Generate per-file diff hashes
@@ -1289,14 +1067,14 @@ ipcMain.handle('review:generateFileHashes', async (_event, projectPath: string, 
       hashesObj[file] = hash
     })
     return { success: true, hashes: hashesObj }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Review] Failed to generate file hashes:', error)
-    return { success: false, error: error.message }
+    return { success: false, error: getErrorMessage(error) }
   }
 })
 
 // Helper to wait for database to be ready
-async function waitForDb(timeoutMs = 5000): Promise<boolean> {
+async function waitForDb(timeoutMs = CONSTANTS.DB_WAIT_TIMEOUT_MS): Promise<boolean> {
   const startTime = Date.now()
   while (!dbReady) {
     if (Date.now() - startTime > timeoutMs) {
@@ -1418,7 +1196,7 @@ ipcMain.handle('system:open-external', async (_event, url: string) => {
 })
 
 // SSH IPC Handlers
-ipcMain.handle('ssh:connect', async (_event, config: any) => {
+ipcMain.handle('ssh:connect', async (_event, config: SSHConnectionConfig) => {
   if (!sshManager) {
     return { success: false, error: 'SSH manager not initialized' }
   }
@@ -1432,7 +1210,7 @@ ipcMain.handle('ssh:disconnect', async (_event, connectionId: string) => {
   return sshManager.disconnect(connectionId)
 })
 
-ipcMain.handle('ssh:test', async (_event, config: any) => {
+ipcMain.handle('ssh:test', async (_event, config: SSHConnectionConfig) => {
   if (!sshManager) {
     return { success: false, error: 'SSH manager not initialized' }
   }
@@ -1487,7 +1265,7 @@ ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) =
 
 
 // Helper function to extract findings from Claude output
-function extractFindingsFromOutput(output: string): any[] {
+function extractFindingsFromOutput(output: string): Finding[] {
   try {
     // Try to parse as JSON directly
     const trimmed = output.trim()
@@ -1545,7 +1323,7 @@ ipcMain.handle('review:start', async (_event, projectPath: string, files: string
       taskId: `${reviewId}-classify`,
       prompt: classificationPrompt,
       projectPath,
-      timeout: 60000 // 1 minute
+      timeout: CONSTANTS.REVIEW_TIMEOUT_MS
     })
 
     console.log(`[Review] Classification result:`, {
@@ -1561,7 +1339,7 @@ ipcMain.handle('review:start', async (_event, projectPath: string, files: string
       console.log(`[Review] Sending ${classifications.length} classifications to frontend`)
 
       // Ensure all classifications have fileId
-      const classificationsWithFileId = classifications.map((c: any) => ({
+      const classificationsWithFileId = (classifications as FileClassification[]).map((c) => ({
         ...c,
         fileId: c.fileId || generateFileId(projectPath, c.file) // Fallback if AI didn't include it
       }))
@@ -1586,9 +1364,9 @@ ipcMain.handle('review:start', async (_event, projectPath: string, files: string
       console.error(`[Review] Classification failed to parse. Raw output:`, result.output?.substring(0, 500))
       throw new Error('Classification failed: Could not parse JSON from Claude output')
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[Review] Failed to start review:`, error)
-    return { success: false, error: error.message }
+    return { success: false, error: getErrorMessage(error) }
   }
 })
 
@@ -1609,8 +1387,7 @@ ipcMain.handle('review:start-low-risk', async (_event, reviewId: string, lowRisk
   // Handle case where all files were cached (0 files to review)
   if (lowRiskFiles.length === 0) {
     console.log('[Review] No files to review (all cached), sending empty findings')
-    const mainWindow = BrowserWindow.getAllWindows()[0]
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('review:low-risk-findings', {
         reviewId,
         findings: []
@@ -1621,10 +1398,9 @@ ipcMain.handle('review:start-low-risk', async (_event, reviewId: string, lowRisk
 
   try {
     // Split files into batches for parallel review
-    const batchSize = 5
     const batches: string[][] = []
-    for (let i = 0; i < lowRiskFiles.length; i += batchSize) {
-      batches.push(lowRiskFiles.slice(i, i + batchSize))
+    for (let i = 0; i < lowRiskFiles.length; i += CONSTANTS.REVIEW_BATCH_SIZE) {
+      batches.push(lowRiskFiles.slice(i, i + CONSTANTS.REVIEW_BATCH_SIZE))
     }
 
     // Run batches in parallel
@@ -1634,17 +1410,17 @@ ipcMain.handle('review:start-low-risk', async (_event, reviewId: string, lowRisk
         taskId: `${reviewId}-batch-${idx}`,
         prompt,
         projectPath: review.projectPath,
-        timeout: 90000 // 1.5 minutes per batch
+        timeout: CONSTANTS.COORDINATOR_TIMEOUT_MS
       })
     })
 
     const results = await Promise.all(batchPromises)
 
     // Aggregate findings
-    const allFindings: any[] = []
+    const allFindings: Finding[] = []
     for (const result of results) {
       if (result.success && result.parsed) {
-        allFindings.push(...result.parsed)
+        allFindings.push(...(result.parsed as Finding[]))
       }
     }
 
@@ -1664,15 +1440,15 @@ ipcMain.handle('review:start-low-risk', async (_event, reviewId: string, lowRisk
     }
 
     return { success: true, findingCount: findingsWithIds.length }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[Review] Low-risk review failed:`, error)
 
     // Send failure event to frontend
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('review:failed', reviewId, error.message || 'Low-risk review failed')
+      mainWindow.webContents.send('review:failed', reviewId, getErrorMessage(error))
     }
 
-    return { success: false, error: error.message }
+    return { success: false, error: getErrorMessage(error) }
   }
 })
 
@@ -1695,7 +1471,7 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
 
   try {
     // Get classification reasoning
-    const classification = review.classifications.find((c: any) => c.file === file)
+    const classification = review.classifications.find((c) => c.file === file)
     const riskReasoning = classification?.reasoning || 'High-risk file'
 
     // Update status
@@ -1714,16 +1490,16 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
         taskId: `${reviewId}-file${fileIndex}-agent${agentNum}`,
         prompt,
         projectPath: review.projectPath,
-        timeout: 120000 // 2 minutes per agent
+        timeout: CONSTANTS.ACCURACY_TIMEOUT_MS
       })
     })
 
     const subAgentResults = await Promise.all(subAgentPromises)
 
     // Extract findings from each agent
-    const subAgentReviews = subAgentResults.map((result, idx) => ({
+    const subAgentReviews: SubAgentReview[] = subAgentResults.map((result, idx) => ({
       agentId: `reviewer-${idx + 1}`,
-      findings: result.success && result.parsed ? result.parsed : [],
+      findings: result.success && result.parsed ? (result.parsed as Finding[]) : [],
       timestamp: Date.now()
     }))
 
@@ -1742,14 +1518,14 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
       taskId: `${reviewId}-file${fileIndex}-coordinator`,
       prompt: coordinatorPrompt,
       projectPath: review.projectPath,
-      timeout: 60000
+      timeout: CONSTANTS.REVIEW_TIMEOUT_MS
     })
 
     if (!coordinatorResult.success || !coordinatorResult.parsed) {
       throw new Error('Coordinator failed')
     }
 
-    const consolidatedFindings = coordinatorResult.parsed
+    const consolidatedFindings = coordinatorResult.parsed as Finding[]
 
     // Update status
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1761,14 +1537,14 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
     }
 
     // Step 3: Accuracy checkers verify each finding
-    const verificationPromises = consolidatedFindings.map((finding: any, idx: number) => {
-      finding.id = `${reviewId}-highrisk-${fileIndex}-${idx}`
+    const verificationPromises = consolidatedFindings.map((finding, idx) => {
+      finding.id = generateFindingId(reviewId, fileIndex, idx)
       const prompt = buildAccuracyPrompt(finding, file, review.projectPath)
       return backgroundClaude!.runTask({
         taskId: `${reviewId}-file${fileIndex}-verify-${idx}`,
         prompt,
         projectPath: review.projectPath,
-        timeout: 60000
+        timeout: CONSTANTS.REVIEW_TIMEOUT_MS
       })
     })
 
@@ -1776,18 +1552,18 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
 
     // Filter to verified findings
     const verifiedFindings = consolidatedFindings
-      .map((finding: any, idx: number) => {
+      .map((finding, idx) => {
         const verification = verificationResults[idx]
         const verificationData = verification.success && verification.parsed ? verification.parsed : null
 
         return {
           ...finding,
-          verificationStatus: verificationData?.isAccurate ? 'verified' : 'rejected',
+          verificationStatus: (verificationData?.isAccurate ? 'verified' : 'rejected') as 'verified' | 'rejected',
           verificationResult: verificationData,
           confidence: verificationData?.confidence || 0
         }
       })
-      .filter((f: any) => f.verificationStatus === 'verified')
+      .filter((f) => f.verificationStatus === 'verified')
 
     // Update status
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1813,15 +1589,15 @@ ipcMain.handle('review:review-high-risk-file', async (_event, reviewId: string) 
       complete: review.currentHighRiskIndex >= review.highRiskFiles.length,
       findingCount: verifiedFindings.length
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[Review] High-risk file review failed:`, error)
 
     // Send failure event to frontend
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('review:failed', reviewId, error.message || 'High-risk file review failed')
+      mainWindow.webContents.send('review:failed', reviewId, getErrorMessage(error))
     }
 
-    return { success: false, error: error.message }
+    return { success: false, error: getErrorMessage(error) }
   }
 })
 

@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { detectWslPath } from '../utils/wsl-utils.js'
+import { detectWslPath, convertToWslUncPath } from '../utils/wsl-utils.js'
 import type { SSHManager } from '../ssh-manager.js'
 
 interface GitWatcherSet {
@@ -18,16 +18,26 @@ const GIT_DEBOUNCE_MS = 500 // Debounce rapid changes (increased to allow git op
 
 // Helper function to resolve path for file system operations
 function resolvePathForFs(inputPath: string): string {
-  const wslInfo = detectWslPath(inputPath)
+  if (process.platform !== 'win32') return inputPath
 
-  if (process.platform === 'win32' && wslInfo.isWslPath) {
-    // Convert to UNC path
-    const uncPath = wslInfo.uncPath
-    if (uncPath) {
-      return uncPath
-    }
+  // Already a valid UNC path, return as-is
+  if (inputPath.startsWith('\\\\wsl')) {
+    return inputPath
   }
 
+  // Already a Windows path (e.g., C:\...), return as-is
+  if (/^[a-zA-Z]:\\/.test(inputPath)) {
+    return inputPath
+  }
+
+  // Detect WSL paths and convert them
+  const wslInfo = detectWslPath(inputPath)
+  if (wslInfo.isWslPath && wslInfo.linuxPath) {
+    const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
+    return uncPath
+  }
+
+  // Fallback: return original path
   return inputPath
 }
 

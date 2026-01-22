@@ -329,7 +329,7 @@ const electronAPI = {
       ipcRenderer.invoke('fs:writeFile', filePath, content, projectId),
     listDir: (dirPath: string, projectId?: string): Promise<DirListResult> =>
       ipcRenderer.invoke('fs:listDir', dirPath, projectId),
-    searchContent: (projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }, projectId?: string): Promise<SearchContentResult> =>
+    searchContent: (projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean; userExclusions?: string[] }, projectId?: string): Promise<SearchContentResult> =>
       ipcRenderer.invoke('fs:searchContent', projectPath, query, options, projectId),
   },
   ssh: {

@@ -1,5 +1,12 @@
 import { create } from 'zustand'
 
+// Normalize line endings to LF for consistent diff comparison
+// This fixes the issue where git content (LF) and Windows file content (CRLF)
+// would show every line as changed in the Monaco DiffEditor
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n/g, '\n')
+}
+
 export interface OpenFile {
   path: string
   name: string
@@ -95,13 +102,16 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
       return
     }
 
+    // Normalize line endings for consistent diff comparison
+    const normalizedContent = normalizeLineEndings(content)
+
     const newFile: OpenFile = {
       path,
       name,
-      content,
+      content: normalizedContent,
       language: detectLanguage(name),
       isDirty: false,
-      originalContent: content,
+      originalContent: normalizedContent,
       projectPath,
       projectId,
       gitContentLoaded: false,
@@ -178,10 +188,15 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
   },
 
   setGitContent: (path, gitContent) => {
+    // Normalize line endings for consistent diff comparison
+    const normalizedGitContent = gitContent !== undefined
+      ? normalizeLineEndings(gitContent)
+      : undefined
+
     set((state) => ({
       openFiles: state.openFiles.map((f) =>
         f.path === path
-          ? { ...f, gitContent, gitContentLoaded: true }
+          ? { ...f, gitContent: normalizedGitContent, gitContentLoaded: true }
           : f
       ),
     }))

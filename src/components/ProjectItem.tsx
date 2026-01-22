@@ -488,7 +488,6 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
           className="active:cursor-grabbing touch-none p-0.5"
           {...dragHandleProps}
           style={{ cursor: 'grab' }}
-          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
           <GripVertical className="w-4 h-4 flex-shrink-0 opacity-30 group-hover:opacity-70" />

@@ -67,6 +67,42 @@ function getProjectType(projectPath: string, projectId: string | undefined, sshM
   return 'windows-local'
 }
 
+/** Default directories to exclude from search */
+const DEFAULT_EXCLUDE_DIRS = ['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo', 'coverage', '__pycache__', '.venv', 'venv']
+
+/**
+ * Parse user exclusions into directory exclusions and glob patterns
+ */
+function parseUserExclusions(userExclusions: string[] = []): { dirs: string[]; patterns: string[] } {
+  const dirs: string[] = []
+  const patterns: string[] = []
+
+  for (const exclusion of userExclusions) {
+    // If it contains glob characters, treat as pattern
+    if (exclusion.includes('*') || exclusion.includes('?')) {
+      patterns.push(exclusion)
+    } else {
+      // Otherwise treat as directory name
+      dirs.push(exclusion)
+    }
+  }
+
+  return { dirs, patterns }
+}
+
+/**
+ * Check if a file matches any glob pattern (simple implementation)
+ */
+function matchesGlobPattern(filename: string, pattern: string): boolean {
+  // Convert glob to regex
+  const regexStr = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape special regex chars (except * and ?)
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.')
+  const regex = new RegExp(`^${regexStr}$`, 'i')
+  return regex.test(filename)
+}
+
 /**
  * Search files using Node.js (for Windows local projects where grep/rg aren't available)
  * This is a fallback when shell-based search tools aren't available
@@ -74,10 +110,11 @@ function getProjectType(projectPath: string, projectId: string | undefined, sshM
 async function searchWithNodeJs(
   projectPath: string,
   query: string,
-  options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }
+  options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean; userExclusions?: string[] }
 ): Promise<SearchResult[]> {
   const results: SearchResult[] = []
-  const excludeDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'out', '.turbo', 'coverage', '__pycache__', '.venv', 'venv'])
+  const { dirs: userDirs, patterns: userPatterns } = parseUserExclusions(options.userExclusions)
+  const excludeDirs = new Set([...DEFAULT_EXCLUDE_DIRS, ...userDirs])
   const maxFileSize = 1024 * 1024 // 1MB max file size to search
   const maxResults = 1000 // Limit results
 
@@ -118,6 +155,10 @@ async function searchWithNodeJs(
           const ext = path.extname(entry.name).toLowerCase()
           const binaryExtensions = new Set(['.exe', '.dll', '.so', '.dylib', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.avi', '.mov', '.webm'])
           if (binaryExtensions.has(ext)) continue
+
+          // Check if file matches any user exclusion pattern
+          const shouldExclude = userPatterns.some(p => matchesGlobPattern(entry.name, p) || matchesGlobPattern(relPath, p))
+          if (shouldExclude) continue
 
           try {
             const stats = await fs.promises.stat(fullPath)
@@ -391,9 +432,12 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
   // Search files content (using grep, ripgrep, or Node.js fallback)
   // Handles three project types: SSH, WSL, and Windows local
-  ipcMain.handle('fs:searchContent', async (_event, projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean }, projectId?: string) => {
+  ipcMain.handle('fs:searchContent', async (_event, projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean; userExclusions?: string[] }, projectId?: string) => {
     try {
       console.log('[fs:searchContent] Searching in:', projectPath, 'query:', query, 'options:', options)
+
+      // Parse user exclusions
+      const { dirs: userExcludeDirs, patterns: userExcludePatterns } = parseUserExclusions(options.userExclusions)
 
       // Determine project type to choose the right search strategy
       const projectType = getProjectType(projectPath, projectId, sshManager)
@@ -435,7 +479,8 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
       // Build the search command
       let grepCmd = ''
-      const excludeDirs = 'node_modules|.git|dist|build|.next|out|.turbo|coverage'
+      // Combine default exclusions with user directory exclusions
+      const excludeDirList = [...DEFAULT_EXCLUDE_DIRS, ...userExcludeDirs]
 
       if (useRipgrep) {
         // Use ripgrep (faster, better)
@@ -445,6 +490,16 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         if (options.wholeWord) flags.push('--word-regexp')
         if (!options.useRegex) flags.push('--fixed-strings')
 
+        // Add exclusion globs for directories that should be skipped
+        for (const dir of excludeDirList) {
+          flags.push(`--glob '!${dir}/**'`)
+        }
+
+        // Add user glob pattern exclusions
+        for (const pattern of userExcludePatterns) {
+          flags.push(`--glob '!${pattern}'`)
+        }
+
         // Escape query for shell
         const escapedQuery = query.replace(/'/g, "'\\''")
         // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
@@ -452,7 +507,13 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         grepCmd = `rg ${flags.join(' ')} '${escapedQuery}' .`
       } else {
         // Fallback to grep
-        const flags: string[] = ['-r', '-n', '--exclude-dir={' + excludeDirs + '}']
+        // Build exclude-dir flags separately to avoid brace expansion issues when command
+        // is passed through WSL bash -c "..." (braces get interpreted by bash)
+        const excludeFlags = excludeDirList.map(dir => `--exclude-dir=${dir}`).join(' ')
+        // Add user glob pattern exclusions (grep uses --exclude for file patterns)
+        const excludePatternFlags = userExcludePatterns.map(p => `--exclude='${p}'`).join(' ')
+        const flags: string[] = ['-r', '-n', excludeFlags]
+        if (excludePatternFlags) flags.push(excludePatternFlags)
 
         if (!options.caseSensitive) flags.push('-i')
         if (options.wholeWord) flags.push('-w')
@@ -466,12 +527,22 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       }
 
       console.log('[fs:searchContent] Command:', grepCmd)
+      console.log('[fs:searchContent] Calling execInContextAsync with:', {
+        command: grepCmd,
+        projectPath,
+        projectId
+      })
 
       // Execute search command using execInContextAsync which handles SSH/WSL routing
       let output = ''
       try {
         output = await execInContextAsync(grepCmd, projectPath, projectId)
+        console.log('[fs:searchContent] execInContextAsync returned, output length:', output?.length || 0)
+        if (output) {
+          console.log('[fs:searchContent] Output preview:', output.substring(0, 300))
+        }
       } catch (err: any) {
+        console.log('[fs:searchContent] execInContextAsync threw error:', err.message)
         // grep exits with code 1 if no matches found, which throws an error
         // Only treat it as a real error if it's not a "no matches" error
         if (err.message && !err.message.includes('exit code 1')) {
@@ -481,6 +552,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       }
 
       if (!output || output.trim() === '') {
+        console.log('[fs:searchContent] No output from search, returning empty results')
         return { success: true, results: [] }
       }
 

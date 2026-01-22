@@ -35,7 +35,15 @@
       "Bash(npm run typecheck:*)",
       "Bash(python modify_main_final.py:*)",
       "Bash(npx agent task:*)",
-      "Bash(./node_modules/.bin/vitest run)"
+      "Bash(./node_modules/.bin/vitest run)",
+      "Bash(wsl -d Ubuntu bash -c \"cd '/home/user/project' && grep -r -n -i 'test' . || true\":*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm test:*)",
+      "Bash(wsl -d Ubuntu bash:*)",
+      "Bash(npx vitest:*)",
+      "Bash(node:*)",
+      "Bash(npm run build:electron:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []
