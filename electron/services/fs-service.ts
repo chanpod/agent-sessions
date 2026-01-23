@@ -1,49 +1,17 @@
 import { ipcMain } from 'electron'
 import fs from 'fs'
-import path from 'path'
-import { execSync, exec } from 'child_process'
+import { exec } from 'child_process'
 import { promisify } from 'util'
 import type { SSHManager } from '../ssh-manager.js'
-import { resolvePathForFs, execInContextAsync } from '../main.js'
+import { execInContextAsync } from '../main.js'
+import { PathService } from '../utils/path-service.js'
 
 const execAsync = promisify(exec)
-
-interface WslPathInfo {
-  isWslPath: boolean
-  distro?: string
-  linuxPath?: string
-}
 
 /**
  * Project type for search operations
  */
 type ProjectType = 'ssh' | 'wsl' | 'windows-local'
-
-/**
- * Detect if a path is a WSL UNC path and extract the Linux path
- * Handles formats like: \\wsl$\Ubuntu\home\user\project or \\wsl.localhost\Ubuntu\home\user\project
- */
-function detectWslPath(inputPath: string): WslPathInfo {
-  // Check for UNC WSL paths: \\wsl$\Ubuntu\... or \\wsl.localhost\Ubuntu\...
-  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i)
-  if (uncMatch) {
-    return {
-      isWslPath: true,
-      distro: uncMatch[1],
-      linuxPath: uncMatch[2].replace(/\\/g, '/') || '/',
-    }
-  }
-
-  // Check for Linux-style paths that start with / (common when user types path manually)
-  if (process.platform === 'win32' && inputPath.startsWith('/') && !inputPath.startsWith('//')) {
-    return {
-      isWslPath: true,
-      linuxPath: inputPath,
-    }
-  }
-
-  return { isWslPath: false }
-}
 
 /**
  * Determine the project type based on path and SSH connection status
@@ -58,8 +26,7 @@ async function getProjectType(projectPath: string, projectId: string | undefined
   }
 
   // Check WSL
-  const wslInfo = detectWslPath(projectPath)
-  if (wslInfo.isWslPath) {
+  if (PathService.isWslPath(projectPath)) {
     return 'wsl'
   }
 
@@ -131,7 +98,7 @@ async function searchWithNodeJs(
     return []
   }
 
-  const fsPath = resolvePathForFs(projectPath)
+  const fsPath = PathService.toFsPath(projectPath)
 
   // Recursive file walker
   async function walkDir(dir: string, relativePath: string = ''): Promise<void> {
@@ -143,8 +110,8 @@ async function searchWithNodeJs(
       for (const entry of entries) {
         if (results.length >= maxResults) break
 
-        const fullPath = path.join(dir, entry.name)
-        const relPath = relativePath ? path.posix.join(relativePath, entry.name) : entry.name
+        const fullPath = PathService.join(dir, entry.name)
+        const relPath = relativePath ? PathService.joinPosix(relativePath, entry.name) : entry.name
 
         if (entry.isDirectory()) {
           if (!excludeDirs.has(entry.name) && !entry.name.startsWith('.')) {
@@ -152,7 +119,7 @@ async function searchWithNodeJs(
           }
         } else if (entry.isFile()) {
           // Skip binary files and large files
-          const ext = path.extname(entry.name).toLowerCase()
+          const ext = PathService.extname(entry.name).toLowerCase()
           const binaryExtensions = new Set(['.exe', '.dll', '.so', '.dylib', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.avi', '.mov', '.webm'])
           if (binaryExtensions.has(ext)) continue
 
@@ -268,7 +235,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       }
 
       // Local file system path
-      const fsPath = resolvePathForFs(filePath)
+      const fsPath = PathService.toFsPath(filePath)
       console.log('[fs:readFile] Resolved path:', fsPath)
       console.log('[fs:readFile] Path exists:', fs.existsSync(fsPath))
 
@@ -330,7 +297,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       }
 
       // Local file system path
-      const fsPath = resolvePathForFs(filePath)
+      const fsPath = PathService.toFsPath(filePath)
       console.log('[fs:writeFile] Resolved path:', fsPath)
       fs.writeFileSync(fsPath, content, 'utf-8')
 
@@ -339,7 +306,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
       return { success: true }
     } catch (err) {
-      console.error('Failed to write file:', err)
+      console.error('[fs:writeFile] Failed to write file:', filePath, 'Error:', err)
       return { success: false, error: String(err) }
     }
   })
@@ -372,7 +339,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
                 const name = isDir ? line.slice(0, -1) : line
                 return {
                   name,
-                  path: path.posix.join(dirPath, name),
+                  path: PathService.joinPosix(dirPath, name),
                   isDirectory: isDir,
                   isFile: !isDir,
                 }
@@ -394,7 +361,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       }
 
       // Local file system path
-      const fsPath = resolvePathForFs(dirPath)
+      const fsPath = PathService.toFsPath(dirPath)
       console.log('[fs:listDir] Resolved path:', fsPath)
 
       if (!fs.existsSync(fsPath)) {
@@ -411,7 +378,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       // Keep returning original path format (not UNC) for consistency with user input
       const items = entries.map((entry) => ({
         name: entry.name,
-        path: path.posix.join(dirPath, entry.name), // Use posix join to preserve Linux-style paths
+        path: PathService.joinPosix(dirPath, entry.name), // Use posix join to preserve Linux-style paths
         isDirectory: entry.isDirectory(),
         isFile: entry.isFile(),
       }))
@@ -455,10 +422,11 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       const results: SearchResult[] = []
 
       // Detect if this is a WSL path and convert to Linux format for ripgrep/grep
-      const wslInfo = detectWslPath(projectPath)
-      const searchPath = wslInfo.isWslPath && wslInfo.linuxPath ? wslInfo.linuxPath : projectPath
+      const pathInfo = PathService.analyzePath(projectPath)
+      const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
+      const searchPath = isWsl && pathInfo.linuxPath ? pathInfo.linuxPath : projectPath
 
-      console.log('[fs:searchContent] WSL info:', wslInfo, 'searchPath:', searchPath)
+      console.log('[fs:searchContent] Path info:', pathInfo, 'searchPath:', searchPath)
 
       // Check if ripgrep is available (faster and better)
       let useRipgrep = false
@@ -468,7 +436,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
           useRipgrep = true
         } else if (projectType === 'wsl') {
           // For WSL, check inside WSL environment
-          const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
+          const distroArg = pathInfo.wslDistro ? `-d ${pathInfo.wslDistro} ` : ''
           await execAsync(`wsl ${distroArg}which rg`)
           useRipgrep = true
         }
@@ -500,11 +468,11 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
           flags.push(`--glob '!${pattern}'`)
         }
 
-        // Escape query for shell
-        const escapedQuery = query.replace(/'/g, "'\\''")
+        // Escape query for shell (escapeForBash returns the string wrapped in single quotes)
+        const escapedQuery = PathService.escapeForBash(query)
         // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
         // Using double quotes around the path would get corrupted by execInContextAsync's quote escaping for WSL.
-        grepCmd = `rg ${flags.join(' ')} '${escapedQuery}' .`
+        grepCmd = `rg ${flags.join(' ')} ${escapedQuery} .`
       } else {
         // Fallback to grep
         // Build exclude-dir flags separately to avoid brace expansion issues when command
@@ -519,11 +487,11 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         if (options.wholeWord) flags.push('-w')
         if (!options.useRegex) flags.push('-F')
 
-        // Escape query for shell
-        const escapedQuery = query.replace(/'/g, "'\\''")
+        // Escape query for shell (escapeForBash returns the string wrapped in single quotes)
+        const escapedQuery = PathService.escapeForBash(query)
         // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
         // Using double quotes around the path would get corrupted by execInContextAsync's quote escaping for WSL.
-        grepCmd = `grep ${flags.join(' ')} '${escapedQuery}' . || true`
+        grepCmd = `grep ${flags.join(' ')} ${escapedQuery} . || true`
       }
 
       console.log('[fs:searchContent] Command:', grepCmd)

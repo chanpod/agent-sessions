@@ -1,12 +1,11 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { execSync, exec } from 'child_process'
+import { execSync } from 'child_process'
 import { readFileSync } from 'fs'
-import { join } from 'path'
 import { createHash } from 'crypto'
 import { generateFileId } from '../file-id-util.js'
 import { BackgroundClaudeManager } from '../background-claude-manager.js'
 import { PtyManager } from '../pty-manager.js'
-import { detectWslPath, convertToWslUncPath } from '../utils/wsl-utils.js'
+import { PathService } from '../utils/path-service.js'
 
 // ============================================================================
 // Review Types
@@ -31,11 +30,12 @@ const activeReviews = new Map<string, ActiveReview>()
 
 // Execute a command in the appropriate context (local, WSL, or SSH)
 function execInContext(command: string, projectPath: string, options: { encoding: 'utf-8' } = { encoding: 'utf-8' }): string {
-  const wslInfo = detectWslPath(projectPath)
+  const pathInfo = PathService.analyzePath(projectPath)
+  const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
 
-  if (process.platform === 'win32' && wslInfo.isWslPath) {
-    const linuxPath = wslInfo.linuxPath || projectPath
-    const distroArg = wslInfo.distro ? `-d ${wslInfo.distro} ` : ''
+  if (process.platform === 'win32' && isWsl) {
+    const linuxPath = pathInfo.linuxPath || projectPath
+    const distroArg = pathInfo.wslDistro ? `-d ${pathInfo.wslDistro} ` : ''
     // Escape double quotes in the command for WSL
     const escapedCmd = command.replace(/"/g, '\\"')
     return execSync(`wsl ${distroArg}bash -c "cd '${linuxPath}' && ${escapedCmd}"`, {
@@ -51,37 +51,13 @@ function execInContext(command: string, projectPath: string, options: { encoding
   })
 }
 
-// Resolve path for file system operations (converts WSL paths to UNC on Windows)
-function resolvePathForFs(inputPath: string): string {
-  if (process.platform !== 'win32') return inputPath
-
-  // Already a valid UNC path, return as-is
-  if (inputPath.startsWith('\\\\wsl')) {
-    return inputPath
-  }
-
-  // Already a Windows path (e.g., C:\...), return as-is
-  if (/^[a-zA-Z]:\\/.test(inputPath)) {
-    return inputPath
-  }
-
-  // Detect WSL paths and convert them
-  const wslInfo = detectWslPath(inputPath)
-  if (wslInfo.isWslPath && wslInfo.linuxPath) {
-    const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
-    return uncPath
-  }
-
-  // Fallback: return original path
-  return inputPath
-}
-
 /**
  * Get git diff for a file
  */
 function getFileDiff(file: string, projectPath: string): string {
   try {
-    return execInContext(`git diff HEAD -- "${file}"`, projectPath)
+    const normalizedFile = PathService.toGitPath(file)
+    return execInContext(`git diff HEAD -- "${normalizedFile}"`, projectPath)
   } catch (error) {
     return ''
   }
@@ -92,8 +68,8 @@ function getFileDiff(file: string, projectPath: string): string {
  */
 function getFileContent(file: string, projectPath: string): string {
   try {
-    const fsPath = resolvePathForFs(projectPath)
-    return readFileSync(join(fsPath, file), 'utf-8')
+    const fsPath = PathService.toFsPath(projectPath)
+    return readFileSync(PathService.join(fsPath, file), 'utf-8')
   } catch (error) {
     return ''
   }

@@ -1,7 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import fs from 'fs'
-import path from 'path'
-import { detectWslPath, convertToWslUncPath } from '../utils/wsl-utils.js'
+import { PathService } from '../utils/path-service.js'
 import type { SSHManager } from '../ssh-manager.js'
 
 interface GitWatcherSet {
@@ -15,31 +14,6 @@ interface GitWatcherSet {
 
 const gitWatchers = new Map<string, GitWatcherSet>()
 const GIT_DEBOUNCE_MS = 500 // Debounce rapid changes (increased to allow git operations to complete)
-
-// Helper function to resolve path for file system operations
-function resolvePathForFs(inputPath: string): string {
-  if (process.platform !== 'win32') return inputPath
-
-  // Already a valid UNC path, return as-is
-  if (inputPath.startsWith('\\\\wsl')) {
-    return inputPath
-  }
-
-  // Already a Windows path (e.g., C:\...), return as-is
-  if (/^[a-zA-Z]:\\/.test(inputPath)) {
-    return inputPath
-  }
-
-  // Detect WSL paths and convert them
-  const wslInfo = detectWslPath(inputPath)
-  if (wslInfo.isWslPath && wslInfo.linuxPath) {
-    const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
-    return uncPath
-  }
-
-  // Fallback: return original path
-  return inputPath
-}
 
 /**
  * Register all git-related IPC handlers
@@ -76,8 +50,8 @@ export function registerGitHandlers(
       } else {
         // For local/WSL projects, check filesystem
         console.log(`[git:get-info] Checking local/WSL filesystem for .git`)
-        const fsPath = resolvePathForFs(projectPath)
-        const gitDir = path.join(fsPath, '.git')
+        const fsPath = PathService.toFsPath(projectPath)
+        const gitDir = PathService.join(fsPath, '.git')
         if (!fs.existsSync(gitDir)) {
           console.log(`[git:get-info] .git directory does not exist locally at ${gitDir}`)
           return { isGitRepo: false }
@@ -161,8 +135,8 @@ export function registerGitHandlers(
       } else {
         // For local/WSL projects, check filesystem
         console.log(`[git:list-branches] Checking local/WSL filesystem for .git`)
-        const fsPath = resolvePathForFs(projectPath)
-        const gitDir = path.join(fsPath, '.git')
+        const fsPath = PathService.toFsPath(projectPath)
+        const gitDir = PathService.join(fsPath, '.git')
         if (!fs.existsSync(gitDir)) {
           console.log(`[git:list-branches] .git directory does not exist locally at ${gitDir}`)
           return { success: false, error: 'Not a git repository' }
@@ -222,8 +196,8 @@ export function registerGitHandlers(
         }
       } else {
         // For local/WSL projects, check filesystem
-        const fsPath = resolvePathForFs(projectPath)
-        const gitDir = path.join(fsPath, '.git')
+        const fsPath = PathService.toFsPath(projectPath)
+        const gitDir = PathService.join(fsPath, '.git')
         if (!fs.existsSync(gitDir)) {
           return { success: false, error: 'Not a git repository' }
         }
@@ -270,8 +244,8 @@ export function registerGitHandlers(
         }
       } else {
         // For local/WSL projects, check filesystem
-        const fsPath = resolvePathForFs(projectPath)
-        const gitDir = path.join(fsPath, '.git')
+        const fsPath = PathService.toFsPath(projectPath)
+        const gitDir = PathService.join(fsPath, '.git')
         if (!fs.existsSync(gitDir)) {
           return { success: false, error: 'Not a git repository' }
         }
@@ -306,10 +280,10 @@ export function registerGitHandlers(
       }
     }
 
-    const fsPath = resolvePathForFs(projectPath)
-    const gitDir = path.join(fsPath, '.git')
-    const headPath = path.join(gitDir, 'HEAD')
-    const indexPath = path.join(gitDir, 'index')
+    const fsPath = PathService.toFsPath(projectPath)
+    const gitDir = PathService.join(fsPath, '.git')
+    const headPath = PathService.join(gitDir, 'HEAD')
+    const indexPath = PathService.join(gitDir, 'index')
 
     if (!fs.existsSync(gitDir)) {
       return { success: false, error: 'Not a git repository' }
@@ -335,7 +309,7 @@ export function registerGitHandlers(
       }
 
       try {
-        const logsHeadPath = path.join(gitDir, 'logs', 'HEAD')
+        const logsHeadPath = PathService.join(gitDir, 'logs', 'HEAD')
         const logsHeadStats = fs.statSync(logsHeadPath)
         lastLogsHeadMtime = logsHeadStats.mtimeMs
       } catch (err) {
@@ -344,8 +318,8 @@ export function registerGitHandlers(
 
       // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
       // Use polling fallback instead
-      const wslInfo = detectWslPath(projectPath)
-      if (wslInfo.isWslPath) {
+      const isWslPath = PathService.isWslPath(projectPath)
+      if (isWslPath) {
         console.log('[Git Watch] WSL path detected, using polling fallback:', projectPath)
 
         // Set up polling interval for WSL projects
@@ -386,7 +360,7 @@ export function registerGitHandlers(
 
             // Check logs/HEAD (reflog)
             try {
-              const logsHeadPath = path.join(gitDir, 'logs', 'HEAD')
+              const logsHeadPath = PathService.join(gitDir, 'logs', 'HEAD')
               const logsHeadStats = fs.statSync(logsHeadPath)
               const watcherSet = gitWatchers.get(projectPath)
               if (watcherSet && logsHeadStats.mtimeMs !== watcherSet.lastLogsHeadMtime) {
@@ -460,7 +434,7 @@ export function registerGitHandlers(
 
             // Check logs/HEAD (reflog - most reliable for branch changes)
             try {
-              const logsHeadPath = path.join(gitDir, 'logs', 'HEAD')
+              const logsHeadPath = PathService.join(gitDir, 'logs', 'HEAD')
               const logsHeadStats = fs.statSync(logsHeadPath)
               if (logsHeadStats.mtimeMs !== watcherSet.lastLogsHeadMtime) {
                 watcherSet.lastLogsHeadMtime = logsHeadStats.mtimeMs
@@ -483,21 +457,30 @@ export function registerGitHandlers(
       // Watch the .git directory for changes
       // fs.watch is non-blocking and doesn't lock files
       const watcher = fs.watch(gitDir, { recursive: false }, (eventType, filename) => {
-        // We care about changes to HEAD (branch), index (staging), and refs (commits)
-        if (!filename) {
-          notifyChange()
-          return
-        }
+        try {
+          // We care about changes to HEAD (branch), index (staging), and refs (commits)
+          if (!filename) {
+            notifyChange()
+            return
+          }
 
-        const fileStr = filename.toString()
-        if (fileStr === 'HEAD' ||
-            fileStr === 'index' ||
-            fileStr.startsWith('refs') ||
-            fileStr.startsWith('logs/HEAD') ||
-            fileStr === 'logs' ||
-            (fileStr.startsWith('logs') && fileStr.includes('HEAD'))) {
-          notifyChange()
+          const fileStr = filename.toString()
+          if (fileStr === 'HEAD' ||
+              fileStr === 'index' ||
+              fileStr.startsWith('refs') ||
+              fileStr.startsWith('logs/HEAD') ||
+              fileStr === 'logs' ||
+              (fileStr.startsWith('logs') && fileStr.includes('HEAD'))) {
+            notifyChange()
+          }
+        } catch (err) {
+          console.error('[Git Watch] Error in watcher callback:', err)
         }
+      })
+
+      // Handle watcher errors to prevent crashes
+      watcher.on('error', (err) => {
+        console.error('[Git Watch] Watcher error for', projectPath, ':', err)
       })
 
       // Store watcher info
@@ -557,8 +540,8 @@ export function registerGitHandlers(
       } else {
         // For local/WSL projects, check filesystem
         console.log(`[git:get-changed-files] Checking local/WSL filesystem for .git`)
-        const fsPath = resolvePathForFs(projectPath)
-        const gitDir = path.join(fsPath, '.git')
+        const fsPath = PathService.toFsPath(projectPath)
+        const gitDir = PathService.join(fsPath, '.git')
         if (!fs.existsSync(gitDir)) {
           console.log(`[git:get-changed-files] .git directory does not exist locally at ${gitDir}`)
           return { success: false, error: 'Not a git repository' }
@@ -654,15 +637,16 @@ export function registerGitHandlers(
           }
         } else {
           // For local/WSL projects, check filesystem
-          const fsPath = resolvePathForFs(projectPath)
-          const gitDir = path.join(fsPath, '.git')
+          const fsPath = PathService.toFsPath(projectPath)
+          const gitDir = PathService.join(fsPath, '.git')
           if (!fs.existsSync(gitDir)) {
             return { success: false, error: 'Not a git repository' }
           }
         }
 
         // Get the file content from HEAD
-        const content = await execInContextAsync(`git show HEAD:${filePath}`, projectPath, projectId)
+        const normalizedFilePath = PathService.toGitPath(filePath)
+        const content = await execInContextAsync(`git show HEAD:${normalizedFilePath}`, projectPath, projectId)
 
         return { success: true, content }
       } catch (err) {
@@ -683,7 +667,8 @@ export function registerGitHandlers(
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
       console.log(`[git:stage-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
-        await execInContextAsync(`git add "${filePath}"`, projectPath, projectId)
+        const normalizedFilePath = PathService.toGitPath(filePath)
+        await execInContextAsync(`git add "${normalizedFilePath}"`, projectPath, projectId)
         return { success: true }
       } catch (err) {
         console.error('Failed to stage file:', err)
@@ -699,7 +684,8 @@ export function registerGitHandlers(
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
       console.log(`[git:unstage-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
-        await execInContextAsync(`git restore --staged "${filePath}"`, projectPath, projectId)
+        const normalizedFilePath = PathService.toGitPath(filePath)
+        await execInContextAsync(`git restore --staged "${normalizedFilePath}"`, projectPath, projectId)
         return { success: true }
       } catch (err) {
         console.error('Failed to unstage file:', err)
@@ -715,8 +701,9 @@ export function registerGitHandlers(
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
       console.log(`[git:discard-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
+        const normalizedFilePath = PathService.toGitPath(filePath)
         // For untracked files, we need to remove them
-        const status = (await execInContextAsync(`git status --porcelain "${filePath}"`, projectPath, projectId)).trim()
+        const status = (await execInContextAsync(`git status --porcelain "${normalizedFilePath}"`, projectPath, projectId)).trim()
 
         if (status.startsWith('??')) {
           // Untracked file - delete it
@@ -724,20 +711,20 @@ export function registerGitHandlers(
             const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
             if (projectMasterStatus.connected) {
               // Delete via SSH
-              const fullPath = path.posix.join(projectPath, filePath)
+              const fullPath = PathService.joinPosix(projectPath, filePath)
               await sshManager.execViaProjectMaster(projectId, `rm -f "${fullPath}"`)
             }
           } else {
             // Delete locally
-            const fsPath = resolvePathForFs(projectPath)
-            const fullPath = path.join(fsPath, filePath)
+            const fsPath = PathService.toFsPath(projectPath)
+            const fullPath = PathService.join(fsPath, filePath)
             if (fs.existsSync(fullPath)) {
               fs.unlinkSync(fullPath)
             }
           }
         } else {
           // Tracked file - restore it
-          await execInContextAsync(`git restore "${filePath}"`, projectPath, projectId)
+          await execInContextAsync(`git restore "${normalizedFilePath}"`, projectPath, projectId)
         }
         return { success: true }
       } catch (err) {

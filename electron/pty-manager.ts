@@ -6,7 +6,7 @@ import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
 import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
-import { convertToWslUncPath } from './utils/wsl-utils'
+import { PathService } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
 
@@ -26,44 +26,6 @@ interface TerminalInstance {
   hidden?: boolean
 }
 
-// WSL path detection for pty-manager
-function isWslPath(inputPath: string): boolean {
-  if (process.platform !== 'win32') return false
-  // Check for UNC WSL paths or Linux-style paths
-  return /^\\\\wsl(?:\$|\.localhost)\\/i.test(inputPath) ||
-    (inputPath.startsWith('/') && !inputPath.startsWith('//'))
-}
-
-function getDefaultWslDistro(): string | null {
-  if (process.platform !== 'win32') return null
-  try {
-    const output = execSync('wsl -l -q', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines = output.replace(/\0/g, '').split('\n').map(l => l.trim()).filter(l => l.length > 0)
-    return lines[0] || null
-  } catch {
-    return null
-  }
-}
-
-function isWslAvailable(): boolean {
-  if (process.platform !== 'win32') return false
-  try {
-    execSync('wsl --status', { stdio: 'ignore', timeout: 5000 })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function getLinuxPathFromWslPath(inputPath: string): string {
-  // Extract Linux path from UNC path
-  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i)
-  if (uncMatch) {
-    return uncMatch[1].replace(/\\/g, '/') || '/'
-  }
-  // Already a Linux-style path
-  return inputPath
-}
 
 /**
  * Batch check which PIDs have child processes (async, non-blocking)
@@ -306,18 +268,18 @@ export class PtyManager {
     }
 
     // Handle WSL paths on Windows
-    if (process.platform === 'win32' && originalCwd && isWslPath(originalCwd)) {
+    if (process.platform === 'win32' && originalCwd && PathService.isWslPath(originalCwd)) {
       // Validate WSL is available before attempting to use it
-      if (!isWslAvailable()) {
+      if (!PathService.getEnvironment().wslAvailable) {
         throw new Error('WSL is not available. Please ensure Windows Subsystem for Linux is installed and enabled.')
       }
 
-      const distro = getDefaultWslDistro()
+      const distro = PathService.getEnvironment().defaultWslDistro
       if (!distro) {
         throw new Error('No WSL distribution found. Please install a Linux distribution from the Microsoft Store.')
       }
 
-      const linuxPath = getLinuxPathFromWslPath(originalCwd)
+      const linuxPath = PathService.toWslLinuxPath(originalCwd)
 
       // If shell executable is not already WSL, switch to WSL
       // Check the executable name, not the full string with args
@@ -327,7 +289,7 @@ export class PtyManager {
         shellArgs = ['-d', distro, '--cd', linuxPath]
       }
       // Convert Linux path to UNC path for Windows to access WSL filesystem
-      const uncPath = convertToWslUncPath(linuxPath, distro)
+      const uncPath = PathService.toWslUncPath(linuxPath, distro)
       effectiveCwd = uncPath || process.cwd()
     }
 

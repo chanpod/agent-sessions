@@ -5,6 +5,7 @@
  */
 
 import { PtyManager } from './pty-manager.js'
+import { PathService } from './utils/path-service.js'
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
@@ -291,22 +292,13 @@ export class BackgroundClaudeManager {
       return `Get-Content "${promptFile}" | claude ${claudeArgs} > "${outputFile}"\r\n`
     } else if (isWsl) {
       // Convert Windows paths to WSL paths
-      const wslPrompt = this.toWslPath(promptFile)
-      const wslOutput = this.toWslPath(outputFile)
+      const wslPrompt = PathService.toWslLinuxPath(promptFile)
+      const wslOutput = PathService.toWslLinuxPath(outputFile)
       return `cat "${wslPrompt}" | claude ${claudeArgs} > "${wslOutput}"\n`
     } else {
       // Unix/Mac/Git Bash
       return `cat "${promptFile}" | claude ${claudeArgs} > "${outputFile}"\n`
     }
-  }
-
-  /**
-   * Convert Windows path to WSL path
-   */
-  private toWslPath(winPath: string): string {
-    return winPath
-      .replace(/^([A-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`)
-      .replace(/\\/g, '/')
   }
 
   /**

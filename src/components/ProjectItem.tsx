@@ -402,11 +402,11 @@ export function ProjectItem({
             </div>
 
             <div className={cn(project.activeTab !== 'files' && 'hidden')}>
-              <FilesTab projectId={project.id} projectPath={project.path} />
+              <FilesTab projectId={project.id} projectPath={project.isSSHProject ? (project.remotePath || project.path) : project.path} />
             </div>
 
             <div className={cn(project.activeTab !== 'search' && 'hidden')}>
-              <SearchTab projectId={project.id} projectPath={project.path} />
+              <SearchTab projectId={project.id} projectPath={project.isSSHProject ? (project.remotePath || project.path) : project.path} />
             </div>
           </div>
         </div>

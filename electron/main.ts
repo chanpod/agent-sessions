@@ -33,18 +33,13 @@ import {
   isExecError
 } from './types/index.js'
 import {
-  detectWslPath,
   convertToWslUncPath,
   getWslDistros,
   buildWslCommand,
   type WslPathInfo
 } from './utils/wsl-utils.js'
+import { PathService } from './utils/path-service.js'
 
-// Helper function to check if a path is a WSL path
-const isWslPath = (path?: string): boolean => {
-  if (!path) return false
-  return detectWslPath(path).isWslPath
-}
 
 import {
   parseFindings,
@@ -65,10 +60,11 @@ interface ShellInfo {
 // Execute a command in the appropriate context (local, WSL, or SSH)
 // This is the main abstraction that routes commands correctly
 function execInContext(command: string, projectPath: string, options: { encoding: 'utf-8' } = { encoding: 'utf-8' }): string {
-  const wslInfo = detectWslPath(projectPath)
+  const pathInfo = PathService.analyzePath(projectPath)
+  const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
 
-  if (process.platform === 'win32' && wslInfo.isWslPath) {
-    const wslCommand = buildWslCommand(command, projectPath, wslInfo)
+  if (process.platform === 'win32' && isWsl) {
+    const wslCommand = buildWslCommand(command, projectPath, { isWslPath: isWsl, linuxPath: pathInfo.linuxPath, distro: pathInfo.wslDistro })
     return execSync(wslCommand.cmd, {
       ...options,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -85,119 +81,52 @@ function execInContext(command: string, projectPath: string, options: { encoding
 // Execute a command asynchronously in the appropriate context (local, WSL, or SSH)
 // This automatically detects and routes to the correct execution method
 export async function execInContextAsync(command: string, projectPath: string, projectId?: string): Promise<string> {
-  console.log(`[execInContextAsync] Called with:`)
-  console.log(`  - projectId: ${projectId}`)
-  console.log(`  - projectPath: "${projectPath}"`)
-  console.log(`  - command: "${command}"`)
-  console.log(`  - platform: ${process.platform}`)
-
   // First check if this is an SSH project
   if (projectId && sshManager) {
     const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-    console.log(`[execInContextAsync] Project master status:`, projectMasterStatus)
     if (projectMasterStatus.connected) {
       // Execute via SSH using ControlMaster
-      console.log(`[execInContextAsync] Executing via SSH for project ${projectId}: ${command}`)
       try {
-        const result = await sshManager.execViaProjectMaster(projectId, `cd "${projectPath}" && ${command}`)
-        console.log(`[execInContextAsync] SSH command result: ${result.substring(0, 100)}...`)
-        return result
+        return await sshManager.execViaProjectMaster(projectId, `cd "${projectPath}" && ${command}`)
       } catch (error: unknown) {
         console.error(`[execInContextAsync] SSH command failed:`, error)
         throw new Error(`SSH command failed: ${getErrorMessage(error)}`)
       }
-    } else {
-      console.log(`[execInContextAsync] Project ${projectId} master not connected, falling back to local/WSL`)
     }
-  } else {
-    console.log(`[execInContextAsync] No projectId or sshManager, using local/WSL execution`)
   }
 
   // Fall back to local/WSL execution
   return new Promise((resolve, reject) => {
-    const wslInfo = detectWslPath(projectPath)
-    console.log(`[execInContextAsync] WSL detection for path "${projectPath}":`, wslInfo)
+    const pathInfo = PathService.analyzePath(projectPath)
+    const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
 
     let cmd: string
     let execOptions: ExecOptions
 
-    if (process.platform === 'win32' && wslInfo.isWslPath) {
-      const wslCommand = buildWslCommand(command, projectPath, wslInfo)
+    if (process.platform === 'win32' && isWsl) {
+      const wslCommand = buildWslCommand(command, projectPath, { isWslPath: isWsl, linuxPath: pathInfo.linuxPath, distro: pathInfo.wslDistro })
       cmd = wslCommand.cmd
       execOptions = { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 } // 10MB buffer
-      console.log(`[execInContextAsync] WSL command built:`)
-      console.log(`  - Original command: ${command}`)
-      console.log(`  - Full WSL command: ${cmd}`)
     } else {
       cmd = command
       execOptions = { cwd: projectPath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
-      console.log(`[execInContextAsync] Local command: ${cmd}, cwd: ${projectPath}`)
     }
-
-    console.log(`[execInContextAsync] Executing command...`)
-    const startTime = Date.now()
 
     try {
       exec(cmd, execOptions, (error, stdout, stderr) => {
-      const duration = Date.now() - startTime
-      console.log(`[execInContextAsync] Command completed in ${duration}ms`)
-      console.log(`[execInContextAsync] stdout length: ${stdout?.length || 0}`)
-      console.log(`[execInContextAsync] stderr length: ${stderr?.length || 0}`)
-
-      if (stderr && stderr.trim()) {
-        console.log(`[execInContextAsync] stderr: ${stderr.substring(0, 500)}`)
-      }
-
-      if (stdout && stdout.trim()) {
-        console.log(`[execInContextAsync] stdout preview: ${stdout.substring(0, 200)}...`)
-      } else {
-        console.log(`[execInContextAsync] stdout is empty or whitespace only`)
-      }
-
-      if (error) {
-        const execError = error as ExecError
-        console.error(`[execInContextAsync] Command error:`, execError.message)
-        console.error(`[execInContextAsync] Error code:`, execError.code)
-        console.error(`[execInContextAsync] Error signal:`, execError.signal)
-        reject(error)
-      } else {
-        console.log(`[execInContextAsync] Command succeeded, returning stdout`)
-        resolve(stdout)
-      }
-    })
+        if (error) {
+          const execError = error as ExecError
+          console.error(`[execInContextAsync] Command failed: ${command.substring(0, 50)}...`, execError.message)
+          reject(error)
+        } else {
+          resolve(stdout)
+        }
+      })
     } catch (syncError: unknown) {
-      console.error(`[execInContextAsync] Synchronous error during exec:`, syncError)
+      console.error(`[execInContextAsync] Sync error:`, syncError)
       reject(syncError)
     }
   })
-}
-
-// Resolve path for file system operations (converts WSL paths to UNC on Windows)
-export function resolvePathForFs(inputPath: string): string {
-  if (process.platform !== 'win32') return inputPath
-
-  // Already a valid UNC path - normalize any forward slashes to backslashes
-  if (inputPath.startsWith('\\\\wsl')) {
-    return inputPath.replace(/\//g, '\\')
-  }
-
-  // Already a Windows path (e.g., C:\...), return as-is
-  if (/^[a-zA-Z]:\\/.test(inputPath)) {
-    return inputPath
-  }
-
-  // Detect WSL paths and convert them
-  const wslInfo = detectWslPath(inputPath)
-  if (wslInfo.isWslPath && wslInfo.linuxPath) {
-    const uncPath = convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
-    // Normalize any forward slashes to backslashes for Windows compatibility
-    const normalizedPath = uncPath.replace(/\//g, '\\')
-    console.log(`[resolvePathForFs] Converted Linux path to UNC: ${inputPath} -> ${normalizedPath}`)
-    return normalizedPath
-  }
-
-  // Fallback: normalize slashes and return
-  return inputPath.replace(/\//g, '\\')
 }
 
 // Initialize SQLite database for persistent storage
@@ -635,7 +564,8 @@ async function createWindow() {
  */
 function getFileDiff(file: string, projectPath: string): string {
   try {
-    return execInContext(`git diff HEAD -- "${file}"`, projectPath)
+    const normalizedFile = PathService.toGitPath(file)
+    return execInContext(`git diff HEAD -- "${normalizedFile}"`, projectPath)
   } catch (error) {
     return ''
   }
@@ -646,7 +576,7 @@ function getFileDiff(file: string, projectPath: string): string {
  */
 function getFileContent(file: string, projectPath: string): string {
   try {
-    const fsPath = resolvePathForFs(projectPath)
+    const fsPath = PathService.toFsPath(projectPath)
     return readFileSync(join(fsPath, file), 'utf-8')
   } catch (error) {
     return ''
@@ -1059,7 +989,7 @@ ipcMain.handle('system:get-shells', async (_event, projectPath?: string) => {
   }
 
   // Filter shells for WSL projects - only show WSL shells
-  if (process.platform === 'win32' && isWslPath(projectPath)) {
+  if (process.platform === 'win32' && PathService.isWslPath(projectPath)) {
     return shells.filter(shell => shell.name.includes('WSL'))
   }
 
@@ -1115,7 +1045,7 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projec
     }
 
     // For local/WSL projects, use filesystem operations
-    const fsPath = resolvePathForFs(projectPath)
+    const fsPath = PathService.toFsPath(projectPath)
     return await getPackageScriptsLocal(fsPath, projectPath)
   } catch (err) {
     console.error('Failed to read package.json:', err)

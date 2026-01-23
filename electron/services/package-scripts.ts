@@ -6,9 +6,9 @@
  */
 
 import * as fs from 'fs'
-import * as path from 'path'
 import type { SSHManager } from '../ssh-manager.js'
 import { CONSTANTS } from '../constants.js'
+import { PathService } from '../utils/path-service.js'
 
 /**
  * Information about a single npm script
@@ -65,10 +65,10 @@ export async function findPackageJsonFiles(
   const results: string[] = []
 
   try {
-    const packageJsonPath = path.join(dir, 'package.json')
+    const packageJsonPath = PathService.join(dir, 'package.json')
     try {
       await fs.promises.access(packageJsonPath)
-      const relativePath = path.relative(rootDir, dir)
+      const relativePath = PathService.relative(rootDir, dir)
       results.push(relativePath || '.')
     } catch {
       // package.json doesn't exist in this directory
@@ -79,7 +79,7 @@ export async function findPackageJsonFiles(
     const subdirPromises: Promise<string[]>[] = []
     for (const entry of entries) {
       if (entry.isDirectory() && !EXCLUDE_DIRS.includes(entry.name)) {
-        const subdirPath = path.join(dir, entry.name)
+        const subdirPath = PathService.join(dir, entry.name)
         subdirPromises.push(findPackageJsonFiles(subdirPath, rootDir, depth + 1, maxDepth))
       }
     }
@@ -103,7 +103,7 @@ export async function findPackageJsonFiles(
 export async function detectPackageManager(dir: string): Promise<string> {
   const checkFile = async (filename: string): Promise<boolean> => {
     try {
-      await fs.promises.access(path.join(dir, filename))
+      await fs.promises.access(PathService.join(dir, filename))
       return true
     } catch {
       return false
@@ -145,14 +145,14 @@ function findPackageJsonFiles(dir, depth = 0) {
   const results = [];
 
   try {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
+    if (fs.existsSync(PathService.join(dir, 'package.json'))) {
       results.push(dir);
     }
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
-        results.push(...findPackageJsonFiles(path.join(dir, entry.name), depth + 1));
+        results.push(...findPackageJsonFiles(PathService.join(dir, entry.name), depth + 1));
       }
     }
   } catch (err) {
@@ -163,9 +163,9 @@ function findPackageJsonFiles(dir, depth = 0) {
 }
 
 function detectPackageManager(dir) {
-  if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (fs.existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
-  if (fs.existsSync(path.join(dir, 'bun.lockb'))) return 'bun';
+  if (fs.existsSync(PathService.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(PathService.join(dir, 'yarn.lock'))) return 'yarn';
+  if (fs.existsSync(PathService.join(dir, 'bun.lockb'))) return 'bun';
   return 'npm';
 }
 
@@ -219,7 +219,7 @@ export async function getPackageScriptsLocal(
   fsPath: string,
   originalProjectPath: string
 ): Promise<PackageScriptResult> {
-  const rootPackageJsonPath = path.join(fsPath, 'package.json')
+  const rootPackageJsonPath = PathService.join(fsPath, 'package.json')
 
   // Check if root package.json exists
   try {
@@ -235,8 +235,8 @@ export async function getPackageScriptsLocal(
   // Read and process each package.json in parallel
   const packagePromises = packagePaths.map(async (relativePath) => {
     try {
-      const packageDir = path.join(fsPath, relativePath)
-      const packageJsonPath = path.join(packageDir, 'package.json')
+      const packageDir = PathService.join(fsPath, relativePath)
+      const packageJsonPath = PathService.join(packageDir, 'package.json')
       const content = await fs.promises.readFile(packageJsonPath, 'utf-8')
       const packageJson = JSON.parse(content)
 
@@ -288,7 +288,7 @@ export async function getPackageScriptsLocal(
     // Keep legacy fields for backward compatibility
     scripts: rootScripts,
     packageManager: await detectPackageManager(fsPath),
-    projectName: rootPackageJson.name || path.basename(originalProjectPath),
+    projectName: rootPackageJson.name || PathService.basename(originalProjectPath),
   }
 }
 

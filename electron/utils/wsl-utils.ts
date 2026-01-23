@@ -118,3 +118,98 @@ export function buildWslCommand(
 export function isWslEnvironment(): boolean {
   return process.platform === 'win32'
 }
+
+/**
+ * Check if WSL is available and functional on Windows.
+ *
+ * This performs an actual check to see if WSL is installed and working,
+ * not just if we're on Windows.
+ *
+ * @returns true if WSL is available and functional, false otherwise
+ */
+export function isWslAvailable(): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    execSync('wsl --status', { stdio: 'ignore', timeout: 5000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Normalize a path for use in git commands.
+ *
+ * Git always expects forward slashes, regardless of the platform.
+ * This function converts backslashes to forward slashes and extracts
+ * the Linux path from WSL UNC paths.
+ *
+ * Use this function when:
+ * - Passing file paths to git commands (git diff, git show, git add, etc.)
+ * - The path may come from Windows native, WSL, or SSH environments
+ *
+ * @param inputPath - The path to normalize (can be Windows, UNC, or Linux path)
+ * @returns The normalized path with forward slashes suitable for git
+ *
+ * @example
+ * normalizePathForGit('src\\utils\\file.ts') // => 'src/utils/file.ts'
+ * normalizePathForGit('\\\\wsl$\\Ubuntu\\home\\user\\file.ts') // => '/home/user/file.ts'
+ * normalizePathForGit('/home/user/file.ts') // => '/home/user/file.ts'
+ */
+export function normalizePathForGit(inputPath: string): string {
+  const wslInfo = detectWslPath(inputPath)
+
+  // If it's a WSL UNC path, return the Linux path (already normalized with forward slashes)
+  if (wslInfo.isWslPath && wslInfo.linuxPath) {
+    return wslInfo.linuxPath
+  }
+
+  // Otherwise, just replace all backslashes with forward slashes
+  return inputPath.replace(/\\/g, '/')
+}
+
+/**
+ * Resolve a path for Windows filesystem access.
+ *
+ * Converts WSL Linux paths to UNC paths that Windows can access.
+ * On non-Windows platforms, returns the path unchanged.
+ *
+ * Use this function when:
+ * - Using Node.js fs module to read/write files
+ * - Accessing files on the Windows filesystem from Electron
+ * - The path may be a WSL Linux path that needs conversion
+ *
+ * @param inputPath - The path to resolve (can be Linux path, UNC path, or Windows path)
+ * @returns The resolved path suitable for Windows filesystem operations
+ *
+ * @example
+ * resolvePathForFs('/home/user/file.ts') // => '\\\\wsl$\\Ubuntu\\home\\user\\file.ts'
+ * resolvePathForFs('C:\\Users\\file.ts') // => 'C:\\Users\\file.ts' (unchanged)
+ * resolvePathForFs('\\\\wsl$\\Ubuntu\\home\\file.ts') // => '\\\\wsl$\\Ubuntu\\home\\file.ts' (normalized)
+ */
+export function resolvePathForFs(inputPath: string): string {
+  // On non-Windows platforms, return unchanged
+  if (process.platform !== 'win32') {
+    return inputPath
+  }
+
+  const wslInfo = detectWslPath(inputPath)
+
+  // If it's not a WSL path, return unchanged (Windows native paths like C:\...)
+  if (!wslInfo.isWslPath) {
+    return inputPath
+  }
+
+  // If it's already a UNC path (has distro extracted), normalize it by reconstructing
+  if (wslInfo.distro && wslInfo.linuxPath) {
+    return convertToWslUncPath(wslInfo.linuxPath, wslInfo.distro)
+  }
+
+  // It's a WSL Linux path without distro (e.g., /home/user/...), convert to UNC
+  if (wslInfo.linuxPath) {
+    return convertToWslUncPath(wslInfo.linuxPath)
+  }
+
+  // Fallback: return unchanged
+  return inputPath
+}
