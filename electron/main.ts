@@ -38,7 +38,7 @@ import {
   buildWslCommand,
   type WslPathInfo
 } from './utils/wsl-utils.js'
-import { PathService } from './utils/path-service.js'
+import { PathService, type ExecutionContext } from './utils/path-service.js'
 
 
 import {
@@ -79,54 +79,76 @@ function execInContext(command: string, projectPath: string, options: { encoding
 }
 
 // Execute a command asynchronously in the appropriate context (local, WSL, or SSH)
-// This automatically detects and routes to the correct execution method
+// This automatically detects and routes to the correct execution method using PathService
 export async function execInContextAsync(command: string, projectPath: string, projectId?: string): Promise<string> {
-  // First check if this is an SSH project
-  if (projectId && sshManager) {
-    const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-    if (projectMasterStatus.connected) {
-      // Execute via SSH using ControlMaster
+  // Determine execution context using PathService
+  const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
+
+  switch (context) {
+    case 'ssh-remote': {
+      // Must use SSH, throw if not connected
+      if (!projectId || !sshManager) {
+        throw new Error(`SSH connection required but not configured for path: ${projectPath}`)
+      }
+
+      const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
+      if (!projectMasterStatus.connected) {
+        throw new Error(`SSH connection not available for project. Please reconnect to the SSH host.`)
+      }
+
       try {
-        return await sshManager.execViaProjectMaster(projectId, `cd "${projectPath}" && ${command}`)
+        const escapedPath = PathService.escapeForSSHRemote(projectPath)
+        return await sshManager.execViaProjectMaster(projectId, `cd ${escapedPath} && ${command}`)
       } catch (error: unknown) {
         console.error(`[execInContextAsync] SSH command failed:`, error)
         throw new Error(`SSH command failed: ${getErrorMessage(error)}`)
       }
     }
-  }
 
-  // Fall back to local/WSL execution
-  return new Promise((resolve, reject) => {
-    const pathInfo = PathService.analyzePath(projectPath)
-    const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
+    case 'wsl': {
+      // Use wsl.exe for WSL paths
+      return new Promise((resolve, reject) => {
+        const pathInfo = PathService.analyzePath(projectPath)
+        const wslCommand = buildWslCommand(command, projectPath, {
+          isWslPath: true,
+          linuxPath: pathInfo.linuxPath,
+          distro: pathInfo.wslDistro
+        })
 
-    let cmd: string
-    let execOptions: ExecOptions
-
-    if (process.platform === 'win32' && isWsl) {
-      const wslCommand = buildWslCommand(command, projectPath, { isWslPath: isWsl, linuxPath: pathInfo.linuxPath, distro: pathInfo.wslDistro })
-      cmd = wslCommand.cmd
-      execOptions = { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 } // 10MB buffer
-    } else {
-      cmd = command
-      execOptions = { cwd: projectPath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
-    }
-
-    try {
-      exec(cmd, execOptions, (error, stdout, stderr) => {
-        if (error) {
-          const execError = error as ExecError
-          console.error(`[execInContextAsync] Command failed: ${command.substring(0, 50)}...`, execError.message)
-          reject(error)
-        } else {
-          resolve(stdout)
-        }
+        exec(wslCommand.cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+          if (error) {
+            const execError = error as ExecError
+            console.error(`[execInContextAsync] WSL command failed: ${command.substring(0, 50)}...`, execError.message)
+            reject(error)
+          } else {
+            resolve(stdout)
+          }
+        })
       })
-    } catch (syncError: unknown) {
-      console.error(`[execInContextAsync] Sync error:`, syncError)
-      reject(syncError)
     }
-  })
+
+    case 'local-windows':
+    case 'local-unix': {
+      // Execute directly on local system
+      return new Promise((resolve, reject) => {
+        exec(command, { cwd: projectPath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+          if (error) {
+            const execError = error as ExecError
+            console.error(`[execInContextAsync] Local command failed: ${command.substring(0, 50)}...`, execError.message)
+            reject(error)
+          } else {
+            resolve(stdout)
+          }
+        })
+      })
+    }
+
+    default: {
+      // TypeScript exhaustiveness check
+      const _exhaustive: never = context
+      throw new Error(`Unknown execution context: ${context}`)
+    }
+  }
 }
 
 // Initialize SQLite database for persistent storage

@@ -6,12 +6,12 @@ This document describes the new multi-stage code review system that provides a m
 
 ## Architecture
 
-### Three-Stage Review Process
+### Three-Stage Review Process 
 
 1. **Stage 1: Classification** - Analyze all changed files and classify them by risk level
 2. **Stage 2: Inconsequential Review** - Bulk review of low-risk files with parallel agents
 3. **Stage 3: High-Risk Review** - Detailed, sequential review of high-risk files
-
+ 
 ## Completed Work
 
 ### 1. Data Structures (review-store.ts)

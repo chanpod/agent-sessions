@@ -43,7 +43,14 @@
       "Bash(npx vitest:*)",
       "Bash(node:*)",
       "Bash(npm run build:electron:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npx jest:*)",
+      "Bash(npm run test:*)",
+      "Bash(cd:*)",
+      "Bash(grep:*)",
+      "Bash(pnpm vitest run:*)",
+      "Bash(tsc:*)",
+      "Bash(cmd //c \"npx tsc --version\")"
     ],
     "deny": [],
     "ask": []

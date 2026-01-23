@@ -1,7 +1,59 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import fs from 'fs'
-import { PathService } from '../utils/path-service.js'
+import { exec } from 'child_process'
+import { promisify } from 'util'
+import { PathService, type ExecutionContext } from '../utils/path-service.js'
 import type { SSHManager } from '../ssh-manager.js'
+
+const execAsync = promisify(exec)
+
+/**
+ * Check if the git directory exists for a given project path.
+ * Uses the execution context to determine how to check.
+ *
+ * @returns true if .git exists, false otherwise
+ * @throws Error if SSH connection is required but not available
+ */
+async function checkGitDirExists(
+  projectPath: string,
+  projectId: string | undefined,
+  sshManager: SSHManager | null,
+  execInContextAsync: (command: string, projectPath: string, projectId?: string) => Promise<string>
+): Promise<boolean> {
+  const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
+
+  switch (context) {
+    case 'ssh-remote': {
+      if (!projectId || !sshManager) {
+        throw new Error('SSH connection required but not configured')
+      }
+      const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
+      if (!projectMasterStatus.connected) {
+        throw new Error('SSH connection not available')
+      }
+      try {
+        const escapedPath = PathService.escapeForSSHRemote(projectPath)
+        await sshManager.execViaProjectMaster(projectId, `test -d ${escapedPath}/.git`)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    case 'wsl':
+    case 'local-windows':
+    case 'local-unix': {
+      const fsPath = PathService.toFsPath(projectPath)
+      const gitDir = PathService.join(fsPath, '.git')
+      return fs.existsSync(gitDir)
+    }
+
+    default: {
+      const _exhaustive: never = context
+      throw new Error(`Unknown execution context: ${context}`)
+    }
+  }
+}
 
 interface GitWatcherSet {
   watcher: fs.FSWatcher | null  // null for WSL projects using polling
@@ -10,6 +62,7 @@ interface GitWatcherSet {
   lastHeadContent: string
   lastIndexMtime: number
   lastLogsHeadMtime: number
+  lastGitStatus?: string  // For WSL polling: output of git status --porcelain
 }
 
 const gitWatchers = new Map<string, GitWatcherSet>()
@@ -30,33 +83,20 @@ export function registerGitHandlers(
   ipcMain.handle('git:get-info', async (_event, projectPath: string, projectId?: string) => {
     console.log(`[git:get-info] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
-      // For SSH projects, check if git repo exists remotely
-      if (projectId && sshManager) {
-        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-        console.log(`[git:get-info] Project master status:`, projectMasterStatus)
-        if (projectMasterStatus.connected) {
-          // Check for .git directory remotely
-          console.log(`[git:get-info] Checking for .git directory remotely...`)
-          try {
-            await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
-            console.log(`[git:get-info] .git directory exists remotely`)
-          } catch (error) {
-            console.log(`[git:get-info] .git directory does not exist remotely:`, error)
-            return { isGitRepo: false }
-          }
-        } else {
-          console.log(`[git:get-info] SSH project but not connected, skipping check`)
-        }
-      } else {
-        // For local/WSL projects, check filesystem
-        console.log(`[git:get-info] Checking local/WSL filesystem for .git`)
-        const fsPath = PathService.toFsPath(projectPath)
-        const gitDir = PathService.join(fsPath, '.git')
-        if (!fs.existsSync(gitDir)) {
-          console.log(`[git:get-info] .git directory does not exist locally at ${gitDir}`)
+      // Use execution context to check for .git directory
+      const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
+      console.log(`[git:get-info] Execution context: ${context}`)
+
+      try {
+        const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
+        if (!gitExists) {
+          console.log(`[git:get-info] .git directory does not exist`)
           return { isGitRepo: false }
         }
-        console.log(`[git:get-info] .git directory exists locally`)
+        console.log(`[git:get-info] .git directory exists`)
+      } catch (error) {
+        console.log(`[git:get-info] Error checking git directory:`, error)
+        return { isGitRepo: false, error: error instanceof Error ? error.message : String(error) }
       }
 
       // Get current branch
@@ -117,31 +157,20 @@ export function registerGitHandlers(
   ipcMain.handle('git:list-branches', async (_event, projectPath: string, projectId?: string) => {
     console.log(`[git:list-branches] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
-      // For SSH projects, check if git repo exists remotely
-      if (projectId && sshManager) {
-        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-        console.log(`[git:list-branches] Project master status:`, projectMasterStatus)
-        if (projectMasterStatus.connected) {
-          // Check for .git directory remotely
-          console.log(`[git:list-branches] Checking for .git directory remotely...`)
-          try {
-            await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
-            console.log(`[git:list-branches] .git directory exists remotely`)
-          } catch (error) {
-            console.log(`[git:list-branches] .git directory does not exist remotely:`, error)
-            return { success: false, error: 'Not a git repository' }
-          }
-        }
-      } else {
-        // For local/WSL projects, check filesystem
-        console.log(`[git:list-branches] Checking local/WSL filesystem for .git`)
-        const fsPath = PathService.toFsPath(projectPath)
-        const gitDir = PathService.join(fsPath, '.git')
-        if (!fs.existsSync(gitDir)) {
-          console.log(`[git:list-branches] .git directory does not exist locally at ${gitDir}`)
+      // Use execution context to check for .git directory
+      const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
+      console.log(`[git:list-branches] Execution context: ${context}`)
+
+      try {
+        const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
+        if (!gitExists) {
+          console.log(`[git:list-branches] .git directory does not exist`)
           return { success: false, error: 'Not a git repository' }
         }
-        console.log(`[git:list-branches] .git directory exists locally`)
+        console.log(`[git:list-branches] .git directory exists`)
+      } catch (error) {
+        console.log(`[git:list-branches] Error checking git directory:`, error)
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
 
       // Get current branch
@@ -182,25 +211,14 @@ export function registerGitHandlers(
   ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: string, projectId?: string) => {
     console.log(`[git:checkout] Called with projectPath="${projectPath}", branch="${branch}", projectId="${projectId}"`)
     try {
-      // For SSH projects, check if git repo exists remotely
-      if (projectId && sshManager) {
-        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-        console.log(`[git:checkout] Project master status:`, projectMasterStatus)
-        if (projectMasterStatus.connected) {
-          // Check for .git directory remotely
-          try {
-            await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
-          } catch (error) {
-            return { success: false, error: 'Not a git repository' }
-          }
-        }
-      } else {
-        // For local/WSL projects, check filesystem
-        const fsPath = PathService.toFsPath(projectPath)
-        const gitDir = PathService.join(fsPath, '.git')
-        if (!fs.existsSync(gitDir)) {
+      // Use execution context to check for .git directory
+      try {
+        const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
+        if (!gitExists) {
           return { success: false, error: 'Not a git repository' }
         }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
 
       // If it's a remote branch (e.g., origin/feature), create a local tracking branch
@@ -232,23 +250,14 @@ export function registerGitHandlers(
   ipcMain.handle('git:fetch', async (_event, projectPath: string, projectId?: string) => {
     console.log(`[git:fetch] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
-      // For SSH projects, check if git repo exists remotely
-      if (projectId && sshManager) {
-        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-        if (projectMasterStatus.connected) {
-          try {
-            await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
-          } catch (error) {
-            return { success: false, error: 'Not a git repository' }
-          }
-        }
-      } else {
-        // For local/WSL projects, check filesystem
-        const fsPath = PathService.toFsPath(projectPath)
-        const gitDir = PathService.join(fsPath, '.git')
-        if (!fs.existsSync(gitDir)) {
+      // Use execution context to check for .git directory
+      try {
+        const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
+        if (!gitExists) {
           return { success: false, error: 'Not a git repository' }
         }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
 
       await execInContextAsync('git fetch --all --prune', projectPath, projectId)
@@ -263,10 +272,20 @@ export function registerGitHandlers(
 
   // Watch a project's git directory for changes (branch switches, commits, staging, file edits)
   ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: string) => {
-    console.log(`[git:watch] Called with projectPath="${projectPath}", projectId="${projectId}"`)
+    console.log(`[git-watcher] ========================================`)
+    console.log(`[git-watcher] git:watch called`)
+    console.log(`[git-watcher]   projectPath: "${projectPath}"`)
+    console.log(`[git-watcher]   projectId: "${projectId}"`)
+
+    // Check if this is a WSL path using PathService
+    const isWslPathCheck = PathService.isWslPath(projectPath)
+    const pathAnalysis = PathService.analyzePath(projectPath)
+    console.log(`[git-watcher]   PathService.isWslPath(): ${isWslPathCheck}`)
+    console.log(`[git-watcher]   PathService.analyzePath():`, JSON.stringify(pathAnalysis, null, 2))
 
     // Don't double-watch
     if (gitWatchers.has(projectPath)) {
+      console.log(`[git-watcher]   Already watching this path, returning success`)
       return { success: true }
     }
 
@@ -275,17 +294,24 @@ export function registerGitHandlers(
     if (projectId && sshManager) {
       const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
       if (projectMasterStatus.connected) {
-        console.log('[Git Watch] Skipping git watch for SSH project (not supported):', projectPath)
+        console.log('[git-watcher] Skipping git watch for SSH project (not supported):', projectPath)
         return { success: false, error: 'Git watching is not supported for SSH projects' }
       }
     }
 
     const fsPath = PathService.toFsPath(projectPath)
+    console.log(`[git-watcher]   fsPath (for fs operations): "${fsPath}"`)
     const gitDir = PathService.join(fsPath, '.git')
     const headPath = PathService.join(gitDir, 'HEAD')
     const indexPath = PathService.join(gitDir, 'index')
+    console.log(`[git-watcher]   gitDir: "${gitDir}"`)
+    console.log(`[git-watcher]   headPath: "${headPath}"`)
+    console.log(`[git-watcher]   indexPath: "${indexPath}"`)
 
-    if (!fs.existsSync(gitDir)) {
+    const gitDirExists = fs.existsSync(gitDir)
+    console.log(`[git-watcher]   fs.existsSync(gitDir): ${gitDirExists}`)
+    if (!gitDirExists) {
+      console.log(`[git-watcher]   ERROR: .git directory does not exist`)
       return { success: false, error: 'Not a git repository' }
     }
 
@@ -297,14 +323,18 @@ export function registerGitHandlers(
 
       try {
         lastHeadContent = fs.readFileSync(headPath, 'utf-8').trim()
+        console.log(`[git-watcher]   Initial HEAD content: "${lastHeadContent}"`)
       } catch (err) {
+        console.log(`[git-watcher]   Could not read HEAD file:`, err)
         // HEAD might not exist yet
       }
 
       try {
         const indexStats = fs.statSync(indexPath)
         lastIndexMtime = indexStats.mtimeMs
+        console.log(`[git-watcher]   Initial index mtime: ${lastIndexMtime}`)
       } catch (err) {
+        console.log(`[git-watcher]   Could not stat index file:`, err)
         // index might not exist yet
       }
 
@@ -312,92 +342,137 @@ export function registerGitHandlers(
         const logsHeadPath = PathService.join(gitDir, 'logs', 'HEAD')
         const logsHeadStats = fs.statSync(logsHeadPath)
         lastLogsHeadMtime = logsHeadStats.mtimeMs
+        console.log(`[git-watcher]   Initial logs/HEAD mtime: ${lastLogsHeadMtime}`)
       } catch (err) {
+        console.log(`[git-watcher]   Could not stat logs/HEAD file:`, err)
         // logs/HEAD might not exist yet
       }
 
       // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
-      // Use polling fallback instead
+      // Use polling fallback instead with git status --porcelain to detect ALL changes
       const isWslPath = PathService.isWslPath(projectPath)
+      console.log(`[git-watcher]   Final isWslPath check: ${isWslPath}`)
       if (isWslPath) {
-        console.log('[Git Watch] WSL path detected, using polling fallback:', projectPath)
+        console.log(`[git-watcher] WSL path detected, using polling fallback with git status --porcelain`)
+        console.log(`[git-watcher]   Setting up polling for: "${projectPath}"`)
 
-        // Set up polling interval for WSL projects
-        const pollingInterval = setInterval(async () => {
-          // Check if project still exists in watchers
-          if (!gitWatchers.has(projectPath)) {
-            clearInterval(pollingInterval)
-            return
-          }
+        // Get initial git status for comparison
+        // For WSL paths, we need to run git through wsl.exe with the Linux path
+        // because Windows CMD doesn't support UNC paths as cwd
+        let initialGitStatus = ''
+        try {
+          const linuxPath = pathAnalysis.linuxPath || PathService.toWslLinuxPath(projectPath)
+          const distro = pathAnalysis.wslDistro || PathService.getEnvironment().defaultWslDistro || 'Ubuntu'
+          console.log(`[git-watcher]   Running git status via wsl.exe -d ${distro} in "${linuxPath}"`)
+          const { stdout } = await execAsync(`wsl.exe -d ${distro} -e git -C "${linuxPath}" status --porcelain`, {
+            timeout: 5000,
+          })
+          initialGitStatus = stdout
+          console.log(`[git-watcher]   Initial git status (${initialGitStatus.split('\n').filter(l => l).length} files changed)`)
+        } catch (err) {
+          console.log(`[git-watcher]   Error getting initial git status:`, err)
+          // Continue anyway, will compare against empty string
+        }
 
-          // Manually check for changes and notify
-          try {
-            let hasChanged = false
-
-            // Check HEAD (branch changes)
-            try {
-              const currentHeadContent = fs.readFileSync(headPath, 'utf-8').trim()
-              const watcherSet = gitWatchers.get(projectPath)
-              if (watcherSet && currentHeadContent !== watcherSet.lastHeadContent) {
-                watcherSet.lastHeadContent = currentHeadContent
-                hasChanged = true
-              }
-            } catch (err) {
-              // Ignore errors reading HEAD
-            }
-
-            // Check index mtime (staging changes)
-            try {
-              const indexStats = fs.statSync(indexPath)
-              const watcherSet = gitWatchers.get(projectPath)
-              if (watcherSet && indexStats.mtimeMs !== watcherSet.lastIndexMtime) {
-                watcherSet.lastIndexMtime = indexStats.mtimeMs
-                hasChanged = true
-              }
-            } catch (err) {
-              // Ignore errors reading index
-            }
-
-            // Check logs/HEAD (reflog)
-            try {
-              const logsHeadPath = PathService.join(gitDir, 'logs', 'HEAD')
-              const logsHeadStats = fs.statSync(logsHeadPath)
-              const watcherSet = gitWatchers.get(projectPath)
-              if (watcherSet && logsHeadStats.mtimeMs !== watcherSet.lastLogsHeadMtime) {
-                watcherSet.lastLogsHeadMtime = logsHeadStats.mtimeMs
-                hasChanged = true
-              }
-            } catch (err) {
-              // logs/HEAD might not exist
-            }
-
-            if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
-              console.log('[Git Watch] Polling detected changes for WSL project:', projectPath)
-              mainWindow.webContents.send('git:changed', projectPath)
-            }
-          } catch (err) {
-            console.error('[Git Watch] Polling error for WSL project:', err)
-          }
-        }, 3000) // Poll every 3 seconds
-
-        // Store the polling interval in the GitWatcherSet
-        gitWatchers.set(projectPath, {
+        // CRITICAL: Store the watcher in the Map FIRST, before setting up the polling interval
+        // This ensures the polling callback can find and update the watcher values
+        const watcherSet: GitWatcherSet = {
           watcher: null, // No fs.watch for WSL
           debounceTimer: null,
-          pollingInterval,
+          pollingInterval: null, // Will be set after
           lastHeadContent,
           lastIndexMtime,
           lastLogsHeadMtime,
-        })
+          lastGitStatus: initialGitStatus,
+        }
+        gitWatchers.set(projectPath, watcherSet)
+        console.log(`[git-watcher]   Stored watcher in Map for: "${projectPath}"`)
+        console.log(`[git-watcher]   gitWatchers.has(projectPath): ${gitWatchers.has(projectPath)}`)
+        console.log(`[git-watcher]   gitWatchers.size: ${gitWatchers.size}`)
 
-        console.log(`[Git Watch] Started polling for WSL project ${projectPath}`)
+        let pollCount = 0
+        // Set up polling interval for WSL projects
+        // Uses git status --porcelain to detect ALL changes (staged, unstaged, untracked)
+        watcherSet.pollingInterval = setInterval(async () => {
+          pollCount++
+          console.log(`[git-watcher] ----------------------------------------`)
+          console.log(`[git-watcher] Polling iteration #${pollCount} for: "${projectPath}"`)
+
+          try {
+            // Get the current watcher from the Map (not from closure)
+            const storedWatcher = gitWatchers.get(projectPath)
+            console.log(`[git-watcher]   storedWatcher exists: ${!!storedWatcher}`)
+            if (!storedWatcher) {
+              // Watcher was removed, clean up this interval
+              console.log(`[git-watcher]   WARNING: Watcher not found in Map, clearing interval`)
+              if (watcherSet.pollingInterval) {
+                clearInterval(watcherSet.pollingInterval)
+              }
+              return
+            }
+
+            // Use git status --porcelain to detect ALL changes (staged, unstaged, untracked)
+            // Run git through wsl.exe with the Linux path (Windows CMD doesn't support UNC paths as cwd)
+            let hasChanged = false
+
+            try {
+              const linuxPath = pathAnalysis.linuxPath || PathService.toWslLinuxPath(projectPath)
+              const distro = pathAnalysis.wslDistro || PathService.getEnvironment().defaultWslDistro || 'Ubuntu'
+              const { stdout: currentStatus } = await execAsync(`wsl.exe -d ${distro} -e git -C "${linuxPath}" status --porcelain`, {
+                timeout: 5000,
+              })
+              const previousStatus = storedWatcher.lastGitStatus || ''
+              const currentChangedFiles = currentStatus.split('\n').filter(l => l).length
+              const previousChangedFiles = previousStatus.split('\n').filter(l => l).length
+
+              console.log(`[git-watcher]   git status - previous: ${previousChangedFiles} files | current: ${currentChangedFiles} files`)
+
+              if (currentStatus !== previousStatus) {
+                console.log(`[git-watcher]   GIT STATUS CHANGED!`)
+                if (currentStatus.trim()) {
+                  console.log(`[git-watcher]   Current changes:\n${currentStatus.split('\n').slice(0, 5).join('\n')}${currentStatus.split('\n').length > 5 ? '\n    ... and more' : ''}`)
+                }
+                storedWatcher.lastGitStatus = currentStatus
+                hasChanged = true
+              }
+            } catch (err) {
+              console.log(`[git-watcher]   Error running git status:`, err)
+              // Ignore errors - repo might be in the middle of an operation
+            }
+
+            console.log(`[git-watcher]   hasChanged: ${hasChanged}`)
+            console.log(`[git-watcher]   mainWindow exists: ${!!mainWindow}`)
+            console.log(`[git-watcher]   mainWindow.isDestroyed(): ${mainWindow?.isDestroyed()}`)
+
+            if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
+              console.log(`[git-watcher]   >>> EMITTING git:changed event for: "${projectPath}"`)
+              mainWindow.webContents.send('git:changed', projectPath)
+            } else if (hasChanged) {
+              console.log(`[git-watcher]   WARNING: hasChanged is true but cannot emit (mainWindow issue)`)
+            }
+          } catch (err) {
+            console.error('[git-watcher] CRITICAL ERROR in polling body:', err)
+          }
+        }, 3000) // Poll every 3 seconds
+
+        console.log(`[git-watcher]   Polling interval started (every 3 seconds)`)
+        console.log(`[git-watcher]   pollingInterval id: ${watcherSet.pollingInterval}`)
+        console.log(`[git-watcher] ========================================`)
         return { success: true, isPolling: true }
       }
 
+      // Non-WSL path: use fs.watch
+      console.log(`[git-watcher] Non-WSL path, using fs.watch`)
+      console.log(`[git-watcher]   Setting up fs.watch on: "${gitDir}"`)
+
       // Notify function with debouncing
       const notifyChange = () => {
+        console.log(`[git-watcher] notifyChange called for: "${projectPath}"`)
         const watcherSet = gitWatchers.get(projectPath)
-        if (!watcherSet) return
+        if (!watcherSet) {
+          console.log(`[git-watcher]   WARNING: No watcher found in notifyChange`)
+          return
+        }
 
         // Clear existing debounce timer
         if (watcherSet.debounceTimer) {
@@ -501,8 +576,14 @@ export function registerGitHandlers(
 
   // Stop watching a project's git directory
   ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
+    console.log(`[git-watcher] git:unwatch called for: "${projectPath}"`)
+    console.log(`[git-watcher]   gitWatchers.has(projectPath): ${gitWatchers.has(projectPath)}`)
     const watcherSet = gitWatchers.get(projectPath)
     if (watcherSet) {
+      console.log(`[git-watcher]   Found watcher, cleaning up...`)
+      console.log(`[git-watcher]   has watcher: ${!!watcherSet.watcher}`)
+      console.log(`[git-watcher]   has debounceTimer: ${!!watcherSet.debounceTimer}`)
+      console.log(`[git-watcher]   has pollingInterval: ${!!watcherSet.pollingInterval}`)
       if (watcherSet.watcher) {
         watcherSet.watcher.close()
       }
@@ -511,9 +592,12 @@ export function registerGitHandlers(
       }
       if (watcherSet.pollingInterval) {
         clearInterval(watcherSet.pollingInterval)
-        console.log('[Git Watch] Stopped polling for WSL project:', projectPath)
+        console.log('[git-watcher] Stopped polling for WSL project:', projectPath)
       }
       gitWatchers.delete(projectPath)
+      console.log(`[git-watcher]   Deleted watcher from Map`)
+    } else {
+      console.log(`[git-watcher]   No watcher found for this path`)
     }
     return { success: true }
   })
@@ -522,31 +606,20 @@ export function registerGitHandlers(
   ipcMain.handle('git:get-changed-files', async (_event, projectPath: string, projectId?: string) => {
     console.log(`[git:get-changed-files] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
-      // For SSH projects, check if git repo exists remotely
-      if (projectId && sshManager) {
-        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-        console.log(`[git:get-changed-files] Project master status:`, projectMasterStatus)
-        if (projectMasterStatus.connected) {
-          // Check for .git directory remotely
-          console.log(`[git:get-changed-files] Checking for .git directory remotely...`)
-          try {
-            await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
-            console.log(`[git:get-changed-files] .git directory exists remotely`)
-          } catch (error) {
-            console.log(`[git:get-changed-files] .git directory does not exist remotely:`, error)
-            return { success: false, error: 'Not a git repository' }
-          }
-        }
-      } else {
-        // For local/WSL projects, check filesystem
-        console.log(`[git:get-changed-files] Checking local/WSL filesystem for .git`)
-        const fsPath = PathService.toFsPath(projectPath)
-        const gitDir = PathService.join(fsPath, '.git')
-        if (!fs.existsSync(gitDir)) {
-          console.log(`[git:get-changed-files] .git directory does not exist locally at ${gitDir}`)
+      // Use execution context to check for .git directory
+      const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
+      console.log(`[git:get-changed-files] Execution context: ${context}`)
+
+      try {
+        const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
+        if (!gitExists) {
+          console.log(`[git:get-changed-files] .git directory does not exist`)
           return { success: false, error: 'Not a git repository' }
         }
-        console.log(`[git:get-changed-files] .git directory exists locally`)
+        console.log(`[git:get-changed-files] .git directory exists`)
+      } catch (error) {
+        console.log(`[git:get-changed-files] Error checking git directory:`, error)
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
 
       const status = await execInContextAsync('git status --porcelain', projectPath, projectId)
@@ -625,23 +698,14 @@ export function registerGitHandlers(
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
       console.log(`[git:get-file-content] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
-        // For SSH projects, check if git repo exists remotely
-        if (projectId && sshManager) {
-          const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-          if (projectMasterStatus.connected) {
-            try {
-              await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
-            } catch (error) {
-              return { success: false, error: 'Not a git repository' }
-            }
-          }
-        } else {
-          // For local/WSL projects, check filesystem
-          const fsPath = PathService.toFsPath(projectPath)
-          const gitDir = PathService.join(fsPath, '.git')
-          if (!fs.existsSync(gitDir)) {
+        // Use execution context to check for .git directory
+        try {
+          const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
+          if (!gitExists) {
             return { success: false, error: 'Not a git repository' }
           }
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) }
         }
 
         // Get the file content from HEAD
@@ -706,20 +770,34 @@ export function registerGitHandlers(
         const status = (await execInContextAsync(`git status --porcelain "${normalizedFilePath}"`, projectPath, projectId)).trim()
 
         if (status.startsWith('??')) {
-          // Untracked file - delete it
-          if (projectId && sshManager) {
-            const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-            if (projectMasterStatus.connected) {
-              // Delete via SSH
+          // Untracked file - delete it using execution context
+          const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
+
+          switch (context) {
+            case 'ssh-remote': {
+              if (!projectId || !sshManager) {
+                return { success: false, error: 'SSH connection required but not configured' }
+              }
               const fullPath = PathService.joinPosix(projectPath, filePath)
-              await sshManager.execViaProjectMaster(projectId, `rm -f "${fullPath}"`)
+              const escapedFullPath = PathService.escapeForSSHRemote(fullPath)
+              await sshManager.execViaProjectMaster(projectId, `rm -f ${escapedFullPath}`)
+              break
             }
-          } else {
-            // Delete locally
-            const fsPath = PathService.toFsPath(projectPath)
-            const fullPath = PathService.join(fsPath, filePath)
-            if (fs.existsSync(fullPath)) {
-              fs.unlinkSync(fullPath)
+
+            case 'wsl':
+            case 'local-windows':
+            case 'local-unix': {
+              const fsPath = PathService.toFsPath(projectPath)
+              const fullPath = PathService.join(fsPath, filePath)
+              if (fs.existsSync(fullPath)) {
+                fs.unlinkSync(fullPath)
+              }
+              break
+            }
+
+            default: {
+              const _exhaustive: never = context
+              throw new Error(`Unknown execution context: ${context}`)
             }
           }
         } else {

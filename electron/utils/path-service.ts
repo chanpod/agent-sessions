@@ -24,6 +24,12 @@ import { execSync } from 'child_process'
 // ============================================================================
 
 /**
+ * Execution context for running commands.
+ * Determines how a command should be executed based on the path and environment.
+ */
+export type ExecutionContext = 'local-windows' | 'local-unix' | 'wsl' | 'ssh-remote'
+
+/**
  * Represents the current platform and environment configuration.
  * This is cached on startup for performance.
  */
@@ -925,6 +931,312 @@ export function isSubPath(parent: string, child: string): boolean {
 }
 
 // ============================================================================
+// Execution Context Detection
+// ============================================================================
+
+/**
+ * macOS-specific path prefixes that indicate a macOS remote system.
+ * On Windows, these paths cannot be local and must be SSH remote paths.
+ */
+const MACOS_REMOTE_PREFIXES = [
+  '/Users/',
+  '/Applications/',
+  '/Library/',
+  '/System/',
+  '/Volumes/',
+  '/private/',
+]
+
+/**
+ * Check if a path is an "impossible local path" - a path that has Unix format
+ * but cannot exist on the local system based on platform-specific indicators.
+ *
+ * @param inputPath - The path to check
+ * @returns True if this path cannot be a local path
+ *
+ * @example
+ * // On Windows:
+ * isImpossibleLocalPath('/Users/john/project')
+ * // => true (macOS path on Windows)
+ *
+ * @example
+ * // On macOS:
+ * isImpossibleLocalPath('C:\\Users\\john\\project')
+ * // => true (Windows path on macOS)
+ */
+export function isImpossibleLocalPath(inputPath: string): boolean {
+  const env = getEnvironment()
+
+  if (env.isWindows) {
+    // On Windows, macOS-style paths are impossible locally
+    if (MACOS_REMOTE_PREFIXES.some(prefix => inputPath.startsWith(prefix))) {
+      return true
+    }
+
+    // On Windows without WSL, /home/... paths are also impossible
+    if (!env.wslAvailable && inputPath.startsWith('/home/')) {
+      return true
+    }
+  }
+
+  if (env.isMac || env.isLinux) {
+    // On Unix, Windows drive paths are impossible locally
+    if (WINDOWS_DRIVE_REGEX.test(inputPath)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * Check if a path requires SSH execution (is a remote path or has macOS-specific patterns on Windows).
+ *
+ * @param inputPath - The path to check
+ * @returns True if the path should be executed via SSH
+ *
+ * @example
+ * // On Windows:
+ * isSSHPath('/Users/john/project')
+ * // => true (macOS path must be remote)
+ *
+ * @example
+ * isSSHPath('user@host:/path')
+ * // => true (explicit SSH path format)
+ */
+export function isSSHPath(inputPath: string): boolean {
+  const info = analyzePath(inputPath)
+
+  // Explicit SSH remote format
+  if (info.type === 'ssh-remote') {
+    return true
+  }
+
+  // Check for impossible local paths (indicates SSH remote)
+  if (isImpossibleLocalPath(inputPath)) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Check if a path is local (can be executed directly on this machine or via WSL).
+ *
+ * @param inputPath - The path to check
+ * @returns True if the path can be accessed locally (including WSL)
+ *
+ * @example
+ * isLocalPath('C:\\Users\\john\\project')
+ * // => true (local Windows path)
+ *
+ * @example
+ * isLocalPath('/home/user/project')
+ * // => true on Linux/macOS, or true on Windows with WSL
+ */
+export function isLocalPath(inputPath: string): boolean {
+  return !isSSHPath(inputPath)
+}
+
+/**
+ * Get the SSH host from a path, if applicable.
+ *
+ * @param inputPath - The path to extract host from
+ * @returns The SSH host, or null if not an SSH path format
+ *
+ * @example
+ * getSSHHost('user@myserver:/home/user')
+ * // => 'myserver'
+ *
+ * @example
+ * getSSHHost('/Users/john/project')
+ * // => null (implied SSH on Windows, but no explicit host)
+ */
+export function getSSHHost(inputPath: string): string | null {
+  const info = analyzePath(inputPath)
+  return info.sshHost || null
+}
+
+/**
+ * Get the SSH user from a path, if applicable.
+ *
+ * @param inputPath - The path to extract user from
+ * @returns The SSH user, or null if not specified
+ *
+ * @example
+ * getSSHUser('john@myserver:/home/user')
+ * // => 'john'
+ */
+export function getSSHUser(inputPath: string): string | null {
+  const info = analyzePath(inputPath)
+
+  // Check for explicit user@host:path format
+  const match = inputPath.match(/^([^@]+)@([^:]+):/)
+  if (match) {
+    return match[1]
+  }
+
+  return null
+}
+
+/**
+ * Escape a path for use in SSH remote bash commands.
+ * This handles the double-escaping needed when passing paths through SSH.
+ *
+ * @param inputPath - The path to escape
+ * @returns The escaped path safe for SSH remote bash execution
+ *
+ * @example
+ * escapeForSSHRemote("/home/user/my project")
+ * // => "'/home/user/my project'"
+ *
+ * @example
+ * escapeForSSHRemote("/home/user/it's a file")
+ * // => "'/home/user/it'\\''s a file'"
+ */
+export function escapeForSSHRemote(inputPath: string): string {
+  // SSH remote paths need the same escaping as bash
+  // but may need additional consideration for SSH protocol
+  return escapeForBash(inputPath)
+}
+
+/**
+ * Interface for SSH manager to check connection status
+ */
+interface SSHManagerLike {
+  getProjectMasterStatus(projectId: string): Promise<{ connected: boolean; error?: string }>
+}
+
+/**
+ * Determine the execution context for a given path.
+ * This is the primary method for deciding how to execute commands.
+ *
+ * @param inputPath - The path where the command should be executed
+ * @param projectId - Optional project ID to check for SSH project association
+ * @param sshManager - Optional SSH manager to verify SSH connection status
+ * @returns The execution context
+ *
+ * @example
+ * // Local Windows path
+ * await getExecutionContext('C:\\Users\\john\\project')
+ * // => 'local-windows'
+ *
+ * @example
+ * // WSL path on Windows
+ * await getExecutionContext('/home/user/project')
+ * // => 'wsl' (if WSL available)
+ *
+ * @example
+ * // SSH project path
+ * await getExecutionContext('/Users/john/project', 'proj-123', sshManager)
+ * // => 'ssh-remote' (macOS path on Windows = SSH)
+ */
+export async function getExecutionContext(
+  inputPath: string,
+  projectId?: string,
+  sshManager?: SSHManagerLike
+): Promise<ExecutionContext> {
+  const env = getEnvironment()
+  const info = analyzePath(inputPath)
+
+  // First, check if this is an SSH project with an active connection
+  if (projectId && sshManager) {
+    try {
+      const status = await sshManager.getProjectMasterStatus(projectId)
+      if (status.connected) {
+        return 'ssh-remote'
+      }
+    } catch {
+      // Ignore errors, continue with path-based detection
+    }
+  }
+
+  // Check for explicit SSH path format (user@host:path)
+  if (info.type === 'ssh-remote') {
+    return 'ssh-remote'
+  }
+
+  // Check for impossible local paths (e.g., macOS paths on Windows)
+  if (isImpossibleLocalPath(inputPath)) {
+    return 'ssh-remote'
+  }
+
+  // Local path detection
+  if (env.isWindows) {
+    // WSL paths
+    if (info.type === 'wsl-unc' || info.type === 'wsl-linux') {
+      return 'wsl'
+    }
+
+    // Windows native paths
+    if (info.type === 'windows') {
+      return 'local-windows'
+    }
+
+    // Unix paths on Windows with WSL available
+    if (info.type === 'unix' && info.isAbsolute && env.wslAvailable) {
+      // Check if it's a path that could be WSL (like /home/...)
+      if (inputPath.startsWith('/home/') || inputPath.startsWith('/tmp/') || inputPath.startsWith('/var/')) {
+        return 'wsl'
+      }
+    }
+
+    // Default to local-windows for relative paths on Windows
+    return 'local-windows'
+  }
+
+  // On macOS/Linux, everything that's not explicitly SSH is local-unix
+  return 'local-unix'
+}
+
+/**
+ * Synchronous version of getExecutionContext for cases where async is not possible.
+ * NOTE: This cannot verify SSH connection status, so it may return 'ssh-remote'
+ * for paths that look like SSH paths but don't have an active connection.
+ *
+ * @param inputPath - The path where the command should be executed
+ * @returns The execution context (without SSH connection verification)
+ */
+export function getExecutionContextSync(inputPath: string): ExecutionContext {
+  const env = getEnvironment()
+  const info = analyzePath(inputPath)
+
+  // Check for explicit SSH path format (user@host:path)
+  if (info.type === 'ssh-remote') {
+    return 'ssh-remote'
+  }
+
+  // Check for impossible local paths (e.g., macOS paths on Windows)
+  if (isImpossibleLocalPath(inputPath)) {
+    return 'ssh-remote'
+  }
+
+  // Local path detection
+  if (env.isWindows) {
+    // WSL paths
+    if (info.type === 'wsl-unc' || info.type === 'wsl-linux') {
+      return 'wsl'
+    }
+
+    // Windows native paths
+    if (info.type === 'windows') {
+      return 'local-windows'
+    }
+
+    // Unix paths on Windows with WSL available
+    if (info.type === 'unix' && info.isAbsolute && env.wslAvailable) {
+      if (inputPath.startsWith('/home/') || inputPath.startsWith('/tmp/') || inputPath.startsWith('/var/')) {
+        return 'wsl'
+      }
+    }
+
+    return 'local-windows'
+  }
+
+  return 'local-unix'
+}
+
+// ============================================================================
 // Namespace Export
 // ============================================================================
 
@@ -968,6 +1280,7 @@ export const PathService = {
   escapeForBash,
   escapeForCmd,
   escapeForPowerShell,
+  escapeForSSHRemote,
 
   // Validation
   isWslPath,
@@ -975,4 +1288,13 @@ export const PathService = {
   isAbsolutePath,
   isSamePath,
   isSubPath,
+
+  // Execution Context
+  isImpossibleLocalPath,
+  isSSHPath,
+  isLocalPath,
+  getSSHHost,
+  getSSHUser,
+  getExecutionContext,
+  getExecutionContextSync,
 }

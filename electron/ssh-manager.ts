@@ -4,6 +4,7 @@ import * as path from 'path'
 import * as fs from 'fs/promises'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import { PathService } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
 
@@ -128,12 +129,16 @@ export class SSHManager extends EventEmitter {
 
     // SSH Multiplexing (ControlMaster)
     // With Git Bash on Windows, ControlMaster now works properly
+    // Use PathService.escapeForBash to properly escape the control path
     if (controlPath) {
+      // Escape the control path for bash shell (handles spaces and special chars)
+      const escapedControlPath = PathService.escapeForBash(controlPath)
+
       if (isControlMaster) {
         args.push(
           '-o', 'ControlMaster=auto',
           '-o', 'ControlPersist=10m',
-          '-o', `ControlPath=${controlPath}`,
+          '-o', `ControlPath=${escapedControlPath}`,
           '-o', 'ServerAliveInterval=60',
           '-o', 'ServerAliveCountMax=3',
           '-o', 'StrictHostKeyChecking=accept-new'
@@ -141,7 +146,7 @@ export class SSHManager extends EventEmitter {
       } else {
         args.push(
           '-o', 'ControlMaster=no',
-          '-o', `ControlPath=${controlPath}`
+          '-o', `ControlPath=${escapedControlPath}`
         )
       }
     } else {
@@ -323,7 +328,8 @@ export class SSHManager extends EventEmitter {
 
     try {
       // Send exit command to control master
-      const args = ['-O', 'exit', '-o', `ControlPath=${connection.controlPath}`, `${connection.config.username}@${connection.config.host}`]
+      const escapedControlPath = PathService.escapeForBash(connection.controlPath)
+      const args = ['-O', 'exit', '-o', `ControlPath=${escapedControlPath}`, `${connection.config.username}@${connection.config.host}`]
       await this.execSSH(args)
 
       // Clean up control socket (may not exist on Windows/Git Bash filesystem from Node perspective)
@@ -363,7 +369,8 @@ export class SSHManager extends EventEmitter {
 
     // Check if control socket is still valid
     try {
-      const args = ['-O', 'check', '-o', `ControlPath=${connection.controlPath}`, `${connection.config.username}@${connection.config.host}`]
+      const escapedControlPath = PathService.escapeForBash(connection.controlPath)
+      const args = ['-O', 'check', '-o', `ControlPath=${escapedControlPath}`, `${connection.config.username}@${connection.config.host}`]
       await this.execSSH(args)
       connection.connected = true
       connection.lastUsed = Date.now()
@@ -626,7 +633,8 @@ export class SSHManager extends EventEmitter {
     }
 
     try {
-      const args = ['-O', 'check', '-o', `ControlPath=${connection.controlPath}`, `${sshConnection.config.username}@${sshConnection.config.host}`]
+      const escapedControlPath = PathService.escapeForBash(connection.controlPath)
+      const args = ['-O', 'check', '-o', `ControlPath=${escapedControlPath}`, `${sshConnection.config.username}@${sshConnection.config.host}`]
       await this.execSSH(args)
       connection.lastUsed = Date.now()
       return { connected: true }

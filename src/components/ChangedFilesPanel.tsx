@@ -78,6 +78,8 @@ export function ChangedFilesPanel() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isReviewing, setIsReviewing] = useState(false)
   const [fileMetadata, setFileMetadata] = useState<Map<string, { fileId: string; hash: string; relativePath: string }>>(new Map())
+  const [pendingDiscardFile, setPendingDiscardFile] = useState<string | null>(null)
+  const [pendingDiscardAll, setPendingDiscardAll] = useState(false)
 
   const activeProject = activeProjectId ? projects.find(p => p.id === activeProjectId) : null
   const projectPath = activeProject?.isSSHProject ? (activeProject.remotePath || activeProject.path) : activeProject?.path || ''
@@ -347,6 +349,42 @@ export function ChangedFilesPanel() {
     await handleRefreshGitInfo()
   }
 
+  const handleDiscardFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setPendingDiscardFile(filePath)
+  }
+
+  const confirmDiscardFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.electron || !projectPath || !activeProjectId) return
+    await window.electron.git.discardFile(projectPath, filePath, activeProjectId)
+    setPendingDiscardFile(null)
+    await handleRefreshGitInfo()
+  }
+
+  const cancelDiscardFile = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setPendingDiscardFile(null)
+  }
+
+  const handleDiscardAll = () => {
+    setPendingDiscardAll(true)
+  }
+
+  const confirmDiscardAll = async () => {
+    if (!window.electron || !projectPath || !activeProjectId) return
+    const filesToDiscard = projectGitInfo.changedFiles.filter(f => !f.staged)
+    for (const file of filesToDiscard) {
+      await window.electron.git.discardFile(projectPath, file.path, activeProjectId)
+    }
+    setPendingDiscardAll(false)
+    await handleRefreshGitInfo()
+  }
+
+  const cancelDiscardAll = () => {
+    setPendingDiscardAll(false)
+  }
+
   const handleCommit = async () => {
     if (!window.electron || !commitMessage.trim() || !projectPath) return
 
@@ -467,6 +505,7 @@ export function ChangedFilesPanel() {
   const FileItem = ({ file, isStaged }: { file: ChangedFile; isStaged: boolean }) => {
     const { Icon, color } = getFileStatusIcon(file.status)
     const isDeleted = file.status === 'deleted'
+    const isPendingDiscard = pendingDiscardFile === file.path
 
     return (
       <div className="flex items-center gap-1 py-1 text-xs group">
@@ -492,14 +531,39 @@ export function ChangedFilesPanel() {
             >
               <Minus className="w-3 h-3" />
             </button>
+          ) : isPendingDiscard ? (
+            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+              <span className="text-[10px] text-red-400">Discard?</span>
+              <button
+                onClick={(e) => confirmDiscardFile(file.path, e)}
+                className="px-1.5 py-0.5 text-[10px] bg-red-600 hover:bg-red-700 text-white rounded"
+              >
+                Yes
+              </button>
+              <button
+                onClick={cancelDiscardFile}
+                className="px-1.5 py-0.5 text-[10px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
+              >
+                No
+              </button>
+            </div>
           ) : (
-            <button
-              onClick={(e) => handleStageFile(file.path, e)}
-              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-green-400"
-              title="Stage"
-            >
-              <Plus className="w-3 h-3" />
-            </button>
+            <>
+              <button
+                onClick={(e) => handleDiscardFile(file.path, e)}
+                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-red-400"
+                title="Discard changes"
+              >
+                <Undo2 className="w-3 h-3" />
+              </button>
+              <button
+                onClick={(e) => handleStageFile(file.path, e)}
+                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-green-400"
+                title="Stage"
+              >
+                <Plus className="w-3 h-3" />
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -753,12 +817,38 @@ export function ChangedFilesPanel() {
                   <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
                     Changes ({unstagedFiles.length})
                   </span>
-                  <button
-                    onClick={handleStageAll}
-                    className="text-[10px] text-zinc-500 hover:text-zinc-300 uppercase"
-                  >
-                    Stage All
-                  </button>
+                  {pendingDiscardAll ? (
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-red-400">Discard All?</span>
+                      <button
+                        onClick={confirmDiscardAll}
+                        className="px-1.5 py-0.5 text-[10px] bg-red-600 hover:bg-red-700 text-white rounded"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={cancelDiscardAll}
+                        className="px-1.5 py-0.5 text-[10px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleDiscardAll}
+                        className="text-[10px] text-zinc-500 hover:text-red-400 uppercase"
+                      >
+                        Discard All
+                      </button>
+                      <button
+                        onClick={handleStageAll}
+                        className="text-[10px] text-zinc-500 hover:text-zinc-300 uppercase"
+                      >
+                        Stage All
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-0.5">
                   {unstagedFiles.map(file => (
