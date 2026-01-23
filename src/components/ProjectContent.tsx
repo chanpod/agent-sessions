@@ -112,8 +112,10 @@ export function ProjectContent({
     console.log('[ProjectContent] Connection status set. Project should now be:', useProjectStore.getState().projects.find(p => p.id === project.id)?.connectionStatus)
 
     // Trigger git refresh now that we're connected
+    // Use remotePath for SSH projects since that's the actual path on the server
     console.log('[ProjectContent] Triggering git refresh after connection')
-    refreshGitInfo(project.id, project.path)
+    const gitPath = project.remotePath || project.path
+    refreshGitInfo(project.id, gitPath)
   }
 
   // Handle password submission - pipe it to the hidden terminal
@@ -138,8 +140,10 @@ export function ProjectContent({
         console.log('[ProjectContent] Project marked as connected after password auth')
 
         // Trigger git refresh now that we're connected
+        // Use remotePath for SSH projects since that's the actual path on the server
         console.log('[ProjectContent] Triggering git refresh after password auth')
-        refreshGitInfo(project.id, project.path)
+        const gitPath = project.remotePath || project.path
+        refreshGitInfo(project.id, gitPath)
       }
     }, 2000) // Wait 2 seconds for SSH to authenticate
   }

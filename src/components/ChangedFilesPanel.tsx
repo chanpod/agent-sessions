@@ -268,7 +268,7 @@ export function ChangedFilesPanel() {
     const { refreshGitInfo } = useGitStore.getState()
     setIsRefreshing(true)
     try {
-      await window.electron.git.fetch(projectPath)
+      await window.electron.git.fetch(projectPath, activeProjectId)
       await refreshGitInfo(activeProjectId, projectPath)
     } finally {
       setIsRefreshing(false)
@@ -279,7 +279,7 @@ export function ChangedFilesPanel() {
     if (!window.electron || !projectPath) return
     setIsPushing(true)
     try {
-      const result = await window.electron.git.push(projectPath)
+      const result = await window.electron.git.push(projectPath, activeProjectId)
       if (result.success) {
         await handleRefreshGitInfo()
       }
@@ -292,7 +292,7 @@ export function ChangedFilesPanel() {
     if (!window.electron || !projectPath) return
     setIsPulling(true)
     try {
-      const result = await window.electron.git.pull(projectPath)
+      const result = await window.electron.git.pull(projectPath, activeProjectId)
       if (result.success) {
         await handleRefreshGitInfo()
       }

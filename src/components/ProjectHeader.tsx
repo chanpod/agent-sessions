@@ -51,8 +51,10 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
       prevProjectIdsRef.current = projectKey
 
       projects.forEach((project) => {
-        if (project.path) {
-          watchProject(project.id, project.path)
+        // For SSH projects, use remotePath; for local projects, use path
+        const gitPath = project.remotePath || project.path
+        if (gitPath) {
+          watchProject(project.id, gitPath)
         }
       })
     }
@@ -92,14 +94,17 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     const project = projects.find(p => p.id === projectId)
     if (!project || isCheckingOut) return
 
+    // For SSH projects, use remotePath; for local projects, use path
+    const gitPath = project.remotePath || project.path
+
     setIsCheckingOut(true)
     try {
-      const result = await window.electron.git.checkout(project.path, branch)
+      const result = await window.electron.git.checkout(gitPath, branch)
       if (result.success) {
         setShowBranchMenu(null)
         addToast(`Switched to branch '${branch}'`, 'success', 3000)
         // Refresh git info after successful checkout
-        await refreshGitInfo(projectId, project.path)
+        await refreshGitInfo(projectId, gitPath)
       } else {
         addToast(result.error || 'Failed to switch branch', 'error')
       }
@@ -115,13 +120,16 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     const project = projects.find(p => p.id === projectId)
     if (!project || !window.electron || isFetching) return
 
+    // For SSH projects, use remotePath; for local projects, use path
+    const gitPath = project.remotePath || project.path
+
     setIsFetching(true)
     try {
-      const result = await window.electron.git.fetch(project.path)
+      const result = await window.electron.git.fetch(gitPath, projectId)
       if (result.success) {
         addToast('Fetched from remote', 'success', 3000)
         // Refresh git info after fetch
-        await refreshGitInfo(projectId, project.path)
+        await refreshGitInfo(projectId, gitPath)
       } else {
         addToast(result.error || 'Failed to fetch from remote', 'error')
       }

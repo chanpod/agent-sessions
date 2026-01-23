@@ -90,12 +90,15 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
   }, [activeProject])
 
   // Combine local shells with SSH connections for terminal creation
+  // Only show SSH options if the active project is an SSH project
   const allShells = [
     ...shells,
-    ...sshConnections.map((conn) => ({
-      name: `SSH: ${conn.name}`,
-      path: `ssh:${conn.id}`, // Special format to identify SSH connections
-    })),
+    ...(activeProject?.isSSHProject
+      ? sshConnections.map((conn) => ({
+          name: `SSH: ${conn.name}`,
+          path: `ssh:${conn.id}`,
+        }))
+      : []),
   ]
 
   // Get global terminals

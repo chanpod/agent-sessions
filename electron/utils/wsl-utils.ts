@@ -35,6 +35,15 @@ export function detectWslPath(inputPath: string): WslPathInfo {
 
   // Check for Linux-style paths that start with / (common when user types path manually)
   if (process.platform === 'win32' && inputPath.startsWith('/') && !inputPath.startsWith('//')) {
+    // macOS paths should NOT be treated as WSL paths
+    // These can appear when paths are passed from macOS systems or stored in cross-platform configs
+    const macOSPrefixes = ['/Users/', '/Applications/', '/Library/', '/System/', '/Volumes/', '/private/']
+    const isMacOSPath = macOSPrefixes.some(prefix => inputPath.startsWith(prefix))
+
+    if (isMacOSPath) {
+      return { isWslPath: false }
+    }
+
     return {
       isWslPath: true,
       linuxPath: inputPath,

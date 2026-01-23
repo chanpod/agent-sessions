@@ -58,7 +58,7 @@ export function registerGitHandlers(
     try {
       // For SSH projects, check if git repo exists remotely
       if (projectId && sshManager) {
-        const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
         console.log(`[git:get-info] Project master status:`, projectMasterStatus)
         if (projectMasterStatus.connected) {
           // Check for .git directory remotely
@@ -145,7 +145,7 @@ export function registerGitHandlers(
     try {
       // For SSH projects, check if git repo exists remotely
       if (projectId && sshManager) {
-        const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
         console.log(`[git:list-branches] Project master status:`, projectMasterStatus)
         if (projectMasterStatus.connected) {
           // Check for .git directory remotely
@@ -210,7 +210,7 @@ export function registerGitHandlers(
     try {
       // For SSH projects, check if git repo exists remotely
       if (projectId && sshManager) {
-        const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
         console.log(`[git:checkout] Project master status:`, projectMasterStatus)
         if (projectMasterStatus.connected) {
           // Check for .git directory remotely
@@ -260,7 +260,7 @@ export function registerGitHandlers(
     try {
       // For SSH projects, check if git repo exists remotely
       if (projectId && sshManager) {
-        const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
         if (projectMasterStatus.connected) {
           try {
             await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
@@ -299,7 +299,7 @@ export function registerGitHandlers(
     // For SSH projects, we can't use fs.watch since files are remote
     // Skip watching for SSH projects
     if (projectId && sshManager) {
-      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
       if (projectMasterStatus.connected) {
         console.log('[Git Watch] Skipping git watch for SSH project (not supported):', projectPath)
         return { success: false, error: 'Git watching is not supported for SSH projects' }
@@ -541,7 +541,7 @@ export function registerGitHandlers(
     try {
       // For SSH projects, check if git repo exists remotely
       if (projectId && sshManager) {
-        const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+        const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
         console.log(`[git:get-changed-files] Project master status:`, projectMasterStatus)
         if (projectMasterStatus.connected) {
           // Check for .git directory remotely
@@ -644,7 +644,7 @@ export function registerGitHandlers(
       try {
         // For SSH projects, check if git repo exists remotely
         if (projectId && sshManager) {
-          const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+          const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
           if (projectMasterStatus.connected) {
             try {
               await sshManager.execViaProjectMaster(projectId, `test -d "${projectPath}/.git"`)
@@ -721,7 +721,7 @@ export function registerGitHandlers(
         if (status.startsWith('??')) {
           // Untracked file - delete it
           if (projectId && sshManager) {
-            const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+            const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
             if (projectMasterStatus.connected) {
               // Delete via SSH
               const fullPath = path.posix.join(projectPath, filePath)

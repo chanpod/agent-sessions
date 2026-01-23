@@ -136,13 +136,11 @@ export const useGitStore = create<GitStore>((set, get) => ({
         // Fetch branches
         const branchesResult = await window.electron.git.listBranches(projectPath, projectId)
 
-        // Fetch changed files if there are changes
+        // Fetch changed files (always fetch to avoid race condition with hasChanges flag)
         let changedFiles: ChangedFile[] = []
-        if (result.hasChanges) {
-          const filesResult = await window.electron.git.getChangedFiles(projectPath, projectId)
-          if (filesResult.success && filesResult.files) {
-            changedFiles = filesResult.files
-          }
+        const filesResult = await window.electron.git.getChangedFiles(projectPath, projectId)
+        if (filesResult.success && filesResult.files) {
+          changedFiles = filesResult.files
         }
 
         get().setGitInfo(projectId, {

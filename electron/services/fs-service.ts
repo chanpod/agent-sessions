@@ -48,10 +48,10 @@ function detectWslPath(inputPath: string): WslPathInfo {
 /**
  * Determine the project type based on path and SSH connection status
  */
-function getProjectType(projectPath: string, projectId: string | undefined, sshManager: SSHManager | null): ProjectType {
+async function getProjectType(projectPath: string, projectId: string | undefined, sshManager: SSHManager | null): Promise<ProjectType> {
   // Check SSH first
   if (projectId && sshManager) {
-    const status = sshManager.getProjectMasterStatus(projectId)
+    const status = await sshManager.getProjectMasterStatus(projectId)
     if (status.connected) {
       return 'ssh'
     }
@@ -223,7 +223,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
       // Check if this is an SSH project with active tunnel
       if (projectId && sshManager) {
-        const status = sshManager.getProjectMasterStatus(projectId)
+        const status = await sshManager.getProjectMasterStatus(projectId)
         if (status.connected) {
           console.log('[fs:readFile] Using SSH tunnel for project:', projectId)
           try {
@@ -306,7 +306,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
       // Check if this is an SSH project with active tunnel
       if (projectId && sshManager) {
-        const status = sshManager.getProjectMasterStatus(projectId)
+        const status = await sshManager.getProjectMasterStatus(projectId)
         if (status.connected) {
           console.log('[fs:writeFile] Using SSH tunnel for project:', projectId)
           try {
@@ -350,7 +350,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
 
       // Check if this is an SSH project with active tunnel
       if (projectId && sshManager) {
-        const status = sshManager.getProjectMasterStatus(projectId)
+        const status = await sshManager.getProjectMasterStatus(projectId)
         if (status.connected) {
           console.log('[fs:listDir] Using SSH tunnel for project:', projectId)
           try {
@@ -440,7 +440,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       const { dirs: userExcludeDirs, patterns: userExcludePatterns } = parseUserExclusions(options.userExclusions)
 
       // Determine project type to choose the right search strategy
-      const projectType = getProjectType(projectPath, projectId, sshManager)
+      const projectType = await getProjectType(projectPath, projectId, sshManager)
       console.log('[fs:searchContent] Project type:', projectType)
 
       // For Windows local projects, use Node.js-based search (grep/rg not available)

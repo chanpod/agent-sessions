@@ -607,14 +607,35 @@ export class SSHManager extends EventEmitter {
   }
 
   /**
-   * Get project master connection status
+   * Get project master connection status with active verification
    */
-  getProjectMasterStatus(projectId: string): { connected: boolean; error?: string } {
+  async getProjectMasterStatus(projectId: string): Promise<{ connected: boolean; error?: string }> {
     const connection = this.projectMasterConnections.get(projectId)
     if (!connection) {
       return { connected: false }
     }
-    return { connected: connection.connected, error: connection.error }
+
+    if (!connection.connected) {
+      return { connected: false, error: connection.error }
+    }
+
+    // Verify the connection is still alive using ssh -O check
+    const sshConnection = this.connections.get(connection.sshConnectionId)
+    if (!sshConnection) {
+      return { connected: false, error: 'SSH connection not found' }
+    }
+
+    try {
+      const args = ['-O', 'check', '-o', `ControlPath=${connection.controlPath}`, `${sshConnection.config.username}@${sshConnection.config.host}`]
+      await this.execSSH(args)
+      connection.lastUsed = Date.now()
+      return { connected: true }
+    } catch (error: any) {
+      console.log(`[SSHManager] SSH master connection found to be stale for host ${sshConnection.config.host}`)
+      connection.connected = false
+      connection.error = error.message
+      return { connected: false, error: error.message }
+    }
   }
 
   /**

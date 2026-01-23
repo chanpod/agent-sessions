@@ -93,7 +93,7 @@ export async function execInContextAsync(command: string, projectPath: string, p
 
   // First check if this is an SSH project
   if (projectId && sshManager) {
-    const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+    const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
     console.log(`[execInContextAsync] Project master status:`, projectMasterStatus)
     if (projectMasterStatus.connected) {
       // Execute via SSH using ControlMaster
@@ -933,31 +933,36 @@ Output verification:
 ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string; projectId?: string }) => {
   if (!ptyManager) return null
 
-  // If this is an SSH connection, build the SSH command using SSH manager
-  if (options.sshConnectionId && sshManager) {
-    let sshCommand
+  try {
+    // If this is an SSH connection, build the SSH command using SSH manager
+    if (options.sshConnectionId && sshManager) {
+      let sshCommand
 
-    // Try to use project tunnel if projectId is provided
-    if (options.projectId) {
-      console.log(`[Main] Creating SSH terminal through project ${options.projectId} tunnel`)
-      sshCommand = sshManager.buildSSHCommandForProject(options.projectId, options.remoteCwd)
+      // Try to use project tunnel if projectId is provided
+      if (options.projectId) {
+        console.log(`[Main] Creating SSH terminal through project ${options.projectId} tunnel`)
+        sshCommand = sshManager.buildSSHCommandForProject(options.projectId, options.remoteCwd)
+      }
+
+      // Fall back to direct connection if no project or tunnel not available
+      if (!sshCommand) {
+        console.log(`[Main] Creating SSH terminal with direct connection`)
+        sshCommand = sshManager.buildSSHCommand(options.sshConnectionId, options.remoteCwd)
+      }
+
+      if (!sshCommand) {
+        throw new Error('Failed to build SSH command - connection not found or not connected')
+      }
+
+      // Create terminal with SSH shell command
+      return ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~', options.id)
     }
 
-    // Fall back to direct connection if no project or tunnel not available
-    if (!sshCommand) {
-      console.log(`[Main] Creating SSH terminal with direct connection`)
-      sshCommand = sshManager.buildSSHCommand(options.sshConnectionId, options.remoteCwd)
-    }
-
-    if (!sshCommand) {
-      throw new Error('Failed to build SSH command - connection not found or not connected')
-    }
-
-    // Create terminal with SSH shell command
-    return ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~', options.id)
+    return ptyManager.createTerminal(options)
+  } catch (error) {
+    console.error('Failed to create terminal:', error)
+    throw new Error(`Failed to create terminal: ${error instanceof Error ? error.message : String(error)}`)
   }
-
-  return ptyManager.createTerminal(options)
 })
 
 ipcMain.handle('pty:write', async (_event, id: string, data: string) => {
@@ -1093,7 +1098,7 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projec
   try {
     // For SSH projects, use remote execution
     if (projectId && sshManager) {
-      const projectMasterStatus = sshManager.getProjectMasterStatus(projectId)
+      const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
       console.log(`[project:get-scripts] SSH manager exists, project master status:`, projectMasterStatus)
 
       if (projectMasterStatus.connected) {

@@ -44,6 +44,16 @@ function getDefaultWslDistro(): string | null {
   }
 }
 
+function isWslAvailable(): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    execSync('wsl --status', { stdio: 'ignore', timeout: 5000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function getLinuxPathFromWslPath(inputPath: string): string {
   // Extract Linux path from UNC path
   const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i)
@@ -282,25 +292,46 @@ export class PtyManager {
     let effectiveCwd = originalCwd
     let shellArgs: string[] = []
 
+    // Parse shell if it contains arguments (e.g., "wsl.exe -d Ubuntu")
+    // This handles shells defined with embedded arguments like WSL distro-specific shells
+    let shellExecutable = shell
+    let parsedShellArgs: string[] = []
+
+    if (shell.includes(' ')) {
+      const parts = shell.split(' ')
+      shellExecutable = parts[0]
+      parsedShellArgs = parts.slice(1)
+    }
+
     // Handle WSL paths on Windows
     if (process.platform === 'win32' && originalCwd && isWslPath(originalCwd)) {
-      const linuxPath = getLinuxPathFromWslPath(originalCwd)
-      const distro = getDefaultWslDistro()
+      // Validate WSL is available before attempting to use it
+      if (!isWslAvailable()) {
+        throw new Error('WSL is not available. Please ensure Windows Subsystem for Linux is installed and enabled.')
+      }
 
-      // If shell is not already WSL, switch to WSL
-      if (!shell.includes('wsl')) {
-        shell = 'wsl.exe'
-        if (distro) {
-          shellArgs = ['-d', distro, '--cd', linuxPath]
-        } else {
-          shellArgs = ['--cd', linuxPath]
-        }
+      const distro = getDefaultWslDistro()
+      if (!distro) {
+        throw new Error('No WSL distribution found. Please install a Linux distribution from the Microsoft Store.')
+      }
+
+      const linuxPath = getLinuxPathFromWslPath(originalCwd)
+
+      // If shell executable is not already WSL, switch to WSL
+      // Check the executable name, not the full string with args
+      if (!shellExecutable.toLowerCase().includes('wsl')) {
+        shellExecutable = 'wsl.exe'
+        parsedShellArgs = [] // Clear any parsed args since we're switching to WSL
+        shellArgs = ['-d', distro, '--cd', linuxPath]
       }
       // For file operations, use Windows cwd (we'll cd in WSL)
       effectiveCwd = process.cwd()
     }
 
-    const ptyProcess = pty.spawn(shell, shellArgs, {
+    // Combine parsed args with any existing shellArgs
+    const finalArgs = [...parsedShellArgs, ...shellArgs]
+
+    const ptyProcess = pty.spawn(shellExecutable, finalArgs, {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -317,7 +348,7 @@ export class PtyManager {
       pid: ptyProcess.pid,
       shell,
       cwd: originalCwd, // Store original cwd for display
-      title: shell.split('/').pop() || shell,
+      title: shellExecutable.split(/[\\/]/).pop() || shell, // Use executable for title
       createdAt: Date.now(),
       hidden: options.hidden,
     }

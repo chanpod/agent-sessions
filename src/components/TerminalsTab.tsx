@@ -1,4 +1,4 @@
-import { Terminal, Plus, Server, Play, Command, RefreshCw, Package, ChevronDown, ChevronRight, LayoutGrid } from 'lucide-react'
+import { Terminal, Plus, Server, Play, Command, RefreshCw, Package, ChevronDown, ChevronRight, LayoutGrid, Pin } from 'lucide-react'
 import { useState, useEffect, useMemo } from 'react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useServerStore } from '../stores/server-store'
