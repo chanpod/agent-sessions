@@ -6,6 +6,7 @@ import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
 import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
+import { convertToWslUncPath } from './utils/wsl-utils'
 
 const execAsync = promisify(exec)
 
@@ -325,8 +326,9 @@ export class PtyManager {
         parsedShellArgs = [] // Clear any parsed args since we're switching to WSL
         shellArgs = ['-d', distro, '--cd', linuxPath]
       }
-      // For file operations, use Windows cwd (we'll cd in WSL)
-      effectiveCwd = process.cwd()
+      // Convert Linux path to UNC path for Windows to access WSL filesystem
+      const uncPath = convertToWslUncPath(linuxPath, distro)
+      effectiveCwd = uncPath || process.cwd()
     }
 
     // Combine parsed args with any existing shellArgs
