@@ -294,10 +294,11 @@ export class PtyManager {
 
     // Parse shell if it contains arguments (e.g., "wsl.exe -d Ubuntu")
     // This handles shells defined with embedded arguments like WSL distro-specific shells
+    // Only parse for WSL shells - Windows paths may contain spaces (e.g., "C:\Program Files\...")
     let shellExecutable = shell
     let parsedShellArgs: string[] = []
 
-    if (shell.includes(' ')) {
+    if (shell.toLowerCase().includes('wsl') && shell.includes(' ')) {
       const parts = shell.split(' ')
       shellExecutable = parts[0]
       parsedShellArgs = parts.slice(1)
