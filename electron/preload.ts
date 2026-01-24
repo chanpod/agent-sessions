@@ -5,6 +5,10 @@ export interface PtyOptions {
   shell?: string
   sshConnectionId?: string
   remoteCwd?: string
+  id?: string
+  projectId?: string
+  initialCommand?: string  // Command to execute immediately (used for agent terminals)
+  title?: string           // Custom title override
 }
 
 export interface SSHConnectionConfig {
@@ -426,6 +430,17 @@ const electronAPI = {
       ipcRenderer.invoke('cli:detect-all', projectPath, projectId),
     detect: (toolId: string, projectPath: string, projectId?: string): Promise<CliToolDetectionResult> =>
       ipcRenderer.invoke('cli:detect', toolId, projectPath, projectId),
+  },
+  agent: {
+    createTerminal: (options: {
+      projectId: string
+      agentId: string  // 'claude' | 'gemini' | 'codex'
+      context?: string
+      cwd: string
+    }): Promise<{ success: boolean; terminal?: TerminalInfo; error?: string }> =>
+      ipcRenderer.invoke('agent:create-terminal', options),
+    injectContext: (terminalId: string, context: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('agent:inject-context', terminalId, context),
   },
 }
 

@@ -50,7 +50,9 @@
       "Bash(grep:*)",
       "Bash(pnpm vitest run:*)",
       "Bash(tsc:*)",
-      "Bash(cmd //c \"npx tsc --version\")"
+      "Bash(cmd //c \"npx tsc --version\")",
+      "Bash(codex --version:*)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

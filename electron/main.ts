@@ -889,7 +889,7 @@ Output verification:
 // IPC Handlers
 // ============================================================================
 
-ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string; projectId?: string }) => {
+ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: string; sshConnectionId?: string; remoteCwd?: string; id?: string; projectId?: string; initialCommand?: string; title?: string }) => {
   if (!ptyManager) return null
 
   try {
@@ -914,10 +914,13 @@ ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: str
       }
 
       // Create terminal with SSH shell command
-      return ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~', options.id)
+      const info = ptyManager.createTerminalWithCommand(sshCommand.shell, sshCommand.args, options.remoteCwd || '~', options.id)
+      return info
     }
 
-    return ptyManager.createTerminal(options)
+    // Create terminal
+    const info = ptyManager.createTerminal(options)
+    return info
   } catch (error) {
     console.error('Failed to create terminal:', error)
     throw new Error(`Failed to create terminal: ${error instanceof Error ? error.message : String(error)}`)
@@ -942,7 +945,8 @@ ipcMain.handle('pty:list', async () => {
 
 ipcMain.handle('pty:create-with-command', async (_event, shell: string, args: string[], displayCwd: string, hidden?: boolean) => {
   if (!ptyManager) return null
-  return ptyManager.createTerminalWithCommand(shell, args, displayCwd, undefined, hidden)
+  const info = ptyManager.createTerminalWithCommand(shell, args, displayCwd, undefined, hidden)
+  return info
 })
 
 ipcMain.handle('system:get-shells', async (_event, projectPath?: string) => {
@@ -1336,6 +1340,70 @@ ipcMain.handle('cli:detect', async (_event, toolId: string, projectPath: string,
       error: getErrorMessage(error)
     }
   }
+})
+
+// ============================================================================
+// Agent Terminal IPC Handlers
+// ============================================================================
+
+/**
+ * Create an agent terminal that runs an AI CLI tool and optionally injects context
+ */
+ipcMain.handle('agent:create-terminal', async (_event, options: {
+  projectId: string
+  agentId: string  // 'claude' | 'gemini' | 'codex'
+  context?: string
+  cwd: string
+}) => {
+  if (!ptyManager) {
+    return { success: false, error: 'PTY manager not initialized' }
+  }
+
+  const { agentId, context, cwd } = options
+  console.log('[Main] agent:create-terminal called:', {
+    agentId: options.agentId,
+    hasContext: !!options.context,
+    contextLength: options.context?.length,
+    contextPreview: options.context?.substring(0, 100),
+    cwd: options.cwd
+  })
+  console.log(`[Agent] Creating agent terminal for ${agentId} in ${cwd}`)
+
+  try {
+    // The agent command is simply the agent ID (claude, gemini, codex)
+    // The cli-detector already validates these are installed
+    const info = ptyManager.createAgentTerminal({
+      cwd,
+      agentCommand: agentId,
+      context,
+    })
+
+    console.log(`[Agent] Created terminal ${info.id} for ${agentId}`)
+
+    return {
+      success: true,
+      terminal: info
+    }
+  } catch (error: unknown) {
+    console.error(`[Agent] Failed to create agent terminal:`, error)
+    return {
+      success: false,
+      error: getErrorMessage(error)
+    }
+  }
+})
+
+/**
+ * Inject context into an existing terminal's stdin
+ */
+ipcMain.handle('agent:inject-context', async (_event, terminalId: string, context: string) => {
+  if (!ptyManager) {
+    return { success: false, error: 'PTY manager not initialized' }
+  }
+
+  console.log(`[Agent] Injecting context into terminal ${terminalId} (${context.length} bytes)`)
+
+  return ptyManager.injectContext(terminalId, context)
 })
 
 

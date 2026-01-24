@@ -308,6 +308,110 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal, openSearch])
 
+  // Helper to get display name for AI agents
+  const getAgentDisplayName = (agentId: string): string => {
+    const names: Record<string, string> = {
+      claude: 'Claude',
+      gemini: 'Gemini',
+      codex: 'Codex'
+    }
+    return names[agentId] || agentId
+  }
+
+  // Handler for creating agent terminals (Claude, Gemini, Codex)
+  // Uses the unified pty.create path with initialCommand option
+  const handleCreateAgentTerminal = async (
+    projectId: string,
+    agentId: string,
+    contextId: string | null,
+    contextContent: string | null
+  ) => {
+    const project = projects.find(p => p.id === projectId)
+    if (!project || !window.electron) return
+
+    console.log('[App] handleCreateAgentTerminal called:', {
+      projectId,
+      agentId,
+      contextId,
+      hasContext: !!contextContent,
+      contextLength: contextContent?.length,
+      contextPreview: contextContent?.substring(0, 100)
+    })
+
+    try {
+      // Build the command with optional context
+      // Each agent has different context injection syntax
+      let initialCommand = agentId
+      if (contextContent) {
+        // Escape the context for shell (handle quotes, special chars)
+        const escapedContext = contextContent
+          .replace(/\\/g, '\\\\')  // Escape backslashes first
+          .replace(/"/g, '\\"')     // Escape double quotes
+          .replace(/\$/g, '\\$')    // Escape dollar signs
+          .replace(/`/g, '\\`')     // Escape backticks
+
+        // Agent-specific context injection
+        switch (agentId) {
+          case 'claude':
+            // Claude uses --append-system-prompt flag
+            initialCommand = `claude --append-system-prompt "${escapedContext}"`
+            break
+          case 'gemini':
+            // Gemini uses -p flag for prompt
+            initialCommand = `gemini -p "${escapedContext}"`
+            break
+          case 'codex':
+            // Codex takes prompt as direct argument (no flag)
+            initialCommand = `codex "${escapedContext}"`
+            break
+          default:
+            // Fallback: try --append-system-prompt
+            initialCommand = `${agentId} --append-system-prompt "${escapedContext}"`
+        }
+      }
+
+      // Use unified pty.create with initialCommand
+      const info = await window.electron.pty.create({
+        cwd: project.path,
+        initialCommand,
+        title: getAgentDisplayName(agentId),
+      })
+
+      if (!info) {
+        console.error('Failed to create agent terminal')
+        return
+      }
+
+      console.log('[App] pty.create result for agent:', info)
+
+      // Add to terminal store with agent metadata
+      addSession({
+        id: info.id,
+        projectId,
+        pid: info.pid,
+        shell: agentId,
+        shellName: getAgentDisplayName(agentId),
+        cwd: project.path,
+        title: `${getAgentDisplayName(agentId)} Agent`,
+        createdAt: info.createdAt,
+        terminalType: 'agent',
+        agentId,
+        contextId: contextId ?? undefined,
+        contextInjected: !!contextContent
+      })
+
+      // Add terminal to project grid and focus it
+      addTerminalToProject(projectId, info.id)
+      setProjectFocusedTerminal(projectId, info.id)
+
+      // Switch to dedicated single terminal view to show the newly created terminal
+      const { setProjectTerminalActive } = useViewStore.getState()
+      setProjectTerminalActive(projectId, info.id)
+    } catch (error) {
+      console.error('Failed to create agent terminal:', error)
+    }
+  }
+
   const handleCreateTerminal = async (projectId: string, shell: { name: string; path: string }) => {
     if (!window.electron) return
 
@@ -340,6 +444,11 @@ function App() {
         remoteCwd: project.remotePath || undefined,
         projectId: projectId, // Pass project ID to use tunnel (no password needed!)
       })
+
+      if (!info) {
+        console.error('Failed to create terminal')
+        return
+      }
 
       sessionSshConnectionId = project.sshConnectionId
 
@@ -380,6 +489,11 @@ function App() {
         remoteCwd: project.path || undefined,
       })
 
+      if (!info) {
+        console.error('Failed to create terminal')
+        return
+      }
+
       sessionSshConnectionId = sshConnectionId
 
       // Save config for persistence
@@ -406,6 +520,11 @@ function App() {
         cwd: project.path || process.cwd(),
       })
 
+      if (!info) {
+        console.error('Failed to create terminal')
+        return
+      }
+
       // Save config for persistence
       saveConfig({
         id: info.id,
@@ -431,6 +550,10 @@ function App() {
     // Add terminal to project grid and focus it
     addTerminalToProject(projectId, info.id)
     setProjectFocusedTerminal(projectId, info.id)
+
+    // Switch to dedicated single terminal view to show the newly created terminal
+    const { setProjectTerminalActive } = useViewStore.getState()
+    setProjectTerminalActive(projectId, info.id)
   }
 
   const handleCreateQuickTerminal = async (shell: { name: string; path: string }) => {
@@ -871,6 +994,7 @@ function App() {
               onStopServer={handleStopServer}
               onRestartServer={handleRestartServer}
               onDeleteServer={handleDeleteServer}
+              onCreateAgentTerminal={handleCreateAgentTerminal}
             />
           )}
           <TerminalArea />

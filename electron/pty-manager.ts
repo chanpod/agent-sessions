@@ -248,7 +248,14 @@ export class PtyManager {
     return info
   }
 
-  createTerminal(options: { cwd?: string; shell?: string; id?: string; hidden?: boolean } = {}): TerminalInfo {
+  createTerminal(options: {
+    cwd?: string
+    shell?: string
+    id?: string
+    hidden?: boolean
+    initialCommand?: string  // Command to execute immediately (e.g., "claude --append-system-prompt '...'")
+    title?: string           // Custom title override
+  } = {}): TerminalInfo {
     const id = options.id || randomUUID()
     let shell = options.shell || this.getDefaultShell()
     const originalCwd = options.cwd || process.cwd()
@@ -261,14 +268,29 @@ export class PtyManager {
     let shellExecutable = shell
     let parsedShellArgs: string[] = []
 
-    if (shell.toLowerCase().includes('wsl') && shell.includes(' ')) {
+    // If we have an initial command, wrap it in a shell
+    // This is used for agent terminals (claude, gemini, codex) and any other command execution
+    if (options.initialCommand) {
+      console.log('[PtyManager] Creating terminal with initial command:', options.initialCommand.substring(0, 200))
+
+      if (process.platform === 'win32') {
+        // Use bash.exe (Git Bash) with -l -i for login interactive shell
+        // -i is needed to properly load PATH for npm-installed tools like codex (which need node)
+        shellExecutable = 'bash.exe'
+        shellArgs = ['-l', '-i', '-c', options.initialCommand]
+      } else {
+        // On Unix, use default shell with login interactive
+        shellExecutable = process.env.SHELL || '/bin/bash'
+        shellArgs = ['-l', '-i', '-c', options.initialCommand]
+      }
+    } else if (shell.toLowerCase().includes('wsl') && shell.includes(' ')) {
       const parts = shell.split(' ')
       shellExecutable = parts[0]
       parsedShellArgs = parts.slice(1)
     }
 
-    // Handle WSL paths on Windows
-    if (process.platform === 'win32' && originalCwd && PathService.isWslPath(originalCwd)) {
+    // Handle WSL paths on Windows (only for non-command terminals)
+    if (!options.initialCommand && process.platform === 'win32' && originalCwd && PathService.isWslPath(originalCwd)) {
       // Validate WSL is available before attempting to use it
       if (!PathService.getEnvironment().wslAvailable) {
         throw new Error('WSL is not available. Please ensure Windows Subsystem for Linux is installed and enabled.')
@@ -308,12 +330,21 @@ export class PtyManager {
       } as Record<string, string>,
     })
 
+    // Determine title: custom > initialCommand first word > shell executable
+    let title = options.title
+    if (!title && options.initialCommand) {
+      title = options.initialCommand.split(' ')[0] // e.g., "claude" from "claude --append..."
+    }
+    if (!title) {
+      title = shellExecutable.split(/[\\/]/).pop() || shell
+    }
+
     const info: TerminalInfo = {
       id,
       pid: ptyProcess.pid,
-      shell,
+      shell: options.initialCommand || shell, // Store command or shell for display
       cwd: originalCwd, // Store original cwd for display
-      title: shellExecutable.split(/[\\/]/).pop() || shell, // Use executable for title
+      title,
       createdAt: Date.now(),
       hidden: options.hidden,
     }
@@ -399,5 +430,135 @@ export class PtyManager {
    */
   getDetectorManager(): DetectorManager {
     return this.detectorManager
+  }
+
+  /**
+   * Create an agent terminal that runs an AI CLI tool (claude, gemini, codex)
+   * and optionally passes context as a command-line argument.
+   *
+   * @deprecated Use createTerminal with initialCommand option instead
+   *
+   * @param options.cwd - Working directory for the terminal
+   * @param options.agentCommand - The agent command to run (e.g., "claude", "gemini", "codex")
+   * @param options.context - Optional context to pass as a command-line argument
+   * @param options.id - Optional terminal ID (will be generated if not provided)
+   * @returns TerminalInfo with terminal details
+   */
+  createAgentTerminal(options: {
+    cwd: string
+    agentCommand: string
+    context?: string
+    id?: string
+  }): TerminalInfo {
+    const { cwd, agentCommand, context, id } = options
+
+    console.log('[PtyManager] createAgentTerminal called (delegating to createTerminal):', {
+      agentCommand,
+      hasContext: !!context,
+      contextLength: context?.length,
+      cwd
+    })
+
+    // Build the command with optional context as argument
+    // Each agent has different context injection syntax
+    let fullCommand = agentCommand
+    if (context) {
+      // Escape the context for shell (handle quotes, special chars)
+      const escapedContext = context
+        .replace(/\\/g, '\\\\')  // Escape backslashes first
+        .replace(/"/g, '\\"')     // Escape double quotes
+        .replace(/\$/g, '\\$')    // Escape dollar signs
+        .replace(/`/g, '\\`')     // Escape backticks
+
+      // Agent-specific context injection
+      switch (agentCommand) {
+        case 'claude':
+          fullCommand = `claude --append-system-prompt "${escapedContext}"`
+          break
+        case 'gemini':
+          fullCommand = `gemini -p "${escapedContext}"`
+          break
+        case 'codex':
+          fullCommand = `codex "${escapedContext}"`
+          break
+        default:
+          fullCommand = `${agentCommand} --append-system-prompt "${escapedContext}"`
+      }
+    }
+
+    // Delegate to unified createTerminal
+    return this.createTerminal({
+      cwd,
+      id,
+      initialCommand: fullCommand,
+      title: agentCommand.split(' ')[0], // e.g., "claude"
+    })
+  }
+
+  /**
+   * Inject context into an existing terminal's stdin
+   *
+   * @param terminalId - The terminal ID to inject context into
+   * @param context - The context string to inject
+   * @returns Object with success status and optional error
+   */
+  injectContext(terminalId: string, context: string): { success: boolean; error?: string } {
+    const instance = this.terminals.get(terminalId)
+    if (!instance) {
+      return { success: false, error: `Terminal ${terminalId} not found` }
+    }
+
+    const CHUNK_SIZE = 4096
+    const SUBMIT_DELAY_MS = 100 // Delay between content and submit keystroke
+
+    // Helper function to send the submit keystroke after content is written
+    const sendSubmit = () => {
+      setTimeout(() => {
+        const currentInstance = this.terminals.get(terminalId)
+        if (currentInstance) {
+          // Use \r (carriage return) for Enter key - more universally recognized by TUIs
+          currentInstance.ptyProcess.write('\r')
+          console.log(`[PtyManager] Context submitted to terminal ${terminalId}`)
+        }
+      }, SUBMIT_DELAY_MS)
+    }
+
+    try {
+      console.log(`[PtyManager] Starting context injection to terminal ${terminalId} (${context.length} bytes)`)
+
+      if (context.length > CHUNK_SIZE) {
+        // Chunk large contexts
+        console.log(`[PtyManager] Injecting large context in chunks`)
+        let offset = 0
+        const writeNextChunk = () => {
+          const currentInstance = this.terminals.get(terminalId)
+          if (!currentInstance) return
+
+          const chunk = context.slice(offset, offset + CHUNK_SIZE)
+          if (chunk.length > 0) {
+            currentInstance.ptyProcess.write(chunk)
+            offset += CHUNK_SIZE
+            if (offset < context.length) {
+              setTimeout(writeNextChunk, 10)
+            } else {
+              // All chunks written, wait then send submit
+              console.log(`[PtyManager] All chunks written, waiting before submit...`)
+              sendSubmit()
+            }
+          }
+        }
+        writeNextChunk()
+      } else {
+        instance.ptyProcess.write(context)
+        console.log(`[PtyManager] Context written, waiting before submit...`)
+        sendSubmit()
+      }
+
+      return { success: true }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      console.error(`[PtyManager] Failed to inject context:`, error)
+      return { success: false, error: errorMessage }
+    }
   }
 }

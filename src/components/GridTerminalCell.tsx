@@ -188,7 +188,7 @@ export function GridTerminalCell({
 
       {/* Terminal */}
       <div className="flex-1 min-h-0 min-w-0 w-full">
-        <Terminal sessionId={session.id} isFocused={isFocused} />
+        <Terminal key={session.id} sessionId={session.id} isFocused={isFocused} />
       </div>
     </div>
   )

@@ -23,6 +23,7 @@ interface ProjectContentProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
 }
 
 export function ProjectContent({
@@ -35,6 +36,7 @@ export function ProjectContent({
   onStopServer,
   onRestartServer,
   onDeleteServer,
+  onCreateAgentTerminal,
 }: ProjectContentProps) {
   const { connectProject, setProjectConnectionStatus, disconnectProject } = useProjectStore()
   const { sessions } = useTerminalStore()
@@ -228,6 +230,7 @@ export function ProjectContent({
           onStopServer={onStopServer}
           onRestartServer={onRestartServer}
           onDeleteServer={onDeleteServer}
+          onCreateAgentTerminal={onCreateAgentTerminal}
         />
       </div>
 

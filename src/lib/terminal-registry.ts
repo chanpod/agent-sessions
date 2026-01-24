@@ -5,6 +5,7 @@ interface TerminalInstance {
   dataUnsubscribe: (() => void) | undefined
   currentContainer: HTMLDivElement | null
   isOpened: boolean
+  ready: Promise<void>
 }
 
 // Whitelisted keyboard shortcuts that should work even when terminal is focused
@@ -80,62 +81,27 @@ const resizeTimers = new Map<string, NodeJS.Timeout>()
 // Track which session IDs have been explicitly closed (should be disposed)
 const closedSessions = new Set<string>()
 
-export function getOrCreateTerminal(
-  sessionId: string,
-  container: HTMLDivElement
-): { terminal: XTerm; isNew: boolean } {
+// Store ready resolvers for deferred terminals
+const readyResolvers = new Map<string, () => void>()
+
+/**
+ * Creates a terminal instance without opening it to a container.
+ * Sets up PTY data handlers but defers DOM attachment.
+ * Use openTerminalToContainer() to attach to DOM later.
+ */
+export function createTerminalDeferred(sessionId: string): XTerm {
   // Check if session was explicitly closed - don't reuse
   if (closedSessions.has(sessionId)) {
     closedSessions.delete(sessionId)
   }
 
+  // Return existing terminal if already created
   const existing = terminalInstances.get(sessionId)
-
   if (existing) {
-    // Reattach to new container if different
-    if (existing.currentContainer !== container) {
-      // Move the terminal's DOM element to the new container
-      // xterm.js creates a .terminal element we can move
-      if (existing.isOpened && existing.terminal.element) {
-        // Clear new container first
-        container.innerHTML = ''
-        // Move the terminal element to the new container
-        container.appendChild(existing.terminal.element)
-      } else if (!existing.isOpened) {
-        // Terminal was created but never opened - open it now
-        existing.terminal.open(container)
-        existing.isOpened = true
-      }
-
-      existing.currentContainer = container
-
-      // Refit after reattaching with retry logic
-      const attemptReattachFit = (retries = 0) => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const success = fitTerminalManually(existing.terminal, container)
-
-            if (!success && retries < 5) {
-              // Retry with exponential backoff if fit failed
-              console.log(`Reattach fit retry ${retries + 1}/5`)
-              setTimeout(() => attemptReattachFit(retries + 1), 50 * (retries + 1))
-            } else if (success) {
-              const { cols, rows } = existing.terminal
-              console.log(`Terminal ${sessionId} reattached and resized to ${cols}x${rows}`)
-              window.electron?.pty.resize(sessionId, cols, rows)
-            } else {
-              console.warn(`Terminal ${sessionId} reattach fit failed after retries`)
-            }
-          })
-        })
-      }
-
-      attemptReattachFit()
-    }
-    return { terminal: existing.terminal, isNew: false }
+    return existing.terminal
   }
 
-  // Create new terminal instance
+  // Create new terminal instance with all options
   const terminal = new XTerm({
     cursorBlink: true,
     cursorStyle: 'block',
@@ -167,14 +133,65 @@ export function getOrCreateTerminal(
     allowProposedApi: true,
   })
 
-  terminal.open(container)
+  // Create ready promise that resolves when terminal is fully initialized (after opening)
+  let resolveReady: () => void
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve
+  })
+  readyResolvers.set(sessionId, resolveReady!)
 
-  // Attach custom key event handler to allow whitelisted shortcuts
-  terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-    // If this is a whitelisted shortcut, return false to prevent xterm from handling it
-    // This allows the event to bubble up to window listeners
+  // Handle terminal input -> PTY (works even before opening)
+  terminal.onData((data) => {
+    window.electron?.pty.write(sessionId, data)
+  })
+
+  // Handle PTY output -> terminal (works even before opening, buffers data)
+  const dataUnsubscribe = window.electron?.pty.onData((id, data) => {
+    if (id === sessionId) {
+      terminal.write(data)
+    }
+  })
+
+  // Store in registry with isOpened: false
+  terminalInstances.set(sessionId, {
+    terminal,
+    dataUnsubscribe,
+    currentContainer: null,
+    isOpened: false,
+    ready,
+  })
+
+  return terminal
+}
+
+/**
+ * Opens a deferred terminal to a container.
+ * Must be called after createTerminalDeferred().
+ * Returns true if opened, false if already was opened.
+ */
+export function openTerminalToContainer(
+  sessionId: string,
+  container: HTMLDivElement
+): boolean {
+  const instance = terminalInstances.get(sessionId)
+  if (!instance) {
+    console.warn(`openTerminalToContainer: No terminal instance found for ${sessionId}`)
+    return false
+  }
+
+  if (instance.isOpened) {
+    // Already opened - use attachTerminalToContainer for reattachment
+    return false
+  }
+
+  // Open terminal to container
+  instance.terminal.open(container)
+  instance.isOpened = true
+  instance.currentContainer = container
+
+  // Attach custom key event handler (needs DOM to work)
+  instance.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
     if (isWhitelistedShortcut(event)) {
-      // Dispatch the event to window so our App.tsx listener can handle it
       window.dispatchEvent(new KeyboardEvent('keydown', {
         key: event.key,
         code: event.code,
@@ -185,55 +202,130 @@ export function getOrCreateTerminal(
         bubbles: true,
         cancelable: true
       }))
-      return false // Prevent xterm from handling it
+      return false
     }
-    // For all other keys, let xterm handle them normally
     return true
   })
 
   // Initial fit with retry logic
+  const resolveReady = readyResolvers.get(sessionId)
   const attemptInitialFit = (retries = 0) => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const success = fitTerminalManually(terminal, container)
+        const success = fitTerminalManually(instance.terminal, container)
 
         if (!success && retries < 5) {
-          // Retry with exponential backoff if fit failed
           console.log(`Initial fit retry ${retries + 1}/5`)
           setTimeout(() => attemptInitialFit(retries + 1), 50 * (retries + 1))
         } else if (success) {
-          const { cols, rows } = terminal
+          const { cols, rows } = instance.terminal
           console.log(`Terminal ${sessionId} initial size: ${cols}x${rows}`)
           window.electron?.pty.resize(sessionId, cols, rows)
+          resolveReady?.()
+          readyResolvers.delete(sessionId)
         } else {
           console.warn(`Terminal ${sessionId} initial fit failed after retries`)
+          resolveReady?.()
+          readyResolvers.delete(sessionId)
         }
       })
     })
   }
 
   attemptInitialFit()
+  return true
+}
 
-  // Handle terminal input -> PTY
-  terminal.onData((data) => {
-    window.electron?.pty.write(sessionId, data)
-  })
+/**
+ * Attaches an already-opened terminal to a new container.
+ * Moves the terminal's DOM element to the new container.
+ * Returns true if attached, false if terminal not found or not opened.
+ */
+export function attachTerminalToContainer(
+  sessionId: string,
+  container: HTMLDivElement
+): boolean {
+  const instance = terminalInstances.get(sessionId)
+  if (!instance) {
+    console.warn(`attachTerminalToContainer: No terminal instance found for ${sessionId}`)
+    return false
+  }
 
-  // Handle PTY output -> terminal
-  const dataUnsubscribe = window.electron?.pty.onData((id, data) => {
-    if (id === sessionId) {
-      terminal.write(data)
+  if (!instance.isOpened) {
+    // Not opened yet - use openTerminalToContainer instead
+    console.warn(`attachTerminalToContainer: Terminal ${sessionId} not opened yet, use openTerminalToContainer`)
+    return false
+  }
+
+  if (instance.currentContainer === container) {
+    // Already attached to this container
+    return true
+  }
+
+  // Move the terminal's DOM element to the new container
+  if (instance.terminal.element) {
+    // Remove from previous parent if exists (instead of clearing innerHTML which can cause issues)
+    instance.terminal.element.parentElement?.removeChild(instance.terminal.element)
+    container.appendChild(instance.terminal.element)
+  }
+
+  instance.currentContainer = container
+
+  // Refit after reattaching with retry logic
+  const attemptReattachFit = (retries = 0) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const success = fitTerminalManually(instance.terminal, container)
+
+        if (!success && retries < 5) {
+          console.log(`Reattach fit retry ${retries + 1}/5`)
+          setTimeout(() => attemptReattachFit(retries + 1), 50 * (retries + 1))
+        } else if (success) {
+          const { cols, rows } = instance.terminal
+          console.log(`Terminal ${sessionId} reattached and resized to ${cols}x${rows}`)
+          window.electron?.pty.resize(sessionId, cols, rows)
+        } else {
+          console.warn(`Terminal ${sessionId} reattach fit failed after retries`)
+        }
+      })
+    })
+  }
+
+  attemptReattachFit()
+  return true
+}
+
+/**
+ * Gets an existing terminal or creates a new one and opens it to the container.
+ * This is the original API - kept for backward compatibility.
+ * Internally uses the new deferred creation functions.
+ */
+export function getOrCreateTerminal(
+  sessionId: string,
+  container: HTMLDivElement
+): { terminal: XTerm; isNew: boolean; ready: Promise<void> } {
+  const existing = terminalInstances.get(sessionId)
+
+  if (existing) {
+    // Existing terminal - handle reattachment
+    if (existing.currentContainer !== container) {
+      if (existing.isOpened) {
+        // Use the new attach function for already-opened terminals
+        attachTerminalToContainer(sessionId, container)
+      } else {
+        // Terminal was created deferred but never opened - open it now
+        openTerminalToContainer(sessionId, container)
+      }
     }
-  })
+    return { terminal: existing.terminal, isNew: false, ready: existing.ready }
+  }
 
-  terminalInstances.set(sessionId, {
-    terminal,
-    dataUnsubscribe,
-    currentContainer: container,
-    isOpened: true,
-  })
+  // Create new terminal using deferred creation, then immediately open
+  const terminal = createTerminalDeferred(sessionId)
+  openTerminalToContainer(sessionId, container)
 
-  return { terminal, isNew: true }
+  const instance = terminalInstances.get(sessionId)!
+  return { terminal, isNew: true, ready: instance.ready }
 }
 
 export function detachTerminal(sessionId: string, container: HTMLDivElement): void {
@@ -260,6 +352,9 @@ export function disposeTerminal(sessionId: string): void {
     resizeTimers.delete(sessionId)
   }
 
+  // Clean up ready resolver if present
+  readyResolvers.delete(sessionId)
+
   closedSessions.add(sessionId)
 }
 
@@ -269,6 +364,10 @@ export function hasTerminalInstance(sessionId: string): boolean {
 
 export function getTerminalInstance(sessionId: string): TerminalInstance | undefined {
   return terminalInstances.get(sessionId)
+}
+
+export function getTerminalReady(sessionId: string): Promise<void> | undefined {
+  return terminalInstances.get(sessionId)?.ready
 }
 
 export function resizeTerminal(sessionId: string): void {
@@ -311,11 +410,18 @@ export function resizeTerminal(sessionId: string): void {
   resizeTimers.set(sessionId, timer)
 }
 
-export function focusTerminal(sessionId: string): void {
+export function focusTerminal(sessionId: string): boolean {
   const instance = terminalInstances.get(sessionId)
-  if (instance) {
-    instance.terminal.focus()
+  if (!instance) return false
+
+  // Check if container is visible and has dimensions
+  const container = instance.terminal.element?.parentElement
+  if (!container || container.clientWidth === 0 || container.clientHeight === 0) {
+    return false // Don't attempt focus on invisible container
   }
+
+  instance.terminal.focus()
+  return true
 }
 
 export function clearTerminal(sessionId: string): void {

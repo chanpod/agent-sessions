@@ -8,7 +8,7 @@ import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem, ServerItem } from './ProjectItem'
 import { Project } from '../stores/project-store'
 import { cn } from '../lib/utils'
-import { AgentsSection } from './AgentsSection'
+import { AgentTerminalsSection } from './AgentTerminalsSection'
 
 interface ShellInfo {
   name: string
@@ -39,6 +39,7 @@ interface TerminalsTabProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
 }
 
 export function TerminalsTab({
@@ -53,6 +54,7 @@ export function TerminalsTab({
   onStopServer,
   onRestartServer,
   onDeleteServer,
+  onCreateAgentTerminal,
 }: TerminalsTabProps) {
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { servers } = useServerStore()
@@ -75,7 +77,10 @@ export function TerminalsTab({
   const [isRescanningScripts, setIsRescanningScripts] = useState(false)
 
   // Filter sessions and servers for this project
-  const projectSessions = sessions.filter((s) => s.projectId === projectId && s.shell !== '')
+  // Exclude agent terminals - they are shown in AgentTerminalsSection
+  const projectSessions = sessions.filter(
+    (s) => s.projectId === projectId && s.shell !== '' && s.terminalType !== 'agent'
+  )
   const projectServers = servers.filter((s) => s.projectId === projectId)
 
   // Fetch package.json scripts
@@ -181,8 +186,14 @@ export function TerminalsTab({
 
   return (
     <>
-      {/* Agents Section */}
-      <AgentsSection projectPath={projectPath} projectId={projectId} />
+      {/* Agent Terminals Section */}
+      <AgentTerminalsSection
+        projectId={projectId}
+        projectPath={projectPath}
+        onCloseTerminal={onCloseTerminal}
+        onReconnectTerminal={onReconnectTerminal}
+        onLaunchAgent={onCreateAgentTerminal}
+      />
 
       {/* Terminals Section */}
       <div className="mb-3 bg-zinc-800/20 rounded-md p-2">

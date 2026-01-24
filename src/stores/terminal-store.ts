@@ -11,6 +11,10 @@ export interface SavedTerminalConfig {
   shellName: string // Friendly name like "bash" or "SSH: Production"
   cwd: string
   sshConnectionId?: string // For SSH terminals
+  // Agent terminal fields
+  terminalType?: 'regular' | 'agent'  // Type of terminal
+  agentId?: string                     // Which agent (claude/gemini/codex) if agent terminal
+  contextId?: string                   // Which context was injected
 }
 
 export type ActivityLevel = 'substantial' | 'minor' | 'idle'
@@ -26,6 +30,8 @@ export interface TerminalSession extends SavedTerminalConfig {
   lastActivityTime: number
   lastActivityLevel: ActivityLevel // Current activity level
   lastSubstantialActivityTime: number // Last time we had substantial (green) activity
+  // Agent terminal runtime state
+  contextInjected?: boolean            // Was context successfully sent
 }
 
 interface TerminalStore {

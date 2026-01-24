@@ -60,7 +60,7 @@ export function SingleTerminalView({ session }: SingleTerminalViewProps) {
 
       {/* Terminal - full height */}
       <div className="flex-1 min-h-0 min-w-0 w-full">
-        <Terminal sessionId={session.id} isFocused={true} />
+        <Terminal key={session.id} sessionId={session.id} isFocused={true} />
       </div>
     </div>
   )

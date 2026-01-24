@@ -7,6 +7,41 @@
 - Am I about to read/search files to understand code? → **USE AN EXPLORE AGENT INSTEAD**
 - Is this a refactoring, implementation, or analysis task? → **USE A SUB-AGENT INSTEAD**
 
+## ⛔ DESTRUCTIVE GIT COMMANDS - NEVER WITHOUT REVIEW ⛔
+
+**NEVER run `git checkout <file>`, `git restore <file>`, or `git reset` to undo changes without these steps:**
+
+1. **FIRST: Run `git diff <file>`** to see ALL changes in the file
+2. **REVIEW the diff** - determine if the changes are ONLY yours or include the user's work
+3. **If mixed changes exist:**
+   - ❌ DO NOT run `git checkout` - this destroys the user's work!
+   - ✅ USE the Edit tool to surgically revert only YOUR specific changes
+   - ✅ OR ASK the user first before doing anything destructive
+4. **If unsure, ALWAYS ASK** - "I need to revert my changes but I see other modifications. Should I proceed?"
+
+**Why this matters:** `git checkout <file>` permanently destroys ALL uncommitted changes, not just yours. There is no undo. The user's work is gone forever.
+
+## Windows Development Requirements
+
+### Always Use Git Bash
+This project assumes Git Bash is available on Windows. All terminal operations, including:
+- Regular terminals
+- Agent terminals (Claude, Codex, Gemini)
+- Background processes
+
+**MUST** use Git Bash (`bash.exe`), never PowerShell or cmd.exe directly. This ensures:
+- Consistent PATH resolution for npm/pip installed tools
+- Unix-like command compatibility
+- Proper handling of CLI tools like `claude`, `codex`, `gemini`
+
+When spawning processes on Windows, always use:
+```typescript
+shell = 'bash.exe'
+shellArgs = ['-c', command]
+```
+
+Do NOT attempt to spawn CLI tools directly on Windows - they won't be found in the system PATH.
+
 ## Core Principle
 
 **You are a coordinator, not a doer.** Your primary role is to think, plan, delegate, and validate—not to directly implement or read files yourself.

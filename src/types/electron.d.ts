@@ -5,6 +5,8 @@ export interface PtyOptions {
   remoteCwd?: string // Remote working directory for SSH
   id?: string // Optional ID to reuse (for reconnection)
   projectId?: string // Project ID to use SSH tunnel (if available)
+  initialCommand?: string // Command to execute immediately (used for agent terminals)
+  title?: string // Custom title override
 }
 
 export interface ShellInfo {
@@ -287,6 +289,15 @@ export interface ElectronAPI {
   cli: {
     detectAll: (projectPath: string, projectId?: string) => Promise<AllCliToolsResult>
     detect: (toolId: string, projectPath: string, projectId?: string) => Promise<CliToolDetectionResult>
+  }
+  agent: {
+    createTerminal: (options: {
+      projectId: string
+      agentId: string  // 'claude' | 'gemini' | 'codex'
+      context?: string
+      cwd: string
+    }) => Promise<{ success: boolean; terminal?: TerminalInfo; error?: string }>
+    injectContext: (terminalId: string, context: string) => Promise<{ success: boolean; error?: string }>
   }
 }
 

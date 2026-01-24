@@ -8,6 +8,7 @@ import { NewProjectModal } from './NewProjectModal'
 import { SettingsModal } from './SettingsModal'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem } from './ProjectItem'
+import { AgentFooterToolbar } from './AgentFooterToolbar'
 
 interface ShellInfo {
   name: string
@@ -23,13 +24,14 @@ interface SidebarProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
 }
 
 const MIN_WIDTH = 180
 const MAX_WIDTH = 650
 const DEFAULT_WIDTH = 500
 
-export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer }: SidebarProps) {
+export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer, onCreateAgentTerminal }: SidebarProps) {
   const { projects, activeProjectId } = useProjectStore()
   const { connections: sshConnections } = useSSHStore()
   const { getGlobalSessions, activeSessionId, setActiveSession } = useTerminalStore()
@@ -194,9 +196,18 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
               onStopServer={onStopServer}
               onRestartServer={onRestartServer}
               onDeleteServer={onDeleteServer}
+              onCreateAgentTerminal={onCreateAgentTerminal}
             />
           )}
         </div>
+
+        {/* Agent Footer Toolbar - only show when project is active */}
+        {activeProject && (
+          <AgentFooterToolbar
+            projectId={activeProject.id}
+            projectPath={activeProject.path}
+          />
+        )}
 
         {/* Footer */}
         <div className="p-3 border-t border-zinc-800">
