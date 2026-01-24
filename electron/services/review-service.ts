@@ -52,12 +52,20 @@ function execInContext(command: string, projectPath: string, options: { encoding
 }
 
 /**
- * Get git diff for a file
+ * Get git diff for a file, optionally truncated
  */
-function getFileDiff(file: string, projectPath: string): string {
+function getFileDiff(file: string, projectPath: string, maxLines?: number): string {
   try {
     const normalizedFile = PathService.toGitPath(file)
-    return execInContext(`git diff HEAD -- "${normalizedFile}"`, projectPath)
+    const diff = execInContext(`git diff HEAD -- "${normalizedFile}"`, projectPath)
+
+    if (maxLines && diff) {
+      const lines = diff.split('\n')
+      if (lines.length > maxLines) {
+        return lines.slice(0, maxLines).join('\n') + `\n... (truncated, ${lines.length - maxLines} more lines)`
+      }
+    }
+    return diff
   } catch (error) {
     return ''
   }
@@ -112,9 +120,11 @@ function generatePerFileDiffHashes(files: string[], projectPath: string): Map<st
  */
 function buildClassificationPrompt(files: string[], projectPath: string): string {
   // Build file list with FileIds
+  // For classification, we only need enough context to determine risk level
+  // Truncate diffs to 50 lines per file to keep prompt size manageable
   const filesWithIds = files.map(f => {
     const fileId = generateFileId(projectPath, f)
-    const diff = getFileDiff(f, projectPath)
+    const diff = getFileDiff(f, projectPath, 50)  // Truncate for classification
     return {
       fileId,
       path: f,
@@ -389,11 +399,13 @@ export function registerReviewHandlers(
       // Run classification
       const classificationPrompt = buildClassificationPrompt(files, projectPath)
 
+      console.log(`[Review] Classification prompt size: ${classificationPrompt.length} bytes for ${files.length} files`)
+
       const result = await backgroundClaude.runTask({
         taskId: `${reviewId}-classify`,
         prompt: classificationPrompt,
         projectPath,
-        timeout: 60000 // 1 minute
+        timeout: 30000 // 30s - classification uses truncated diffs so should be fast
       })
 
       console.log(`[Review] Classification result:`, {
@@ -436,6 +448,15 @@ export function registerReviewHandlers(
       }
     } catch (error: any) {
       console.error(`[Review] Failed to start review:`, error)
+
+      // Send failure event to frontend so UI can show error state
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:failed', reviewId, error.message || 'Classification failed')
+      }
+
+      // Clean up active review
+      activeReviews.delete(reviewId)
+
       return { success: false, error: error.message }
     }
   })
@@ -477,11 +498,12 @@ export function registerReviewHandlers(
       // Run batches in parallel
       const batchPromises = batches.map((batch, idx) => {
         const prompt = buildLowRiskPrompt(batch, review.projectPath)
+        console.log(`[Review] Low-risk batch ${idx} prompt size: ${prompt.length} bytes for ${batch.length} files`)
         return backgroundClaude.runTask({
           taskId: `${reviewId}-batch-${idx}`,
           prompt,
           projectPath: review.projectPath,
-          timeout: 90000 // 1.5 minutes per batch
+          timeout: 90000 // 90s per batch - should be enough for small files
         })
       })
 
@@ -668,6 +690,139 @@ export function registerReviewHandlers(
         mainWindow.webContents.send('review:failed', reviewId, error.message || 'High-risk file review failed')
       }
 
+      return { success: false, error: error.message }
+    }
+  })
+
+  /**
+   * Escalate a low-risk file to deep review (multi-agent verification)
+   */
+  ipcMain.handle('review:escalate-file', async (_event, reviewId: string, file: string) => {
+    const review = activeReviews.get(reviewId)
+    if (!review) {
+      return { success: false, error: 'Review not found' }
+    }
+
+    console.log(`[Review] Escalating file to deep review: ${file}`)
+
+    try {
+      // Get classification reasoning (or use default)
+      const classification = review.classifications?.find((c: any) => c.file === file)
+      const riskReasoning = classification?.reasoning || 'User requested deep review'
+
+      // Update status
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:high-risk-status', {
+          reviewId,
+          file,
+          status: 'reviewing'
+        })
+      }
+
+      // Run the same multi-agent review process as high-risk files
+      // Step 1: Run 3 sub-agents in parallel
+      const subAgentPromises = [1, 2, 3].map(agentNum => {
+        const prompt = buildSubAgentPrompt(file, review.projectPath, agentNum, riskReasoning)
+        return backgroundClaude.runTask({
+          taskId: `${reviewId}-escalate-${file.replace(/\//g, '-')}-agent${agentNum}`,
+          prompt,
+          projectPath: review.projectPath,
+          timeout: 120000
+        })
+      })
+
+      const subAgentResults = await Promise.all(subAgentPromises)
+
+      // Extract findings from each agent
+      const subAgentReviews = subAgentResults.map((result, idx) => ({
+        agentId: `reviewer-${idx + 1}`,
+        findings: result.success && result.parsed ? result.parsed : [],
+        timestamp: Date.now()
+      }))
+
+      // Update status
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:high-risk-status', {
+          reviewId,
+          file,
+          status: 'coordinating'
+        })
+      }
+
+      // Step 2: Coordinator consolidates findings
+      const coordinatorPrompt = buildCoordinatorPrompt(subAgentReviews, file, review.projectPath)
+      const coordinatorResult = await backgroundClaude.runTask({
+        taskId: `${reviewId}-escalate-${file.replace(/\//g, '-')}-coordinator`,
+        prompt: coordinatorPrompt,
+        projectPath: review.projectPath,
+        timeout: 60000
+      })
+
+      if (!coordinatorResult.success || !coordinatorResult.parsed) {
+        throw new Error('Coordinator failed')
+      }
+
+      const consolidatedFindings = coordinatorResult.parsed
+
+      // Update status
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:high-risk-status', {
+          reviewId,
+          file,
+          status: 'verifying'
+        })
+      }
+
+      // Step 3: Accuracy checkers verify each finding
+      const verificationPromises = consolidatedFindings.map((finding: any, idx: number) => {
+        finding.id = `${reviewId}-escalate-${file.replace(/\//g, '-')}-${idx}`
+        const prompt = buildAccuracyPrompt(finding, file, review.projectPath)
+        return backgroundClaude.runTask({
+          taskId: `${reviewId}-escalate-${file.replace(/\//g, '-')}-verify-${idx}`,
+          prompt,
+          projectPath: review.projectPath,
+          timeout: 60000
+        })
+      })
+
+      const verificationResults = await Promise.all(verificationPromises)
+
+      // Filter to verified findings
+      const verifiedFindings = consolidatedFindings
+        .map((finding: any, idx: number) => {
+          const verification = verificationResults[idx]
+          const verificationData = verification.success && verification.parsed ? verification.parsed : null
+
+          return {
+            ...finding,
+            verificationStatus: verificationData?.isAccurate ? 'verified' : 'rejected',
+            verificationResult: verificationData,
+            confidence: verificationData?.confidence || 0,
+            escalated: true // Mark as escalated
+          }
+        })
+        .filter((f: any) => f.verificationStatus === 'verified')
+
+      // Update status
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('review:high-risk-status', {
+          reviewId,
+          file,
+          status: 'complete'
+        })
+
+        // Send findings - they'll be added to high-risk findings
+        mainWindow.webContents.send('review:high-risk-findings', {
+          reviewId,
+          file,
+          findings: verifiedFindings,
+          escalated: true
+        })
+      }
+
+      return { success: true, findingCount: verifiedFindings.length }
+    } catch (error: any) {
+      console.error(`[Review] Escalation failed:`, error)
       return { success: false, error: error.message }
     }
   })

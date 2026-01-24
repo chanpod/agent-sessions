@@ -484,6 +484,8 @@ export function ChangedFilesPanel() {
 
     const result = await window.electron.review.start(projectPath, uncachedFiles, reviewId)
     if (!result.success) {
+      // Update store with failure so UI shows error state
+      failReview(reviewId, result.error || 'Review failed to start')
       setIsReviewing(false)
     }
   }

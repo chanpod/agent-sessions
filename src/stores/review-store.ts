@@ -118,6 +118,7 @@ export interface ReviewResult {
   highRiskFindings: ReviewFinding[] // Findings from high-risk review
   currentHighRiskFileIndex: number // Which high-risk file we're on
   currentFileCoordinatorStatus?: 'reviewing' | 'coordinating' | 'verifying' | 'complete'
+  escalatingFile?: string // File currently being escalated to deep review
 }
 
 /**
@@ -187,6 +188,7 @@ interface ReviewState {
   applySelectedFindings: (reviewId: string) => void
   applyFinding: (reviewId: string, findingId: string) => void
   dismissFinding: (reviewId: string, findingId: string) => void
+  escalateToDeepReview: (reviewId: string, file: string) => Promise<void>
   advanceToNextHighRiskFile: (reviewId: string) => void
   updateHighRiskStatus: (reviewId: string, status: string) => void
 
@@ -410,11 +412,15 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
         newReviews.set(reviewId, {
           ...review,
           classifications,
-          stage: 'classification-review',
+          stage: 'reviewing-low-risk', // Skip classification-review, auto-proceed
         })
       }
       return { reviews: newReviews }
     })
+
+    // Auto-proceed past classification confirmation
+    console.log('[ReviewStore] Auto-proceeding past classification confirmation')
+    get().confirmClassifications(reviewId)
   },
 
   updateClassification: (reviewId, file, riskLevel) => {
@@ -795,16 +801,76 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       const newReviews = new Map(state.reviews)
       const review = newReviews.get(reviewId)
       if (review) {
-        const newFindings = review.lowRiskFindings.map((f) =>
-          f.id === findingId ? { ...f, isDismissed: true } : f
-        )
+        // Check both low and high risk findings
+        const inLowRisk = review.lowRiskFindings.some((f) => f.id === findingId)
+        if (inLowRisk) {
+          const newFindings = review.lowRiskFindings.map((f) =>
+            f.id === findingId ? { ...f, isDismissed: true } : f
+          )
+          newReviews.set(reviewId, {
+            ...review,
+            lowRiskFindings: newFindings,
+          })
+        } else {
+          const newFindings = review.highRiskFindings.map((f) =>
+            f.id === findingId ? { ...f, isDismissed: true } : f
+          )
+          newReviews.set(reviewId, {
+            ...review,
+            highRiskFindings: newFindings,
+          })
+        }
+      }
+      return { reviews: newReviews }
+    })
+  },
+
+  // Escalate a low-risk file to deep review (multi-agent verification)
+  escalateToDeepReview: async (reviewId, file) => {
+    const { reviews } = get()
+    const review = reviews.get(reviewId)
+    if (!review) return
+
+    console.log(`[ReviewStore] Escalating ${file} to deep review`)
+
+    // Mark escalation in progress for this file
+    set((state) => {
+      const newReviews = new Map(state.reviews)
+      const rev = newReviews.get(reviewId)
+      if (rev) {
         newReviews.set(reviewId, {
-          ...review,
-          lowRiskFindings: newFindings,
+          ...rev,
+          escalatingFile: file,
         })
       }
       return { reviews: newReviews }
     })
+
+    // Trigger deep review via IPC
+    if (window.electron) {
+      try {
+        const result = await window.electron.review.escalateFile(reviewId, file)
+        if (!result.success) {
+          console.error('[ReviewStore] Escalation failed:', result.error)
+        }
+        // Findings will come back via review:high-risk-findings event
+      } catch (error: any) {
+        console.error('[ReviewStore] Escalation error:', error)
+      } finally {
+        // Clear escalation state
+        set((state) => {
+          const newReviews = new Map(state.reviews)
+          const rev = newReviews.get(reviewId)
+          if (rev) {
+            newReviews.set(reviewId, {
+              ...rev,
+              escalatingFile: undefined,
+            })
+          }
+          return { reviews: newReviews }
+        })
+      }
+    }
   },
 
   advanceToNextHighRiskFile: (reviewId) => {

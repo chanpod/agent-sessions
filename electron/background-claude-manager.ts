@@ -33,6 +33,7 @@ interface ActiveTask {
   terminalId: string
   promptFile: string
   outputFile: string
+  stderrFile: string
   startTime: number
   timeout: number
   pollInterval: NodeJS.Timeout
@@ -77,9 +78,13 @@ export class BackgroundClaudeManager {
         await fs.writeFile(promptFile, options.prompt, 'utf-8')
         console.log(`[BackgroundClaude] Wrote prompt to ${promptFile} (${options.prompt.length} chars)`)
 
-        // Create hidden terminal
+        // Create hidden terminal - always use Git Bash on Windows for Claude CLI access
+        const shell = process.platform === 'win32'
+          ? 'C:\\Program Files\\Git\\bin\\bash.exe'
+          : undefined // Use default on other platforms
         const terminalInfo = this.ptyManager.createTerminal({
           cwd: options.projectPath,
+          shell,
           hidden: true,
         })
 
@@ -101,11 +106,13 @@ export class BackgroundClaudeManager {
         }, timeout)
 
         // Store active task
+        const stderrFile = outputFile.replace('-output.json', '-stderr.txt')
         const task: ActiveTask = {
           taskId,
           terminalId: terminalInfo.id,
           promptFile,
           outputFile,
+          stderrFile,
           startTime,
           timeout,
           pollInterval,
@@ -255,12 +262,44 @@ export class BackgroundClaudeManager {
       // Already killed
     }
 
-    // Delete temp files
-    try {
-      await fs.unlink(task.promptFile).catch(() => {})
-      await fs.unlink(task.outputFile).catch(() => {})
-    } catch (error) {
-      console.warn(`[BackgroundClaude] Failed to delete temp files for task ${taskId}`)
+    // On failure, preserve temp files for debugging and log their paths
+    if (!result.success) {
+      console.error(`[BackgroundClaude] Task ${taskId} FAILED - preserving debug files:`)
+      console.error(`[BackgroundClaude]   Prompt: ${task.promptFile}`)
+      console.error(`[BackgroundClaude]   Output: ${task.outputFile}`)
+      console.error(`[BackgroundClaude]   Stderr: ${task.stderrFile}`)
+
+      // Try to read output file to see what Claude returned (if anything)
+      try {
+        const output = await fs.readFile(task.outputFile, 'utf-8')
+        console.error(`[BackgroundClaude]   Output content (${output.length} chars):`)
+        console.error(output.substring(0, 500))
+        if (output.length > 500) {
+          console.error(`[BackgroundClaude]   ... (truncated, full output in file)`)
+        }
+      } catch {
+        console.error(`[BackgroundClaude]   Output file not created or empty`)
+      }
+
+      // Try to read stderr file
+      try {
+        const stderr = await fs.readFile(task.stderrFile, 'utf-8')
+        if (stderr.trim()) {
+          console.error(`[BackgroundClaude]   Stderr content:`)
+          console.error(stderr.substring(0, 500))
+        }
+      } catch {
+        // No stderr file
+      }
+    } else {
+      // Delete temp files only on success
+      try {
+        await fs.unlink(task.promptFile).catch(() => {})
+        await fs.unlink(task.outputFile).catch(() => {})
+        await fs.unlink(task.stderrFile).catch(() => {})
+      } catch (error) {
+        console.warn(`[BackgroundClaude] Failed to delete temp files for task ${taskId}`)
+      }
     }
 
     // Remove from active tasks
@@ -276,28 +315,32 @@ export class BackgroundClaudeManager {
 
   /**
    * Build shell-specific command
+   * Captures stderr to a separate file for debugging
    */
   private buildCommand(shell: string, promptFile: string, outputFile: string, skipPermissions: boolean = true): string {
     const shellLower = shell.toLowerCase()
     const isCmd = shellLower.includes('cmd.exe')
     const isPowerShell = shellLower.includes('powershell') || shellLower.includes('pwsh')
     const isWsl = shellLower.includes('wsl')
-    const isGitBash = shellLower.includes('bash.exe') || shellLower.includes('git')
 
+    const stderrFile = outputFile.replace('-output.json', '-stderr.txt')
     const claudeArgs = skipPermissions ? '-p --dangerously-skip-permissions' : ''
 
     if (isCmd) {
-      return `type "${promptFile}" | claude ${claudeArgs} > "${outputFile}"\r\n`
+      // cmd.exe: redirect stderr to file
+      return `type "${promptFile}" | claude ${claudeArgs} > "${outputFile}" 2> "${stderrFile}"\r\n`
     } else if (isPowerShell) {
-      return `Get-Content "${promptFile}" | claude ${claudeArgs} > "${outputFile}"\r\n`
+      // PowerShell: redirect stderr
+      return `Get-Content "${promptFile}" | claude ${claudeArgs} > "${outputFile}" 2> "${stderrFile}"\r\n`
     } else if (isWsl) {
       // Convert Windows paths to WSL paths
       const wslPrompt = PathService.toWslLinuxPath(promptFile)
       const wslOutput = PathService.toWslLinuxPath(outputFile)
-      return `cat "${wslPrompt}" | claude ${claudeArgs} > "${wslOutput}"\n`
+      const wslStderr = PathService.toWslLinuxPath(stderrFile)
+      return `cat "${wslPrompt}" | claude ${claudeArgs} > "${wslOutput}" 2> "${wslStderr}"\n`
     } else {
       // Unix/Mac/Git Bash
-      return `cat "${promptFile}" | claude ${claudeArgs} > "${outputFile}"\n`
+      return `cat "${promptFile}" | claude ${claudeArgs} > "${outputFile}" 2> "${stderrFile}"\n`
     }
   }
 
