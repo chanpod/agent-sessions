@@ -277,6 +277,21 @@ export function registerGitHandlers(
     console.log(`[git-watcher]   projectPath: "${projectPath}"`)
     console.log(`[git-watcher]   projectId: "${projectId}"`)
 
+    // Handle projectId being passed as the string "undefined" instead of actual undefined
+    const actualProjectId = projectId === 'undefined' ? undefined : projectId
+    console.log(`[git-watcher]   actualProjectId: "${actualProjectId}"`)
+
+    // Use PathService.getExecutionContext() to determine how to handle this path
+    const context = await PathService.getExecutionContext(projectPath, actualProjectId, sshManager || undefined)
+    console.log(`[git-watcher]   executionContext: "${context}"`)
+
+    // For SSH remote paths, we cannot watch files in real-time (they're on a remote machine)
+    // Return early with an informative message
+    if (context === 'ssh-remote') {
+      console.log('[git-watcher] Skipping git watch for SSH project (not supported):', projectPath)
+      return { success: false, error: 'Git watching is not supported for SSH projects. Use git:get-info to poll for changes.' }
+    }
+
     // Check if this is a WSL path using PathService
     const isWslPathCheck = PathService.isWslPath(projectPath)
     const pathAnalysis = PathService.analyzePath(projectPath)
@@ -287,16 +302,6 @@ export function registerGitHandlers(
     if (gitWatchers.has(projectPath)) {
       console.log(`[git-watcher]   Already watching this path, returning success`)
       return { success: true }
-    }
-
-    // For SSH projects, we can't use fs.watch since files are remote
-    // Skip watching for SSH projects
-    if (projectId && sshManager) {
-      const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-      if (projectMasterStatus.connected) {
-        console.log('[git-watcher] Skipping git watch for SSH project (not supported):', projectPath)
-        return { success: false, error: 'Git watching is not supported for SSH projects' }
-      }
     }
 
     const fsPath = PathService.toFsPath(projectPath)

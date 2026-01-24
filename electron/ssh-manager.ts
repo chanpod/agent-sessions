@@ -129,16 +129,18 @@ export class SSHManager extends EventEmitter {
 
     // SSH Multiplexing (ControlMaster)
     // With Git Bash on Windows, ControlMaster now works properly
-    // Use PathService.escapeForBash to properly escape the control path
+    // Use double quotes for ControlPath since these args will be used inside bash.exe -c '...'
+    // Single quotes would break out of the outer single-quoted command
     if (controlPath) {
-      // Escape the control path for bash shell (handles spaces and special chars)
-      const escapedControlPath = PathService.escapeForBash(controlPath)
+      // Use double quotes for the control path value
+      // This works correctly when the args are later placed inside bash.exe -c '...'
+      const quotedControlPath = `"${controlPath}"`
 
       if (isControlMaster) {
         args.push(
           '-o', 'ControlMaster=auto',
           '-o', 'ControlPersist=10m',
-          '-o', `ControlPath=${escapedControlPath}`,
+          '-o', `ControlPath=${quotedControlPath}`,
           '-o', 'ServerAliveInterval=60',
           '-o', 'ServerAliveCountMax=3',
           '-o', 'StrictHostKeyChecking=accept-new'
@@ -146,7 +148,7 @@ export class SSHManager extends EventEmitter {
       } else {
         args.push(
           '-o', 'ControlMaster=no',
-          '-o', `ControlPath=${escapedControlPath}`
+          '-o', `ControlPath=${quotedControlPath}`
         )
       }
     } else {
@@ -187,6 +189,22 @@ export class SSHManager extends EventEmitter {
   private async execSSH(args: string[]): Promise<{ stdout: string; stderr: string }> {
     if (process.platform === 'win32') {
       // On Windows, wrap SSH command in bash to use Git Bash's SSH
+
+      // Check if this is a control operation (-O check, -O exit, etc.)
+      // Control operations don't execute a remote command, they just
+      // communicate with the local ControlMaster socket
+      const isControlOperation = args.includes('-O')
+
+      if (isControlOperation) {
+        // For control operations, just pass all args directly
+        // The syntax is: ssh -O check -o ControlPath="..." user@host
+        // No remote command is executed
+        const bashCommand = `bash.exe -c 'ssh ${args.join(' ')}'`
+        console.log(`[SSHManager] Executing control operation: ${bashCommand}`)
+        return execAsync(bashCommand)
+      }
+
+      // For regular SSH commands with a remote command to execute:
       // The last argument is typically the remote command, handle it specially
       const sshOptions = args.slice(0, -1)
       const remoteCommand = args[args.length - 1]
@@ -328,8 +346,9 @@ export class SSHManager extends EventEmitter {
 
     try {
       // Send exit command to control master
-      const escapedControlPath = PathService.escapeForBash(connection.controlPath)
-      const args = ['-O', 'exit', '-o', `ControlPath=${escapedControlPath}`, `${connection.config.username}@${connection.config.host}`]
+      // Use double quotes for ControlPath since these args will be used inside bash.exe -c '...'
+      const quotedControlPath = `"${connection.controlPath}"`
+      const args = ['-O', 'exit', '-o', `ControlPath=${quotedControlPath}`, `${connection.config.username}@${connection.config.host}`]
       await this.execSSH(args)
 
       // Clean up control socket (may not exist on Windows/Git Bash filesystem from Node perspective)
@@ -369,8 +388,9 @@ export class SSHManager extends EventEmitter {
 
     // Check if control socket is still valid
     try {
-      const escapedControlPath = PathService.escapeForBash(connection.controlPath)
-      const args = ['-O', 'check', '-o', `ControlPath=${escapedControlPath}`, `${connection.config.username}@${connection.config.host}`]
+      // Use double quotes for ControlPath since these args will be used inside bash.exe -c '...'
+      const quotedControlPath = `"${connection.controlPath}"`
+      const args = ['-O', 'check', '-o', `ControlPath=${quotedControlPath}`, `${connection.config.username}@${connection.config.host}`]
       await this.execSSH(args)
       connection.connected = true
       connection.lastUsed = Date.now()
@@ -633,8 +653,9 @@ export class SSHManager extends EventEmitter {
     }
 
     try {
-      const escapedControlPath = PathService.escapeForBash(connection.controlPath)
-      const args = ['-O', 'check', '-o', `ControlPath=${escapedControlPath}`, `${sshConnection.config.username}@${sshConnection.config.host}`]
+      // Use double quotes for ControlPath since these args will be used inside bash.exe -c '...'
+      const quotedControlPath = `"${connection.controlPath}"`
+      const args = ['-O', 'check', '-o', `ControlPath=${quotedControlPath}`, `${sshConnection.config.username}@${sshConnection.config.host}`]
       await this.execSSH(args)
       connection.lastUsed = Date.now()
       return { connected: true }

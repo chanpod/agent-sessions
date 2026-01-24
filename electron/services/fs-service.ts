@@ -188,53 +188,62 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
     try {
       console.log('[fs:readFile] Original path:', filePath, 'projectId:', projectId)
 
-      // Check if this is an SSH project with active tunnel
-      if (projectId && sshManager) {
+      // Use PathService to determine execution context
+      const context = await PathService.getExecutionContext(filePath, projectId, sshManager || undefined)
+      console.log('[fs:readFile] Execution context:', context)
+
+      if (context === 'ssh-remote') {
+        // SSH path requires SSH connection
+        if (!projectId || !sshManager) {
+          return { success: false, error: 'SSH path requires project context and SSH manager' }
+        }
         const status = await sshManager.getProjectMasterStatus(projectId)
-        if (status.connected) {
-          console.log('[fs:readFile] Using SSH tunnel for project:', projectId)
-          try {
-            // Check if file exists and get size via SSH
-            // Use cross-platform stat command (works on both Linux and macOS)
-            const statOutput = await sshManager.execViaProjectMaster(
-              projectId,
-              `if [ -f "${filePath.replace(/"/g, '\\"')}" ]; then stat -f '%z %m' "${filePath.replace(/"/g, '\\"')}" 2>/dev/null || stat -c '%s %Y' "${filePath.replace(/"/g, '\\"')}" 2>/dev/null; fi`
-            )
+        if (!status.connected) {
+          return { success: false, error: `SSH connection not available for remote path: ${filePath}` }
+        }
 
-            if (!statOutput || statOutput.trim() === '') {
-              return { success: false, error: `File not found: ${filePath}` }
-            }
+        console.log('[fs:readFile] Using SSH tunnel for project:', projectId)
+        try {
+          // Check if file exists and get size via SSH
+          // Use cross-platform stat command (works on both Linux and macOS)
+          const statOutput = await sshManager.execViaProjectMaster(
+            projectId,
+            `if [ -f "${filePath.replace(/"/g, '\\"')}" ]; then stat -f '%z %m' "${filePath.replace(/"/g, '\\"')}" 2>/dev/null || stat -c '%s %Y' "${filePath.replace(/"/g, '\\"')}" 2>/dev/null; fi`
+          )
 
-            const [sizeStr, mtimeStr] = statOutput.trim().split(' ')
-            const size = parseInt(sizeStr, 10)
-
-            // Limit file size to 5MB for safety
-            if (size > 5 * 1024 * 1024) {
-              return { success: false, error: 'File too large (max 5MB)' }
-            }
-
-            // Read file content via SSH
-            const content = await sshManager.execViaProjectMaster(
-              projectId,
-              `cat "${filePath.replace(/"/g, '\\"')}"`
-            )
-
-            const modified = new Date(parseInt(mtimeStr, 10) * 1000).toISOString()
-
-            return {
-              success: true,
-              content,
-              size,
-              modified,
-            }
-          } catch (err) {
-            console.error('[fs:readFile] SSH command failed:', err)
-            return { success: false, error: String(err) }
+          if (!statOutput || statOutput.trim() === '') {
+            return { success: false, error: `File not found: ${filePath}` }
           }
+
+          const [sizeStr, mtimeStr] = statOutput.trim().split(' ')
+          const size = parseInt(sizeStr, 10)
+
+          // Limit file size to 5MB for safety
+          if (size > 5 * 1024 * 1024) {
+            return { success: false, error: 'File too large (max 5MB)' }
+          }
+
+          // Read file content via SSH
+          const content = await sshManager.execViaProjectMaster(
+            projectId,
+            `cat "${filePath.replace(/"/g, '\\"')}"`
+          )
+
+          const modified = new Date(parseInt(mtimeStr, 10) * 1000).toISOString()
+
+          return {
+            success: true,
+            content,
+            size,
+            modified,
+          }
+        } catch (err) {
+          console.error('[fs:readFile] SSH command failed:', err)
+          return { success: false, error: String(err) }
         }
       }
 
-      // Local file system path
+      // Local file system path (local-windows, local-unix, or wsl)
       const fsPath = PathService.toFsPath(filePath)
       console.log('[fs:readFile] Resolved path:', fsPath)
       console.log('[fs:readFile] Path exists:', fs.existsSync(fsPath))
@@ -271,32 +280,41 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
     try {
       console.log('[fs:writeFile] Original path:', filePath, 'projectId:', projectId)
 
-      // Check if this is an SSH project with active tunnel
-      if (projectId && sshManager) {
+      // Use PathService to determine execution context
+      const context = await PathService.getExecutionContext(filePath, projectId, sshManager || undefined)
+      console.log('[fs:writeFile] Execution context:', context)
+
+      if (context === 'ssh-remote') {
+        // SSH path requires SSH connection
+        if (!projectId || !sshManager) {
+          return { success: false, error: 'SSH path requires project context and SSH manager' }
+        }
         const status = await sshManager.getProjectMasterStatus(projectId)
-        if (status.connected) {
-          console.log('[fs:writeFile] Using SSH tunnel for project:', projectId)
-          try {
-            // Encode content as base64 to safely transfer via SSH
-            const base64Content = Buffer.from(content).toString('base64')
+        if (!status.connected) {
+          return { success: false, error: `SSH connection not available for remote path: ${filePath}` }
+        }
 
-            // Write file via SSH using base64 decoding
-            // This handles special characters and binary content safely
-            await sshManager.execViaProjectMaster(
-              projectId,
-              `echo "${base64Content}" | base64 -d > "${filePath.replace(/"/g, '\\"')}"`
-            )
+        console.log('[fs:writeFile] Using SSH tunnel for project:', projectId)
+        try {
+          // Encode content as base64 to safely transfer via SSH
+          const base64Content = Buffer.from(content).toString('base64')
 
-            console.log('[fs:writeFile] Successfully wrote file via SSH:', filePath)
-            return { success: true }
-          } catch (err) {
-            console.error('[fs:writeFile] SSH command failed:', err)
-            return { success: false, error: String(err) }
-          }
+          // Write file via SSH using base64 decoding
+          // This handles special characters and binary content safely
+          await sshManager.execViaProjectMaster(
+            projectId,
+            `echo "${base64Content}" | base64 -d > "${filePath.replace(/"/g, '\\"')}"`
+          )
+
+          console.log('[fs:writeFile] Successfully wrote file via SSH:', filePath)
+          return { success: true }
+        } catch (err) {
+          console.error('[fs:writeFile] SSH command failed:', err)
+          return { success: false, error: String(err) }
         }
       }
 
-      // Local file system path
+      // Local file system path (local-windows, local-unix, or wsl)
       const fsPath = PathService.toFsPath(filePath)
       console.log('[fs:writeFile] Resolved path:', fsPath)
       fs.writeFileSync(fsPath, content, 'utf-8')
@@ -315,52 +333,61 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
     try {
       console.log('[fs:listDir] Original path:', dirPath, 'projectId:', projectId)
 
-      // Check if this is an SSH project with active tunnel
-      if (projectId && sshManager) {
+      // Use PathService to determine execution context
+      const context = await PathService.getExecutionContext(dirPath, projectId, sshManager || undefined)
+      console.log('[fs:listDir] Execution context:', context)
+
+      if (context === 'ssh-remote') {
+        // SSH path requires SSH connection
+        if (!projectId || !sshManager) {
+          return { success: false, error: 'SSH path requires project context and SSH manager' }
+        }
         const status = await sshManager.getProjectMasterStatus(projectId)
-        if (status.connected) {
-          console.log('[fs:listDir] Using SSH tunnel for project:', projectId)
-          try {
-            // Use ls to list directory via SSH
-            const output = await sshManager.execViaProjectMaster(
-              projectId,
-              `ls -1Ap "${dirPath.replace(/"/g, '\\"')}"`
-            )
+        if (!status.connected) {
+          return { success: false, error: `SSH connection not available for remote path: ${dirPath}` }
+        }
 
-            if (!output || output.trim() === '') {
-              return { success: false, error: `Directory not found or empty: ${dirPath}` }
-            }
+        console.log('[fs:listDir] Using SSH tunnel for project:', projectId)
+        try {
+          // Use ls to list directory via SSH
+          const output = await sshManager.execViaProjectMaster(
+            projectId,
+            `ls -1Ap "${dirPath.replace(/"/g, '\\"')}"`
+          )
 
-            const entries = output
-              .split('\n')
-              .filter((line) => line.trim() && line !== '.')
-              .map((line) => {
-                const isDir = line.endsWith('/')
-                const name = isDir ? line.slice(0, -1) : line
-                return {
-                  name,
-                  path: PathService.joinPosix(dirPath, name),
-                  isDirectory: isDir,
-                  isFile: !isDir,
-                }
-              })
+          if (!output || output.trim() === '') {
+            return { success: false, error: `Directory not found or empty: ${dirPath}` }
+          }
 
-            // Sort: directories first, then files, alphabetically
-            entries.sort((a, b) => {
-              if (a.isDirectory && !b.isDirectory) return -1
-              if (!a.isDirectory && b.isDirectory) return 1
-              return a.name.localeCompare(b.name)
+          const entries = output
+            .split('\n')
+            .filter((line) => line.trim() && line !== '.')
+            .map((line) => {
+              const isDir = line.endsWith('/')
+              const name = isDir ? line.slice(0, -1) : line
+              return {
+                name,
+                path: PathService.joinPosix(dirPath, name),
+                isDirectory: isDir,
+                isFile: !isDir,
+              }
             })
 
-            return { success: true, items: entries }
-          } catch (err) {
-            console.error('[fs:listDir] SSH command failed:', err)
-            return { success: false, error: String(err) }
-          }
+          // Sort: directories first, then files, alphabetically
+          entries.sort((a, b) => {
+            if (a.isDirectory && !b.isDirectory) return -1
+            if (!a.isDirectory && b.isDirectory) return 1
+            return a.name.localeCompare(b.name)
+          })
+
+          return { success: true, items: entries }
+        } catch (err) {
+          console.error('[fs:listDir] SSH command failed:', err)
+          return { success: false, error: String(err) }
         }
       }
 
-      // Local file system path
+      // Local file system path (local-windows, local-unix, or wsl)
       const fsPath = PathService.toFsPath(dirPath)
       console.log('[fs:listDir] Resolved path:', fsPath)
 
