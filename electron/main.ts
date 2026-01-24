@@ -39,6 +39,13 @@ import {
   type WslPathInfo
 } from './utils/wsl-utils.js'
 import { PathService, type ExecutionContext } from './utils/path-service.js'
+import {
+  detectCliTool,
+  detectAllCliTools,
+  BUILTIN_CLI_TOOLS,
+  type CliToolDetectionResult,
+  type AllCliToolsResult
+} from './services/cli-detector.js'
 
 
 import {
@@ -1281,6 +1288,54 @@ ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) =
   }
   sshManager.markProjectMasterConnected(projectId)
   return { success: true }
+})
+
+// CLI Detection IPC Handlers
+ipcMain.handle('cli:detect-all', async (_event, projectPath: string, projectId?: string): Promise<AllCliToolsResult> => {
+  console.log(`[CLI] Detecting all CLI tools for path="${projectPath}", projectId="${projectId}"`)
+  try {
+    const result = await detectAllCliTools(projectPath, projectId, sshManager || undefined)
+    console.log(`[CLI] Detection complete:`, result.tools.map(t => `${t.id}:${t.installed}`))
+    return result
+  } catch (error: unknown) {
+    console.error('[CLI] Detection failed:', error)
+    return {
+      tools: BUILTIN_CLI_TOOLS.map(tool => ({
+        id: tool.id,
+        name: tool.name,
+        installed: false,
+        error: getErrorMessage(error)
+      })),
+      success: false,
+      error: getErrorMessage(error)
+    }
+  }
+})
+
+ipcMain.handle('cli:detect', async (_event, toolId: string, projectPath: string, projectId?: string): Promise<CliToolDetectionResult> => {
+  console.log(`[CLI] Detecting tool "${toolId}" for path="${projectPath}", projectId="${projectId}"`)
+  try {
+    const toolDef = BUILTIN_CLI_TOOLS.find(t => t.id === toolId)
+    if (!toolDef) {
+      return {
+        id: toolId,
+        name: toolId,
+        installed: false,
+        error: `Unknown tool: ${toolId}`
+      }
+    }
+    const result = await detectCliTool(toolDef, projectPath, projectId, sshManager || undefined)
+    console.log(`[CLI] Detection result for ${toolId}:`, result)
+    return result
+  } catch (error: unknown) {
+    console.error(`[CLI] Detection failed for ${toolId}:`, error)
+    return {
+      id: toolId,
+      name: toolId,
+      installed: false,
+      error: getErrorMessage(error)
+    }
+  }
 })
 
 

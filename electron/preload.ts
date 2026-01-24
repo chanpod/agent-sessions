@@ -163,6 +163,21 @@ export interface ReviewFinding {
   suggestion?: string
 }
 
+export interface CliToolDetectionResult {
+  id: string
+  name: string
+  installed: boolean
+  version?: string
+  path?: string
+  error?: string
+}
+
+export interface AllCliToolsResult {
+  tools: CliToolDetectionResult[]
+  success: boolean
+  error?: string
+}
+
 export interface ReviewResult {
   success: boolean
   reviewId?: string
@@ -280,6 +295,8 @@ const electronAPI = {
       ipcRenderer.invoke('review:start-low-risk', reviewId, lowRiskFiles, highRiskFiles),
     reviewHighRiskFile: (reviewId: string): Promise<{ success: boolean; complete?: boolean; findingCount?: number; error?: string }> =>
       ipcRenderer.invoke('review:review-high-risk-file', reviewId),
+    escalateFile: (reviewId: string, file: string): Promise<{ success: boolean; findingCount?: number; error?: string }> =>
+      ipcRenderer.invoke('review:escalate-file', reviewId, file),
     cancel: (reviewId: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke('review:cancel', reviewId),
     generateFileHashes: (projectPath: string, files: string[]): Promise<{ success: boolean; hashes?: Record<string, string>; error?: string }> =>
@@ -403,6 +420,12 @@ const electronAPI = {
       ipcRenderer.invoke('menu:executeRole', role),
     checkForUpdates: (): Promise<void> =>
       ipcRenderer.invoke('menu:checkForUpdates'),
+  },
+  cli: {
+    detectAll: (projectPath: string, projectId?: string): Promise<AllCliToolsResult> =>
+      ipcRenderer.invoke('cli:detect-all', projectPath, projectId),
+    detect: (toolId: string, projectPath: string, projectId?: string): Promise<CliToolDetectionResult> =>
+      ipcRenderer.invoke('cli:detect', toolId, projectPath, projectId),
   },
 }
 

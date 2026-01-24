@@ -396,20 +396,21 @@ export function registerGitHandlers(
         console.log(`[git-watcher]   gitWatchers.size: ${gitWatchers.size}`)
 
         let pollCount = 0
+        const GIT_WATCHER_DEBUG = false // Set to true to enable verbose git-watcher polling logs
         // Set up polling interval for WSL projects
         // Uses git status --porcelain to detect ALL changes (staged, unstaged, untracked)
         watcherSet.pollingInterval = setInterval(async () => {
           pollCount++
-          console.log(`[git-watcher] ----------------------------------------`)
-          console.log(`[git-watcher] Polling iteration #${pollCount} for: "${projectPath}"`)
+          if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] ----------------------------------------`)
+          if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] Polling iteration #${pollCount} for: "${projectPath}"`)
 
           try {
             // Get the current watcher from the Map (not from closure)
             const storedWatcher = gitWatchers.get(projectPath)
-            console.log(`[git-watcher]   storedWatcher exists: ${!!storedWatcher}`)
+            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   storedWatcher exists: ${!!storedWatcher}`)
             if (!storedWatcher) {
               // Watcher was removed, clean up this interval
-              console.log(`[git-watcher]   WARNING: Watcher not found in Map, clearing interval`)
+              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   WARNING: Watcher not found in Map, clearing interval`)
               if (watcherSet.pollingInterval) {
                 clearInterval(watcherSet.pollingInterval)
               }
@@ -430,30 +431,30 @@ export function registerGitHandlers(
               const currentChangedFiles = currentStatus.split('\n').filter(l => l).length
               const previousChangedFiles = previousStatus.split('\n').filter(l => l).length
 
-              console.log(`[git-watcher]   git status - previous: ${previousChangedFiles} files | current: ${currentChangedFiles} files`)
+              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   git status - previous: ${previousChangedFiles} files | current: ${currentChangedFiles} files`)
 
               if (currentStatus !== previousStatus) {
-                console.log(`[git-watcher]   GIT STATUS CHANGED!`)
-                if (currentStatus.trim()) {
+                if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   GIT STATUS CHANGED!`)
+                if (GIT_WATCHER_DEBUG && currentStatus.trim()) {
                   console.log(`[git-watcher]   Current changes:\n${currentStatus.split('\n').slice(0, 5).join('\n')}${currentStatus.split('\n').length > 5 ? '\n    ... and more' : ''}`)
                 }
                 storedWatcher.lastGitStatus = currentStatus
                 hasChanged = true
               }
             } catch (err) {
-              console.log(`[git-watcher]   Error running git status:`, err)
+              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   Error running git status:`, err)
               // Ignore errors - repo might be in the middle of an operation
             }
 
-            console.log(`[git-watcher]   hasChanged: ${hasChanged}`)
-            console.log(`[git-watcher]   mainWindow exists: ${!!mainWindow}`)
-            console.log(`[git-watcher]   mainWindow.isDestroyed(): ${mainWindow?.isDestroyed()}`)
+            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   hasChanged: ${hasChanged}`)
+            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   mainWindow exists: ${!!mainWindow}`)
+            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   mainWindow.isDestroyed(): ${mainWindow?.isDestroyed()}`)
 
             if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
-              console.log(`[git-watcher]   >>> EMITTING git:changed event for: "${projectPath}"`)
+              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   >>> EMITTING git:changed event for: "${projectPath}"`)
               mainWindow.webContents.send('git:changed', projectPath)
             } else if (hasChanged) {
-              console.log(`[git-watcher]   WARNING: hasChanged is true but cannot emit (mainWindow issue)`)
+              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   WARNING: hasChanged is true but cannot emit (mainWindow issue)`)
             }
           } catch (err) {
             console.error('[git-watcher] CRITICAL ERROR in polling body:', err)

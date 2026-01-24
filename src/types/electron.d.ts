@@ -187,6 +187,21 @@ export interface ReviewProgressEvent {
   message: string
 }
 
+export interface CliToolDetectionResult {
+  id: string
+  name: string
+  installed: boolean
+  version?: string
+  path?: string
+  error?: string
+}
+
+export interface AllCliToolsResult {
+  tools: CliToolDetectionResult[]
+  success: boolean
+  error?: string
+}
+
 export interface ElectronAPI {
   pty: {
     create: (options: PtyOptions) => Promise<TerminalInfo>
@@ -268,6 +283,10 @@ export interface ElectronAPI {
     onUpdateAvailable: (callback: (info: any) => void) => () => void
     onUpdateDownloaded: (callback: (info: any) => void) => () => void
     onDownloadProgress: (callback: (progress: any) => void) => () => void
+  }
+  cli: {
+    detectAll: (projectPath: string, projectId?: string) => Promise<AllCliToolsResult>
+    detect: (toolId: string, projectPath: string, projectId?: string) => Promise<CliToolDetectionResult>
   }
 }
 

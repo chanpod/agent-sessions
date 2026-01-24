@@ -8,6 +8,7 @@ import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem, ServerItem } from './ProjectItem'
 import { Project } from '../stores/project-store'
 import { cn } from '../lib/utils'
+import { AgentsSection } from './AgentsSection'
 
 interface ShellInfo {
   name: string
@@ -180,6 +181,9 @@ export function TerminalsTab({
 
   return (
     <>
+      {/* Agents Section */}
+      <AgentsSection projectPath={projectPath} projectId={projectId} />
+
       {/* Terminals Section */}
       <div className="mb-3 bg-zinc-800/20 rounded-md p-2">
         {/* Project Dashboard Button */}
