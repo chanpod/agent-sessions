@@ -157,38 +157,6 @@ export interface DirListResult {
   error?: string
 }
 
-export interface ReviewFinding {
-  id: string
-  file: string
-  line?: number
-  endLine?: number
-  severity: 'critical' | 'warning' | 'info' | 'suggestion'
-  category: string
-  title: string
-  description: string
-  suggestion?: string
-}
-
-export interface ReviewResult {
-  success: boolean
-  reviewId?: string
-  error?: string
-}
-
-export interface ReviewCompletedEvent {
-  reviewId: string
-  findings: ReviewFinding[]
-  summary?: string
-}
-
-export interface ReviewProgressEvent {
-  reviewId: string
-  currentFile?: string
-  fileIndex: number
-  totalFiles: number
-  message: string
-}
-
 export interface CliToolDetectionResult {
   id: string
   name: string
@@ -246,15 +214,6 @@ export interface ElectronAPI {
     push: (projectPath: string, projectId?: string) => Promise<GitResult>
     pull: (projectPath: string, projectId?: string) => Promise<GitResult>
     onChanged: (callback: (projectPath: string) => void) => () => void
-  }
-  review: {
-    start: (projectPath: string, files: string[], prompt: string) => Promise<ReviewResult>
-    cancel: (reviewId: string) => Promise<void>
-    getBuffer: (reviewId: string) => Promise<{ success: boolean; buffer?: string; error?: string }>
-    generateFileHashes: (projectPath: string, files: string[]) => Promise<{ success: boolean; hashes?: Record<string, string>; error?: string }>
-    onCompleted: (callback: (event: ReviewCompletedEvent) => void) => () => void
-    onFailed: (callback: (reviewId: string, error: string) => void) => () => void
-    onProgress: (callback: (event: ReviewProgressEvent) => void) => () => void
   }
   store: {
     get: (key: string) => Promise<unknown>

@@ -21,6 +21,20 @@
 
 **Why this matters:** `git checkout <file>` permanently destroys ALL uncommitted changes, not just yours. There is no undo. The user's work is gone forever.
 
+## ⛔ Development Server Rules ⛔                                                                                                     
+  **NEVER run the dev server.** Do not run `npm run dev`, `npm start`, `yarn dev`, or any variation that starts a development      
+  server.
+  
+  ### Whitelisted Build & Type Check Commands
+
+  The following commands ARE allowed:
+  - `npm run build` / `yarn build` - Production build
+  - `npm run typecheck` / `yarn typecheck` - TypeScript type checking
+  - `npx tsc --noEmit` - TypeScript check without emit
+  - `npx tsc` - TypeScript compilation
+  - `npm run lint` / `yarn lint` - Linting
+  - `npm test` / `yarn test` - Running tests
+
 ## Windows Development Requirements
 
 ### Always Use Git Bash

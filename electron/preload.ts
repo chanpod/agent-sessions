@@ -155,18 +155,6 @@ export interface SearchContentResult {
   error?: string
 }
 
-export interface ReviewFinding {
-  id: string
-  file: string
-  line?: number
-  endLine?: number
-  severity: 'critical' | 'warning' | 'info' | 'suggestion'
-  category: string
-  title: string
-  description: string
-  suggestion?: string
-}
-
 export interface CliToolDetectionResult {
   id: string
   name: string
@@ -180,26 +168,6 @@ export interface AllCliToolsResult {
   tools: CliToolDetectionResult[]
   success: boolean
   error?: string
-}
-
-export interface ReviewResult {
-  success: boolean
-  reviewId?: string
-  error?: string
-}
-
-export interface ReviewCompletedEvent {
-  reviewId: string
-  findings: ReviewFinding[]
-  summary?: string
-}
-
-export interface ReviewProgressEvent {
-  reviewId: string
-  currentFile?: string
-  fileIndex: number
-  totalFiles: number
-  message: string
 }
 
 const electronAPI = {
@@ -290,47 +258,6 @@ const electronAPI = {
       const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
       ipcRenderer.on('git:changed', handler)
       return () => ipcRenderer.removeListener('git:changed', handler)
-    },
-  },
-  review: {
-    start: (projectPath: string, files: string[], reviewId?: string): Promise<ReviewResult> =>
-      ipcRenderer.invoke('review:start', projectPath, files, reviewId),
-    startLowRiskReview: (reviewId: string, lowRiskFiles: string[], highRiskFiles: string[]): Promise<{ success: boolean; findingCount?: number; error?: string }> =>
-      ipcRenderer.invoke('review:start-low-risk', reviewId, lowRiskFiles, highRiskFiles),
-    reviewHighRiskFile: (reviewId: string): Promise<{ success: boolean; complete?: boolean; findingCount?: number; error?: string }> =>
-      ipcRenderer.invoke('review:review-high-risk-file', reviewId),
-    escalateFile: (reviewId: string, file: string): Promise<{ success: boolean; findingCount?: number; error?: string }> =>
-      ipcRenderer.invoke('review:escalate-file', reviewId, file),
-    cancel: (reviewId: string): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke('review:cancel', reviewId),
-    generateFileHashes: (projectPath: string, files: string[]): Promise<{ success: boolean; hashes?: Record<string, string>; error?: string }> =>
-      ipcRenderer.invoke('review:generateFileHashes', projectPath, files),
-
-    // Events
-    onClassifications: (callback: (event: any) => void) => {
-      const handler = (_: any, event: any) => callback(event)
-      ipcRenderer.on('review:classifications', handler)
-      return () => ipcRenderer.removeListener('review:classifications', handler)
-    },
-    onLowRiskFindings: (callback: (event: any) => void) => {
-      const handler = (_: any, event: any) => callback(event)
-      ipcRenderer.on('review:low-risk-findings', handler)
-      return () => ipcRenderer.removeListener('review:low-risk-findings', handler)
-    },
-    onHighRiskStatus: (callback: (event: any) => void) => {
-      const handler = (_: any, event: any) => callback(event)
-      ipcRenderer.on('review:high-risk-status', handler)
-      return () => ipcRenderer.removeListener('review:high-risk-status', handler)
-    },
-    onHighRiskFindings: (callback: (event: any) => void) => {
-      const handler = (_: any, event: any) => callback(event)
-      ipcRenderer.on('review:high-risk-findings', handler)
-      return () => ipcRenderer.removeListener('review:high-risk-findings', handler)
-    },
-    onFailed: (callback: (reviewId: string, error: string) => void) => {
-      const handler = (_: any, reviewId: string, error: string) => callback(reviewId, error)
-      ipcRenderer.on('review:failed', handler)
-      return () => ipcRenderer.removeListener('review:failed', handler)
     },
   },
   store: {

@@ -18,7 +18,6 @@ import { TerminalArea } from './components/TerminalArea'
 import { ChangedFilesPanel } from './components/ChangedFilesPanel'
 import { UpdateNotification } from './components/UpdateNotification'
 import { FileSearchModal } from './components/FileSearchModal'
-import { ReviewPanel } from './components/ReviewPanel'
 import { ToastContainer } from './components/ToastContainer'
 import { NewProjectModal } from './components/NewProjectModal'
 import { EditProjectModal } from './components/EditProjectModal'
@@ -1011,7 +1010,6 @@ function App() {
       </DragOverlay>
       <UpdateNotification />
       <FileSearchModal />
-      <ReviewPanel projectPath={projects.find(p => p.id === activeProjectId)?.path || ''} />
       <ToastContainer />
       {showNewProjectModal && (
         <NewProjectModal onClose={() => setShowNewProjectModal(false)} />

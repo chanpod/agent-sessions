@@ -1,13 +1,11 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { GitBranch, RefreshCw, Check, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown, Sparkles, Loader2, XCircle, Folder, Search } from 'lucide-react'
+import { GitBranch, RefreshCw, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown, Folder, Search } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore, type GitInfo } from '../stores/git-store'
 import { useFileViewerStore } from '../stores/file-viewer-store'
-import { useReviewStore } from '../stores/review-store'
 import { FileBrowser } from './FileBrowser'
 import { SearchTab } from './SearchTab'
 import { cn, normalizeFilePath } from '../lib/utils'
-import { generateFileId, generateCacheKey } from '../lib/file-id'
 import type { ChangedFile } from '../types/electron'
 
 const MIN_WIDTH = 200
@@ -45,24 +43,6 @@ export function ChangedFilesPanel() {
   const { activeProjectId, projects } = useProjectStore()
   const { openFile, setShowDiff } = useFileViewerStore()
 
-  const activeReviewId = useReviewStore((state) => state.activeReviewId)
-  const activeReview = useReviewStore((state) =>
-    state.activeReviewId ? state.reviews.get(state.activeReviewId) : null
-  )
-  const startReview = useReviewStore((state) => state.startReview)
-  const setClassifications = useReviewStore((state) => state.setClassifications)
-  const setLowRiskFindings = useReviewStore((state) => state.setLowRiskFindings)
-  const addHighRiskFindings = useReviewStore((state) => state.addHighRiskFindings)
-  const updateHighRiskStatus = useReviewStore((state) => state.updateHighRiskStatus)
-  const setVisibility = useReviewStore((state) => state.setVisibility)
-  const getCachedFileReview = useReviewStore((state) => state.getCachedFileReview)
-  const setCachedFileReview = useReviewStore((state) => state.setCachedFileReview)
-  const clearCacheForFiles = useReviewStore((state) => state.clearCacheForFiles)
-  const loadCacheFromStorage = useReviewStore((state) => state.loadCacheFromStorage)
-  const setReviewStage = useReviewStore((state) => state.setReviewStage)
-  const failReview = useReviewStore((state) => state.failReview)
-  const cancelReview = useReviewStore((state) => state.cancelReview)
-
   const [activeTab, setActiveTab] = useState<'files' | 'git' | 'search'>('git') // Default to git tab
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('changed-files-panel-width')
@@ -76,8 +56,6 @@ export function ChangedFilesPanel() {
   const [isPushing, setIsPushing] = useState(false)
   const [isPulling, setIsPulling] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [isReviewing, setIsReviewing] = useState(false)
-  const [fileMetadata, setFileMetadata] = useState<Map<string, { fileId: string; hash: string; relativePath: string }>>(new Map())
   const [pendingDiscardFile, setPendingDiscardFile] = useState<string | null>(null)
   const [pendingDiscardAll, setPendingDiscardAll] = useState(false)
 
@@ -123,11 +101,6 @@ export function ChangedFilesPanel() {
     }
   }, [isResizing, resize, stopResizing])
 
-  // Load cache from storage on mount
-  useEffect(() => {
-    loadCacheFromStorage()
-  }, [loadCacheFromStorage])
-
   // Watch active project for git changes
   useEffect(() => {
     if (!activeProjectId || !projectPath) return
@@ -140,130 +113,6 @@ export function ChangedFilesPanel() {
     // No cleanup - keep watching even when component unmounts or switches
     // The ProjectHeader manages the overall watch lifecycle
   }, [activeProjectId, projectPath])
-
-  // Listen for review events
-  useEffect(() => {
-    if (!window.electron) return
-
-    const unsubClassifications = window.electron.review.onClassifications((event) => {
-      const existingReview = useReviewStore.getState().reviews.get(event.reviewId)
-      const existingClassifications = existingReview?.classifications || []
-      const mergedClassifications = [...existingClassifications, ...event.classifications]
-
-      setClassifications(event.reviewId, mergedClassifications)
-
-      event.classifications.forEach((classification: any) => {
-        const fileId = classification.fileId || generateFileId(projectPath, classification.file)
-        const metadata = Array.from(fileMetadata.values()).find(m => m.fileId === fileId)
-
-        if (metadata) {
-          const cacheKey = generateCacheKey(fileId, metadata.hash)
-          setCachedFileReview({
-            cacheKey,
-            fileId,
-            file: classification.file,
-            contentHash: metadata.hash,
-            classification,
-            findings: [],
-            reviewedAt: Date.now(),
-            projectId: projectPath,
-          })
-        }
-      })
-    })
-
-    const unsubLowRisk = window.electron.review.onLowRiskFindings((event) => {
-      const findingsWithFileId = event.findings.map((finding: any) => ({
-        ...finding,
-        fileId: finding.fileId || generateFileId(projectPath, finding.file)
-      }))
-
-      setLowRiskFindings(event.reviewId, findingsWithFileId)
-
-      const findingsByFileId = new Map<string, any[]>()
-      findingsWithFileId.forEach((finding: any) => {
-        const existing = findingsByFileId.get(finding.fileId) || []
-        existing.push(finding)
-        findingsByFileId.set(finding.fileId, existing)
-      })
-
-      findingsByFileId.forEach((findings, fileId) => {
-        const metadata = Array.from(fileMetadata.values()).find(m => m.fileId === fileId)
-        if (metadata) {
-          const cacheKey = generateCacheKey(fileId, metadata.hash)
-          const existing = getCachedFileReview(fileId, metadata.hash)
-          setCachedFileReview({
-            cacheKey,
-            fileId,
-            file: metadata.relativePath,
-            contentHash: metadata.hash,
-            classification: existing?.classification,
-            findings,
-            reviewedAt: Date.now(),
-            projectId: projectPath,
-          })
-        }
-      })
-    })
-
-    const unsubHighRiskStatus = window.electron.review.onHighRiskStatus((event) => {
-      updateHighRiskStatus(event.reviewId, event.status)
-    })
-
-    const unsubHighRiskFindings = window.electron.review.onHighRiskFindings((event) => {
-      const findingsWithFileId = event.findings.map((finding: any) => ({
-        ...finding,
-        fileId: finding.fileId || generateFileId(projectPath, finding.file)
-      }))
-
-      addHighRiskFindings(event.reviewId, findingsWithFileId)
-
-      const findingsByFileId = new Map<string, any[]>()
-      findingsWithFileId.forEach((finding: any) => {
-        const existing = findingsByFileId.get(finding.fileId) || []
-        existing.push(finding)
-        findingsByFileId.set(finding.fileId, existing)
-      })
-
-      findingsByFileId.forEach((findings, fileId) => {
-        const metadata = Array.from(fileMetadata.values()).find(m => m.fileId === fileId)
-        if (metadata) {
-          const cacheKey = generateCacheKey(fileId, metadata.hash)
-          const existing = getCachedFileReview(fileId, metadata.hash)
-          setCachedFileReview({
-            cacheKey,
-            fileId,
-            file: metadata.relativePath,
-            contentHash: metadata.hash,
-            classification: existing?.classification,
-            findings,
-            reviewedAt: Date.now(),
-            projectId: projectPath,
-          })
-        }
-      })
-    })
-
-    const unsubFailed = window.electron.review.onFailed((reviewId: string, error: string) => {
-      failReview(reviewId, error)
-      setIsReviewing(false)
-    })
-
-    return () => {
-      unsubClassifications()
-      unsubLowRisk()
-      unsubHighRiskStatus()
-      unsubHighRiskFindings()
-      unsubFailed()
-    }
-  }, [setClassifications, setLowRiskFindings, updateHighRiskStatus, addHighRiskFindings, failReview, fileMetadata, projectPath, getCachedFileReview, setCachedFileReview])
-
-  // Watch for review completion
-  useEffect(() => {
-    if (activeReview && (activeReview.status === 'completed' || activeReview.status === 'failed' || activeReview.status === 'cancelled')) {
-      setIsReviewing(false)
-    }
-  }, [activeReview?.status])
 
   const handleRefreshGitInfo = async () => {
     if (!activeProjectId || !projectPath || !window.electron) return
@@ -398,105 +247,6 @@ export function ChangedFilesPanel() {
     } finally {
       setIsCommitting(false)
     }
-  }
-
-  const handleStartReview = async () => {
-    if (!window.electron || projectGitInfo.changedFiles.length === 0 || !projectPath) return
-
-    setIsReviewing(true)
-
-    const filesToReview = projectGitInfo.changedFiles.map(f => f.path)
-    const reviewId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-
-    const hashResult = await window.electron.review.generateFileHashes(projectPath, filesToReview)
-    if (!hashResult.success || !hashResult.hashes) {
-      setIsReviewing(false)
-      return
-    }
-
-    const fileHashes = hashResult.hashes
-    const newMetadata = new Map<string, { fileId: string; hash: string; relativePath: string }>()
-    const fileIdList: string[] = []
-
-    for (const file of filesToReview) {
-      const hash = fileHashes[file]
-      if (!hash) continue
-
-      const fileId = generateFileId(projectPath, file)
-      newMetadata.set(fileId, { fileId, hash, relativePath: file })
-      fileIdList.push(fileId)
-    }
-
-    if (activeReview && activeReview.status === 'completed') {
-      clearCacheForFiles(fileIdList)
-    }
-
-    setFileMetadata(newMetadata)
-
-    const cachedFiles: string[] = []
-    const uncachedFiles: string[] = []
-    const cachedClassifications: any[] = []
-    const cachedFindings: any[] = []
-
-    for (const [fileId, metadata] of newMetadata.entries()) {
-      const cached = getCachedFileReview(fileId, metadata.hash)
-      if (cached) {
-        cachedFiles.push(metadata.relativePath)
-        if (cached.classification) {
-          cachedClassifications.push({ ...cached.classification, fileId })
-        }
-        const findingsWithCacheFlag = cached.findings.map(f => ({
-          ...f,
-          isCached: true,
-          fileId: f.fileId || fileId
-        }))
-        cachedFindings.push(...findingsWithCacheFlag)
-      } else {
-        uncachedFiles.push(metadata.relativePath)
-      }
-    }
-
-    startReview(projectPath, filesToReview, reviewId)
-    setVisibility(true)
-
-    if (uncachedFiles.length === 0) {
-      setClassifications(reviewId, cachedClassifications)
-      const lowRiskClassifications = cachedClassifications.filter(c => c.riskLevel === 'low-risk')
-      const highRiskClassifications = cachedClassifications.filter(c => c.riskLevel === 'high-risk')
-      const lowRiskFindings = cachedFindings.filter(f =>
-        lowRiskClassifications.some(c => c.file === f.file)
-      )
-      const highRiskFindings = cachedFindings.filter(f =>
-        highRiskClassifications.some(c => c.file === f.file)
-      )
-      setLowRiskFindings(reviewId, lowRiskFindings)
-      addHighRiskFindings(reviewId, highRiskFindings)
-      if (lowRiskFindings.length > 0) {
-        setReviewStage(reviewId, 'reviewing-low-risk')
-      } else if (highRiskFindings.length > 0) {
-        setReviewStage(reviewId, 'reviewing-high-risk')
-      } else {
-        setReviewStage(reviewId, 'completed')
-      }
-      setIsReviewing(false)
-      return
-    }
-
-    const result = await window.electron.review.start(projectPath, uncachedFiles, reviewId)
-    if (!result.success) {
-      // Update store with failure so UI shows error state
-      failReview(reviewId, result.error || 'Review failed to start')
-      setIsReviewing(false)
-    }
-  }
-
-  const handleCancelReview = async () => {
-    if (!activeReviewId) return
-    if (window.electron) {
-      await window.electron.review.cancel(activeReviewId)
-    }
-    cancelReview(activeReviewId)
-    setIsReviewing(false)
   }
 
   // Group files by staged/unstaged
@@ -694,7 +444,7 @@ export function ChangedFilesPanel() {
           )}>
             <GitBranch className="w-3.5 h-3.5" />
             <span>{projectGitInfo.branch}</span>
-            {projectGitInfo.hasChanges && <span className="text-amber-400">•</span>}
+            {projectGitInfo.hasChanges && <span className="text-amber-400">*</span>}
           </div>
         )}
         </div>
@@ -718,78 +468,6 @@ export function ChangedFilesPanel() {
           <p className="text-xs text-zinc-600 text-center py-4">No changes</p>
         ) : (
           <>
-            {/* Review Button */}
-            <div className="mb-3 flex gap-2">
-              {activeReview && activeReview.status === 'completed' ? (
-                <>
-                  <div className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs rounded bg-green-600/20 text-green-400 border border-green-600/30">
-                    <Check className="w-3.5 h-3.5" />
-                    Review Complete
-                  </div>
-                  <button
-                    onClick={handleStartReview}
-                    className="px-3 py-2 text-xs rounded bg-purple-600 hover:bg-purple-500 text-white transition-colors flex items-center gap-1.5"
-                    title="Start a fresh review (clears cache)"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    Again
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={handleStartReview}
-                    disabled={isReviewing || projectGitInfo.changedFiles.length === 0}
-                    className={cn(
-                      'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs rounded transition-colors',
-                      isReviewing
-                        ? 'bg-purple-600/50 text-purple-300 cursor-wait'
-                        : 'bg-purple-600 hover:bg-purple-500 text-white'
-                    )}
-                  >
-                    {isReviewing ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Reviewing...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-3.5 h-3.5" />
-                        Review ({projectGitInfo.changedFiles.length})
-                      </>
-                    )}
-                  </button>
-                  {isReviewing && activeReviewId && (
-                    <button
-                      onClick={handleCancelReview}
-                      className="px-2 py-2 text-xs rounded bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-600/30 transition-colors"
-                      title="Cancel review"
-                    >
-                      <XCircle className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </>
-              )}
-              {activeReviewId && activeReview && (
-                <button
-                  onClick={() => setVisibility(true)}
-                  className="px-2 py-2 text-xs rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors"
-                  title="View review results"
-                >
-                  {(() => {
-                    const review = activeReview
-                    if (review?.status === 'completed') {
-                      const count = review.findings.length
-                      return count > 0 ? `${count}` : '✓'
-                    }
-                    if (review?.status === 'failed') return '!'
-                    if (review?.status === 'running') return '...'
-                    return '?'
-                  })()}
-                </button>
-              )}
-            </div>
-
             {/* Staged Changes */}
             {stagedFiles.length > 0 && (
               <div className="mb-3">
