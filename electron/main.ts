@@ -46,6 +46,7 @@ import {
   type CliToolDetectionResult,
   type AllCliToolsResult
 } from './services/cli-detector.js'
+import { installCliTool, getPlatformForInstall } from './services/cli-installer.js'
 
 
 import {
@@ -1339,6 +1340,26 @@ ipcMain.handle('cli:detect', async (_event, toolId: string, projectPath: string,
       installed: false,
       error: getErrorMessage(error)
     }
+  }
+})
+
+ipcMain.handle('cli:install', async (_event, agentId: string, method: 'npm' | 'native' | 'brew') => {
+  try {
+    console.log('[CLI] Installing', agentId, 'via', method)
+    return await installCliTool(agentId, method, process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux', '')
+  } catch (error: unknown) {
+    console.error('[CLI] Install error:', error)
+    return { success: false, output: '', error: getErrorMessage(error) }
+  }
+})
+
+ipcMain.handle('cli:get-platform', async () => {
+  try {
+    return await getPlatformForInstall()
+  } catch (error: unknown) {
+    console.error('[CLI] Get platform error:', error)
+    // Fallback to process.platform mapping
+    return process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'
   }
 })
 

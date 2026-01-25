@@ -289,6 +289,8 @@ export interface ElectronAPI {
   cli: {
     detectAll: (projectPath: string, projectId?: string) => Promise<AllCliToolsResult>
     detect: (toolId: string, projectPath: string, projectId?: string) => Promise<CliToolDetectionResult>
+    getPlatform: () => Promise<'windows' | 'wsl' | 'macos' | 'linux'>
+    install: (agentId: string, method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>
   }
   agent: {
     createTerminal: (options: {

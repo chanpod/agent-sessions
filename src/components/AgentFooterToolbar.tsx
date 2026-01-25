@@ -1,12 +1,12 @@
 /**
  * AgentFooterToolbar - A compact footer toolbar showing installed AI agents
- * The + button is for installing new agents (future feature)
+ * The + button opens the AgentInstallModal to install new agents
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Bot, Sparkles, Gem, Code } from 'lucide-react'
-import { cn } from '../lib/utils'
 import type { CliToolDetectionResult } from '../types/electron'
+import { AgentInstallModal } from './AgentInstallModal'
 
 interface AgentFooterToolbarProps {
   projectId: string
@@ -35,6 +35,8 @@ export function AgentFooterToolbar({
 }: AgentFooterToolbarProps) {
   const [agents, setAgents] = useState<CliToolDetectionResult[]>([])
   const [loading, setLoading] = useState(false)
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false)
+  const [platform, setPlatform] = useState<'windows' | 'wsl' | 'macos' | 'linux'>('linux')
 
   const detectAgents = useCallback(async () => {
     if (!window.electron?.cli) return
@@ -57,6 +59,13 @@ export function AgentFooterToolbar({
   useEffect(() => {
     detectAgents()
   }, [detectAgents])
+
+  // Detect platform on mount
+  useEffect(() => {
+    if (window.electron?.cli?.getPlatform) {
+      window.electron.cli.getPlatform().then(setPlatform)
+    }
+  }, [])
 
   // Get only installed agents
   const installedAgents = agents.filter((a) => a.installed)
@@ -87,17 +96,33 @@ export function AgentFooterToolbar({
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Plus button for installing agents (future feature) */}
+      {/* Plus button for installing agents */}
       <button
-        onClick={() => {
-          // TODO: Open agent installation modal
-          console.log('Install agents - future feature')
-        }}
+        onClick={() => setIsInstallModalOpen(true)}
         className="p-1.5 rounded transition-colors text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800"
-        title="Install agents (coming soon)"
+        title="Install agents"
       >
         <Plus className="w-4 h-4" />
       </button>
+
+      {/* Agent Installation Modal */}
+      <AgentInstallModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+        uninstalledAgents={agents.filter(a => !a.installed).map(a => ({ id: a.id, name: a.name }))}
+        platform={platform}
+        onInstallComplete={async () => {
+          // Add a small delay to allow the system to register the newly installed CLI in PATH
+          await new Promise(resolve => setTimeout(resolve, 500))
+          detectAgents()
+        }}
+        onInstall={async (agentId, method) => {
+          if (!window.electron?.cli?.install) {
+            return { success: false, output: 'Installation not available' }
+          }
+          return await window.electron.cli.install(agentId, method)
+        }}
+      />
     </div>
   )
 }

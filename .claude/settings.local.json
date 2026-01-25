@@ -52,7 +52,8 @@
       "Bash(tsc:*)",
       "Bash(cmd //c \"npx tsc --version\")",
       "Bash(codex --version:*)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(npm run:*)"
     ],
     "deny": [],
     "ask": []
