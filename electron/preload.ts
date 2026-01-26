@@ -373,6 +373,10 @@ const electronAPI = {
     injectContext: (terminalId: string, context: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('agent:inject-context', terminalId, context),
   },
+  app: {
+    getVersion: (): Promise<string> =>
+      ipcRenderer.invoke('app:get-version'),
+  },
 }
 
 contextBridge.exposeInMainWorld('electron', electronAPI)

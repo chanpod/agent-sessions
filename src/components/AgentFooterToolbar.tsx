@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Bot, Sparkles, Gem, Code } from 'lucide-react'
+import { Plus, Bot, Sparkles, Gem, Code, Loader2 } from 'lucide-react'
 import type { CliToolDetectionResult } from '../types/electron'
 import { AgentInstallModal } from './AgentInstallModal'
 
@@ -103,14 +103,20 @@ export function AgentFooterToolbar({
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Plus button for installing agents */}
-      <button
-        onClick={() => setIsInstallModalOpen(true)}
-        className="p-1.5 rounded transition-colors text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800"
-        title="Install agents"
-      >
-        <Plus className="w-4 h-4" />
-      </button>
+      {/* Plus button for installing agents (or loading spinner while detecting) */}
+      {loading ? (
+        <div className="p-1.5">
+          <Loader2 className="w-4 h-4 text-zinc-500 animate-spin" />
+        </div>
+      ) : (
+        <button
+          onClick={() => setIsInstallModalOpen(true)}
+          className="p-1.5 rounded transition-colors text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800"
+          title="Install agents"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Agent Installation Modal */}
       <AgentInstallModal

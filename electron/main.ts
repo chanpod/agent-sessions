@@ -1036,6 +1036,11 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
   return ptyManager.injectContext(terminalId, context)
 })
 
+// App version IPC handler
+ipcMain.handle('app:get-version', async () => {
+  return app.getVersion()
+})
+
 app.whenReady().then(() => {
   createMenu()
   createWindow()

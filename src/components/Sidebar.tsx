@@ -38,6 +38,7 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
 
   const activeProject = projects.find(p => p.id === activeProjectId)
   const [shells, setShells] = useState<ShellInfo[]>([])
+  const [appVersion, setAppVersion] = useState<string>('')
   const [showNewProject, setShowNewProject] = useState(false)
   const [showQuickTerminalMenu, setShowQuickTerminalMenu] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -90,6 +91,19 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
     }
     loadShells()
   }, [activeProject])
+
+  useEffect(() => {
+    async function loadVersion() {
+      if (!window.electron?.app?.getVersion) return
+      try {
+        const version = await window.electron.app.getVersion()
+        setAppVersion(version)
+      } catch (err) {
+        console.error('Failed to load app version:', err)
+      }
+    }
+    loadVersion()
+  }, [])
 
   // Combine local shells with SSH connections for terminal creation
   // Only show SSH options if the active project is an SSH project
@@ -210,14 +224,17 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
         )}
 
         {/* Footer */}
-        <div className="p-3 border-t border-zinc-800">
+        <div className="p-3 border-t border-zinc-800 flex items-center justify-between">
           <button
             onClick={() => setShowSettings(true)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md transition-colors"
+            className="flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md transition-colors"
           >
             <Settings className="w-4 h-4" />
             Settings
           </button>
+          {appVersion && (
+            <span className="text-sm text-zinc-500">v{appVersion}</span>
+          )}
         </div>
 
         {/* Resize Handle */}
