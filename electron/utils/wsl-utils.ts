@@ -107,7 +107,7 @@ export function buildWslCommand(
   const escapedCmd = command.replace(/"/g, '\\"')
 
   return {
-    cmd: `wsl ${distroArg}bash -c "cd '${linuxPath}' && ${escapedCmd}"`,
+    cmd: `wsl ${distroArg}bash -l -c "cd '${linuxPath}' && ${escapedCmd}"`,
     cwd: undefined, // WSL commands don't use Windows cwd
   }
 }
