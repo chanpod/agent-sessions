@@ -4,14 +4,16 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { LayoutGrid, Bot, Sparkles, Gem, Code, Plus } from 'lucide-react'
+import { LayoutGrid, Bot, Sparkles, Gem, Code, Plus, Settings2 } from 'lucide-react'
 import { useTerminalStore } from '../stores/terminal-store'
 import { useViewStore } from '../stores/view-store'
+import { useProjectStore } from '../stores/project-store'
 import { useAgentContextStore } from '../stores/agent-context-store'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { TerminalItem } from './ProjectItem'
 import { AgentLauncher } from './AgentLauncher'
 import { AgentContextEditor } from './AgentContextEditor'
+import AgentContextManager from './AgentContextManager'
 import { cn } from '../lib/utils'
 import type { CliToolDetectionResult } from '../types/electron'
 
@@ -48,6 +50,7 @@ export function AgentTerminalsSection({
 }: AgentTerminalsSectionProps) {
   const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
   const { activeView, setProjectGridActive } = useViewStore()
+  const { projects } = useProjectStore()
   const { loadContexts } = useAgentContextStore()
 
   // Agent detection state
@@ -57,7 +60,11 @@ export function AgentTerminalsSection({
   // Modal state
   const [showLauncher, setShowLauncher] = useState(false)
   const [showContextEditor, setShowContextEditor] = useState(false)
+  const [showContextManager, setShowContextManager] = useState(false)
   const [editingContextId, setEditingContextId] = useState<string | undefined>()
+
+  // Derive project name from store
+  const projectName = projects.find((p) => p.id === projectId)?.name || 'Unknown Project'
 
   // Load contexts when project changes
   useEffect(() => {
@@ -138,20 +145,30 @@ export function AgentTerminalsSection({
           <span className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
             Agent Terminals
           </span>
-          {/* Launch button */}
-          <button
-            onClick={() => setShowLauncher(true)}
-            disabled={installedAgents.length === 0}
-            className={cn(
-              'p-0.5 rounded transition-colors',
-              installedAgents.length > 0
-                ? 'hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300'
-                : 'text-zinc-600 cursor-not-allowed'
-            )}
-            title={installedAgents.length > 0 ? 'Launch agent terminal' : 'No agents installed'}
-          >
-            <Plus className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            {/* Manage Contexts button */}
+            <button
+              onClick={() => setShowContextManager(true)}
+              className="p-0.5 rounded transition-colors hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300"
+              title="Manage Contexts"
+            >
+              <Settings2 className="w-4 h-4" />
+            </button>
+            {/* Launch button */}
+            <button
+              onClick={() => setShowLauncher(true)}
+              disabled={installedAgents.length === 0}
+              className={cn(
+                'p-0.5 rounded transition-colors',
+                installedAgents.length > 0
+                  ? 'hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300'
+                  : 'text-zinc-600 cursor-not-allowed'
+              )}
+              title={installedAgents.length > 0 ? 'Launch agent terminal' : 'No agents installed'}
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {agentSessions.length === 0 ? (
@@ -208,6 +225,14 @@ export function AgentTerminalsSection({
           onClose={handleCloseContextEditor}
         />
       )}
+
+      {/* Agent Context Manager Modal */}
+      <AgentContextManager
+        isOpen={showContextManager}
+        onClose={() => setShowContextManager(false)}
+        projectId={projectId}
+        projectName={projectName}
+      />
     </>
   )
 }

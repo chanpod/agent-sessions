@@ -28,6 +28,7 @@ import { useGridStore } from './stores/grid-store'
 import { useViewStore } from './stores/view-store'
 import { useSSHStore } from './stores/ssh-store'
 import { useFileSearchStore } from './stores/file-search-store'
+import { useGlobalRulesStore } from './stores/global-rules-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
 
@@ -71,6 +72,7 @@ function App() {
   const { isDashboardActive, activeView } = useViewStore()
   const { setActiveProject, activeProjectId, removeProject, disconnectProject, addTerminalToProject, setProjectFocusedTerminal, removeTerminalFromProject } = useProjectStore()
   const { openSearch } = useFileSearchStore()
+  const { getEnabledRulesText, loadRules: loadGlobalRules } = useGlobalRulesStore()
 
   // Configure drag sensors with a distance threshold
   // This prevents clicks from being interpreted as drags
@@ -89,6 +91,13 @@ function App() {
 
   // Listen for detected servers from terminal output
   useDetectedServers()
+
+  // Initialize global rules store
+  useEffect(() => {
+    if (isElectron) {
+      loadGlobalRules()
+    }
+  }, [isElectron, loadGlobalRules])
 
   // Helper function to categorize terminal output activity level
   // Returns: 'substantial' (green), 'minor' (yellow), or 'none' (no update)
@@ -338,12 +347,16 @@ function App() {
     })
 
     try {
+      // Combine global rules with project context
+      const globalRulesText = getEnabledRulesText()
+      const combinedContext = [globalRulesText, contextContent].filter(Boolean).join('\n\n') || null
+
       // Build the command with optional context
       // Each agent has different context injection syntax
       let initialCommand = agentId
-      if (contextContent) {
+      if (combinedContext) {
         // Escape the context for shell (handle quotes, special chars)
-        const escapedContext = contextContent
+        const escapedContext = combinedContext
           .replace(/\\/g, '\\\\')  // Escape backslashes first
           .replace(/"/g, '\\"')     // Escape double quotes
           .replace(/\$/g, '\\$')    // Escape dollar signs
@@ -396,7 +409,7 @@ function App() {
         terminalType: 'agent',
         agentId,
         contextId: contextId ?? undefined,
-        contextInjected: !!contextContent
+        contextInjected: !!combinedContext
       })
 
       // Add terminal to project grid and focus it

@@ -3,9 +3,10 @@
  */
 
 import { useState, useMemo } from 'react'
-import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, Plus, FileText } from 'lucide-react'
+import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
+import { useGlobalRulesStore } from '../stores/global-rules-store'
 import type { CliToolDetectionResult } from '../types/electron'
 
 interface AgentLauncherProps {
@@ -166,6 +167,8 @@ export function AgentLauncher({
   onEditContext,
 }: AgentLauncherProps) {
   const { contexts, getActiveContext } = useAgentContextStore()
+  const { getEnabledRules } = useGlobalRulesStore()
+  const enabledRulesCount = getEnabledRules().length
 
   // Get contexts for this project (contexts are already loaded for this project)
   const projectContexts = useMemo(
@@ -187,7 +190,7 @@ export function AgentLauncher({
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     preselectedAgentId && availableAgents.some(a => a.id === preselectedAgentId)
       ? preselectedAgentId
-      : availableAgents.length > 0 ? availableAgents[0].id : null
+      : availableAgents[0]?.id ?? null
   )
   const [selectedContextId, setSelectedContextId] = useState<string | null>(
     activeContext?.id ?? null
@@ -218,11 +221,6 @@ export function AgentLauncher({
   const handleContextSelect = (contextId: string | null) => {
     setSelectedContextId(contextId)
     setContextDropdownOpen(false)
-  }
-
-  const handleNewContext = () => {
-    setContextDropdownOpen(false)
-    onEditContext?.()
   }
 
   const handleEditContext = () => {
@@ -332,23 +330,24 @@ export function AgentLauncher({
                     </button>
                   ))}
 
-                  {/* Divider */}
-                  {onEditContext && (
-                    <>
-                      <div className="border-t border-zinc-700" />
-                      <button
-                        onClick={handleNewContext}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-blue-400 hover:bg-zinc-700 transition-colors"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>New Context...</span>
-                      </button>
-                    </>
-                  )}
                 </div>
               )}
             </div>
           </div>
+
+          {/* Global Rules Indicator */}
+          {enabledRulesCount > 0 && (
+            <div
+              className="flex items-center gap-1.5 px-2 py-1 text-xs text-zinc-400"
+              title="Global rules from Settings will be applied alongside the project context"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+              <span>
+                <span className="text-blue-400">{enabledRulesCount}</span> global{' '}
+                {enabledRulesCount === 1 ? 'rule' : 'rules'} active
+              </span>
+            </div>
+          )}
 
           {/* Context Preview */}
           <div>
