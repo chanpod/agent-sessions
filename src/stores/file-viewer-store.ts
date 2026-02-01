@@ -30,7 +30,11 @@ interface FileViewerState {
   // Actions
   openFile: (path: string, name: string, content: string, projectPath?: string, projectId?: string) => void
   closeFile: (path: string) => void
-  setActiveFile: (path: string) => void
+  closeOtherFiles: (path: string) => void
+  closeAllFiles: () => void
+  closeFilesToRight: (path: string) => void
+  closeFilesToLeft: (path: string) => void
+  setActiveFile: (path: string | null) => void
   updateFileContent: (path: string, content: string) => void
   markFileSaved: (path: string) => void
   toggleVisibility: () => void
@@ -143,6 +147,55 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
     set({
       openFiles: newFiles,
       activeFilePath: newActiveFile,
+      isVisible: newFiles.length > 0,
+    })
+  },
+
+  closeOtherFiles: (path) => {
+    const { openFiles } = get()
+    const fileToKeep = openFiles.find((f) => f.path === path)
+    if (!fileToKeep) return
+
+    set({
+      openFiles: [fileToKeep],
+      activeFilePath: path,
+    })
+  },
+
+  closeAllFiles: () => {
+    set({
+      openFiles: [],
+      activeFilePath: null,
+      isVisible: false,
+    })
+  },
+
+  closeFilesToRight: (path) => {
+    const { openFiles, activeFilePath } = get()
+    const index = openFiles.findIndex((f) => f.path === path)
+    if (index === -1) return
+
+    const newFiles = openFiles.slice(0, index + 1)
+    const activeFileStillExists = newFiles.some((f) => f.path === activeFilePath)
+
+    set({
+      openFiles: newFiles,
+      activeFilePath: activeFileStillExists ? activeFilePath : path,
+      isVisible: newFiles.length > 0,
+    })
+  },
+
+  closeFilesToLeft: (path) => {
+    const { openFiles, activeFilePath } = get()
+    const index = openFiles.findIndex((f) => f.path === path)
+    if (index === -1) return
+
+    const newFiles = openFiles.slice(index)
+    const activeFileStillExists = newFiles.some((f) => f.path === activeFilePath)
+
+    set({
+      openFiles: newFiles,
+      activeFilePath: activeFileStillExists ? activeFilePath : path,
       isVisible: newFiles.length > 0,
     })
   },

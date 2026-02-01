@@ -33,11 +33,17 @@ import { PathService, type ExecutionContext } from './utils/path-service.js'
 import {
   detectCliTool,
   detectAllCliTools,
+  checkAgentUpdate,
+  checkAgentUpdates,
   BUILTIN_CLI_TOOLS,
   type CliToolDetectionResult,
-  type AllCliToolsResult
+  type AllCliToolsResult,
+  type UpdateCheckResult
 } from './services/cli-detector.js'
 import { installCliTool, getPlatformForInstall } from './services/cli-installer.js'
+import { serviceManager } from './services/service-manager.js'
+import { dockerComposeHandler } from './services/docker/docker-compose-handler.js'
+import { ptyServiceHandler, setPtyManager } from './services/pty/pty-service-handler.js'
 
 
 
@@ -474,6 +480,11 @@ async function createWindow() {
 
   // Set PTY manager reference in SSH manager (needed for creating tunnel terminals)
   sshManager.setPtyManager(ptyManager)
+
+  // Register service handlers for unified service management
+  setPtyManager(ptyManager)
+  serviceManager.registerHandler(ptyServiceHandler)
+  serviceManager.registerHandler(dockerComposeHandler)
 
   // Initialize BackgroundClaudeManager
   backgroundClaude = new BackgroundClaudeManager(ptyManager)
@@ -972,6 +983,38 @@ ipcMain.handle('cli:get-platform', async () => {
   }
 })
 
+ipcMain.handle('cli:check-update', async (_event, agentId: string, currentVersion: string | null): Promise<UpdateCheckResult> => {
+  console.log(`[CLI] Checking update for ${agentId}, current version: ${currentVersion}`)
+  try {
+    return await checkAgentUpdate(agentId, currentVersion)
+  } catch (error: unknown) {
+    console.error(`[CLI] Update check error for ${agentId}:`, error)
+    return {
+      agentId,
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      error: getErrorMessage(error)
+    }
+  }
+})
+
+ipcMain.handle('cli:check-updates', async (_event, agents: Array<{ id: string; version: string | null }>): Promise<UpdateCheckResult[]> => {
+  console.log(`[CLI] Checking updates for ${agents.length} agents`)
+  try {
+    return await checkAgentUpdates(agents)
+  } catch (error: unknown) {
+    console.error('[CLI] Update check error:', error)
+    return agents.map(agent => ({
+      agentId: agent.id,
+      currentVersion: agent.version,
+      latestVersion: null,
+      updateAvailable: false,
+      error: getErrorMessage(error)
+    }))
+  }
+})
+
 // ============================================================================
 // Agent Terminal IPC Handlers
 // ============================================================================
@@ -1039,6 +1082,101 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 // App version IPC handler
 ipcMain.handle('app:get-version', async () => {
   return app.getVersion()
+})
+
+// ============================================================================
+// Service Manager IPC Handlers
+// ============================================================================
+
+ipcMain.handle('service:discover', async (_event, projectPath: string, projectId: string) => {
+  console.log(`[Service] Discovering services in ${projectPath}`)
+  try {
+    const services = await serviceManager.discoverServices(projectPath, projectId)
+    return { success: true, services }
+  } catch (error: unknown) {
+    console.error('[Service] Discovery failed:', error)
+    return { success: false, services: [], error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('service:getStatus', async (_event, serviceId: string) => {
+  try {
+    const status = await serviceManager.getStatus(serviceId)
+    return { success: true, status }
+  } catch (error: unknown) {
+    console.error('[Service] Get status failed:', error)
+    return { success: false, status: 'unknown', error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('service:start', async (_event, serviceId: string) => {
+  console.log(`[Service] Starting service: ${serviceId}`)
+  try {
+    await serviceManager.start(serviceId)
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Service] Start failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('service:stop', async (_event, serviceId: string) => {
+  console.log(`[Service] Stopping service: ${serviceId}`)
+  try {
+    await serviceManager.stop(serviceId)
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Service] Stop failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('service:restart', async (_event, serviceId: string) => {
+  console.log(`[Service] Restarting service: ${serviceId}`)
+  try {
+    await serviceManager.restart(serviceId)
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Service] Restart failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('service:list', async (_event, projectId?: string) => {
+  try {
+    const services = projectId
+      ? serviceManager.getServicesByProject(projectId)
+      : serviceManager.getServices()
+    return { success: true, services }
+  } catch (error: unknown) {
+    console.error('[Service] List failed:', error)
+    return { success: false, services: [], error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+// ============================================================================
+// Docker IPC Handlers
+// ============================================================================
+
+ipcMain.handle('docker:isAvailable', async () => {
+  try {
+    const available = await dockerComposeHandler.isDockerAvailable()
+    return { success: true, available }
+  } catch (error: unknown) {
+    console.error('[Docker] Availability check failed:', error)
+    return { success: false, available: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('docker:getLogs', async (_event, serviceId: string, tail?: number) => {
+  console.log(`[Docker] Getting logs for: ${serviceId}`)
+  try {
+    const logs = await dockerComposeHandler.getLogs(serviceId, tail || 100)
+    return { success: true, logs }
+  } catch (error: unknown) {
+    console.error('[Docker] Get logs failed:', error)
+    return { success: false, logs: '', error: error instanceof Error ? error.message : String(error) }
+  }
 })
 
 app.whenReady().then(() => {

@@ -58,7 +58,6 @@ function findGitBashPath(): string | null {
 
   // Check each path
   for (const bashPath of possiblePaths) {
-    console.log(`[cli-detector]   Checking: ${bashPath}`)
     try {
       if (fs.existsSync(bashPath)) {
         console.log(`[cli-detector]   Found Git Bash at: ${bashPath}`)
@@ -127,6 +126,8 @@ export interface CliToolDetectionResult {
   path?: string
   /** Error message if detection failed */
   error?: string
+  /** Inferred installation method based on path */
+  installMethod?: 'npm' | 'native' | 'brew' | 'unknown'
 }
 
 /**
@@ -156,7 +157,7 @@ export const CLAUDE_CLI: CliToolDefinition = {
     windows: ['where claude'],
     unix: ['which claude'],
   },
-  versionRegex: /(?:claude|version)\s*v?(\d+\.\d+(?:\.\d+)?)/i,
+  versionRegex: /v?(\d+\.\d+(?:\.\d+)?)/i,
   fallbackPaths: [
     '~/.local/bin/claude',
     '~/.local/bin/claude.exe',
@@ -177,7 +178,7 @@ export const GEMINI_CLI: CliToolDefinition = {
     windows: ['where gemini'],
     unix: ['which gemini'],
   },
-  versionRegex: /(?:gemini|version)\s*v?(\d+\.\d+(?:\.\d+)?)/i,
+  versionRegex: /v?(\d+\.\d+(?:\.\d+)?)/i,
   fallbackPaths: [
     '~/.local/bin/gemini',
     '~/.local/bin/gemini.exe',
@@ -197,7 +198,7 @@ export const CODEX_CLI: CliToolDefinition = {
     windows: ['where codex'],
     unix: ['which codex'],
   },
-  versionRegex: /(?:codex|version)\s*v?(\d+\.\d+(?:\.\d+)?)/i,
+  versionRegex: /v?(\d+\.\d+(?:\.\d+)?)/i,
   fallbackPaths: [
     '~/.local/bin/codex',
     '~/.local/bin/codex.exe',
@@ -239,63 +240,56 @@ async function execInContextAsync(
 ): Promise<{ stdout: string; stderr: string }> {
   // Determine execution context using PathService
   const context = await PathService.getExecutionContext(projectPath, projectId, sshManager)
-  console.log(`[cli-detector] execInContextAsync called`)
-  console.log(`[cli-detector]   command: "${command}"`)
-  console.log(`[cli-detector]   projectPath: "${projectPath}"`)
-  console.log(`[cli-detector]   executionContext: "${context}"`)
 
   switch (context) {
     case 'ssh-remote': {
       // Must use SSH
-      console.log(`[cli-detector]   Using SSH remote execution`)
       if (!projectId || !sshManager) {
-        const err = `SSH connection required but not configured for path: ${projectPath}`
-        console.log(`[cli-detector]   ERROR: ${err}`)
-        throw new Error(err)
+        throw new Error(`SSH connection required but not configured for path: ${projectPath}`)
       }
 
       const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-      console.log(`[cli-detector]   SSH master status: connected=${projectMasterStatus.connected}`)
       if (!projectMasterStatus.connected) {
-        const err = 'SSH connection not available for project'
-        console.log(`[cli-detector]   ERROR: ${err}`)
-        throw new Error(err)
+        throw new Error('SSH connection not available for project')
       }
 
       try {
         const output = await sshManager.execViaProjectMaster(projectId, command)
-        console.log(`[cli-detector]   SSH result: "${output.substring(0, 200)}${output.length > 200 ? '...' : ''}"`)
         return { stdout: output, stderr: '' }
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error)
-        console.log(`[cli-detector]   SSH command error: ${errorMessage}`)
         throw new Error(`SSH command failed: ${errorMessage}`)
       }
     }
 
     case 'wsl': {
       // Use wsl.exe for WSL paths
-      console.log(`[cli-detector]   Using WSL execution`)
       const pathInfo = PathService.analyzePath(projectPath)
       const wslCommand = buildWslCommand(command, projectPath, {
         isWslPath: true,
         linuxPath: pathInfo.linuxPath,
         distro: pathInfo.wslDistro,
       })
-      console.log(`[cli-detector]   WSL command: "${wslCommand.cmd}"`)
 
       try {
         const result = await execAsync(wslCommand.cmd, {
           encoding: 'utf-8',
           timeout: 10000,
         })
-        console.log(`[cli-detector]   WSL result stdout: "${result.stdout.substring(0, 200)}${result.stdout.length > 200 ? '...' : ''}"`)
-        console.log(`[cli-detector]   WSL result stderr: "${result.stderr.substring(0, 200)}${result.stderr.length > 200 ? '...' : ''}"`)
         return { stdout: result.stdout, stderr: result.stderr }
       } catch (error: unknown) {
+        // exec throws on non-zero exit codes, but the command may have still produced output
+        const execError = error as { stdout?: string; stderr?: string; message?: string }
+        const stdout = execError.stdout || ''
+        const stderr = execError.stderr || ''
+
+        // If we got any output, return it even if the command "failed"
+        if (stdout || stderr) {
+          return { stdout, stderr }
+        }
+
         // Command not found in WSL is not an error for detection purposes
         const errorMessage = error instanceof Error ? error.message : String(error)
-        console.log(`[cli-detector]   WSL error: ${errorMessage}`)
         if (errorMessage.includes('not found') || errorMessage.includes('command not found')) {
           return { stdout: '', stderr: errorMessage }
         }
@@ -306,9 +300,6 @@ async function execInContextAsync(
     case 'local-windows': {
       // On Windows, prefer Git Bash for proper PATH handling
       const gitBashPath = getGitBashPath()
-      console.log(`[cli-detector]   Using local Windows execution`)
-      console.log(`[cli-detector]   cwd: "${projectPath}"`)
-      console.log(`[cli-detector]   shell: ${gitBashPath ? `Git Bash (${gitBashPath})` : 'default (cmd.exe)'}`)
 
       try {
         let result: { stdout: string; stderr: string }
@@ -318,7 +309,6 @@ async function execInContextAsync(
           // This ensures tools in ~/.local/bin are found via proper PATH setup
           const escapedCommand = command.replace(/"/g, '\\"')
           const bashCommand = `"${gitBashPath}" -l -c "${escapedCommand}"`
-          console.log(`[cli-detector]   Executing: ${bashCommand}`)
 
           result = await execAsync(bashCommand, {
             cwd: projectPath,
@@ -340,13 +330,22 @@ async function execInContextAsync(
           })
         }
 
-        console.log(`[cli-detector]   Local result stdout: "${result.stdout.substring(0, 200)}${result.stdout.length > 200 ? '...' : ''}"`)
-        console.log(`[cli-detector]   Local result stderr: "${result.stderr.substring(0, 200)}${result.stderr.length > 200 ? '...' : ''}"`)
         return { stdout: result.stdout, stderr: result.stderr }
       } catch (error: unknown) {
+        // exec throws on non-zero exit codes, but the command may have still produced output
+        // Extract stdout/stderr from the error if available (they're properties on exec errors)
+        const execError = error as { stdout?: string; stderr?: string; message?: string }
+        const stdout = execError.stdout || ''
+        const stderr = execError.stderr || ''
+
+        // If we got any output, return it even if the command "failed"
+        // Many CLIs exit with non-zero but still output version info
+        if (stdout || stderr) {
+          return { stdout, stderr }
+        }
+
         // Command not found is not an error for detection purposes
         const errorMessage = error instanceof Error ? error.message : String(error)
-        console.log(`[cli-detector]   Local error: ${errorMessage}`)
         const isCommandNotFound =
           errorMessage.includes('not found') ||
           errorMessage.includes('is not recognized') ||
@@ -356,7 +355,6 @@ async function execInContextAsync(
           errorMessage.includes('No such file or directory')
 
         if (isCommandNotFound) {
-          console.log(`[cli-detector]   Command not found (expected for missing tools)`)
           return { stdout: '', stderr: errorMessage }
         }
         throw error
@@ -365,8 +363,6 @@ async function execInContextAsync(
 
     case 'local-unix': {
       // Execute directly on local Unix system
-      console.log(`[cli-detector]   Using local Unix execution`)
-      console.log(`[cli-detector]   cwd: "${projectPath}"`)
       try {
         const result = await execAsync(command, {
           cwd: projectPath,
@@ -376,20 +372,26 @@ async function execInContextAsync(
           env: process.env,
           windowsHide: true,
         })
-        console.log(`[cli-detector]   Local result stdout: "${result.stdout.substring(0, 200)}${result.stdout.length > 200 ? '...' : ''}"`)
-        console.log(`[cli-detector]   Local result stderr: "${result.stderr.substring(0, 200)}${result.stderr.length > 200 ? '...' : ''}"`)
         return { stdout: result.stdout, stderr: result.stderr }
       } catch (error: unknown) {
+        // exec throws on non-zero exit codes, but the command may have still produced output
+        const execError = error as { stdout?: string; stderr?: string; message?: string }
+        const stdout = execError.stdout || ''
+        const stderr = execError.stderr || ''
+
+        // If we got any output, return it even if the command "failed"
+        if (stdout || stderr) {
+          return { stdout, stderr }
+        }
+
         // Command not found is not an error for detection purposes
         const errorMessage = error instanceof Error ? error.message : String(error)
-        console.log(`[cli-detector]   Local error: ${errorMessage}`)
         const isCommandNotFound =
           errorMessage.includes('not found') ||
           errorMessage.includes('ENOENT') ||
           errorMessage.includes('command not found')
 
         if (isCommandNotFound) {
-          console.log(`[cli-detector]   Command not found (expected for missing tools)`)
           return { stdout: '', stderr: errorMessage }
         }
         throw error
@@ -413,14 +415,15 @@ async function tryCommand(
   projectId?: string,
   sshManager?: SSHManagerLike
 ): Promise<string | null> {
-  console.log(`[cli-detector] tryCommand: "${command}"`)
   try {
+    console.log(`[cli-detector] tryCommand: executing "${command}"`)
     const result = await execInContextAsync(command, projectPath, projectId, sshManager)
-    const output = result.stdout.trim() || null
-    console.log(`[cli-detector] tryCommand result: ${output ? `"${output.substring(0, 100)}${output.length > 100 ? '...' : ''}"` : 'null'}`)
-    return output
+    // Some CLIs output version to stderr instead of stdout, so check both
+    const output = result.stdout.trim() || result.stderr.trim()
+    console.log(`[cli-detector] tryCommand: "${command}" -> stdout="${result.stdout.trim()}", stderr="${result.stderr.trim()}", output="${output}"`)
+    return output || null
   } catch (error) {
-    console.log(`[cli-detector] tryCommand error: ${error instanceof Error ? error.message : String(error)}`)
+    console.log(`[cli-detector] tryCommand: "${command}" failed:`, error instanceof Error ? error.message : error)
     return null
   }
 }
@@ -430,6 +433,7 @@ async function tryCommand(
  */
 function extractVersion(output: string, regex: RegExp): string | undefined {
   const match = output.match(regex)
+  console.log(`[cli-detector] extractVersion: output="${output}", regex=${regex}, match=${JSON.stringify(match)}`)
   return match?.[1]
 }
 
@@ -454,6 +458,43 @@ function getPathCommands(tool: CliToolDefinition, context: ExecutionContext): st
 // Note: checkFallbackPaths function was removed as Git Bash handles PATH properly on Windows
 
 /**
+ * Infer the installation method from the detected path
+ */
+function inferInstallMethodFromPath(path: string | undefined): 'npm' | 'native' | 'brew' | 'unknown' {
+  if (!path) return 'unknown'
+
+  const normalized = path.toLowerCase().replace(/\\/g, '/')
+
+  // Check for npm indicators
+  if (normalized.includes('/appdata/roaming/npm/') ||  // Windows npm
+      normalized.includes('/nvm4w/nodejs/') ||          // Windows nvm npm
+      normalized.includes('/.npm/') ||                  // Unix npm global
+      normalized.includes('/node_modules/')) {          // npm node_modules
+    return 'npm'
+  }
+
+  // Check for Homebrew indicators
+  if (normalized.includes('/opt/homebrew/') ||         // M1 Macs
+      normalized.includes('/usr/local/cellar/') ||     // Intel Macs
+      normalized.includes('/linuxbrew/')) {            // Linuxbrew
+    return 'brew'
+  }
+
+  // Check for native installer paths
+  if (normalized.includes('/appdata/local/programs/') ||  // Windows native
+      normalized.includes('/program files/')) {
+    return 'native'
+  }
+
+  // ~/.local/bin could be npm or native - default to npm for CLI tools
+  if (normalized.includes('/.local/bin/')) {
+    return 'npm'
+  }
+
+  return 'unknown'
+}
+
+/**
  * Detect a single CLI tool
  *
  * @param tool - The tool definition to detect
@@ -468,11 +509,7 @@ export async function detectCliTool(
   projectId?: string,
   sshManager?: SSHManagerLike
 ): Promise<CliToolDetectionResult> {
-  console.log(`[cli-detector] ========================================`)
-  console.log(`[cli-detector] detectCliTool: "${tool.name}" (${tool.id})`)
-  console.log(`[cli-detector]   projectPath: "${projectPath}"`)
-  console.log(`[cli-detector]   projectId: ${projectId || 'undefined'}`)
-  console.log(`[cli-detector]   sshManager: ${sshManager ? 'provided' : 'undefined'}`)
+  console.log(`[cli-detector] Detecting ${tool.name} (${tool.id}) for path: ${projectPath}`)
 
   const result: CliToolDetectionResult = {
     id: tool.id,
@@ -483,17 +520,14 @@ export async function detectCliTool(
   try {
     // Determine execution context
     const context = await PathService.getExecutionContext(projectPath, projectId, sshManager)
-    console.log(`[cli-detector]   execution context: "${context}"`)
 
     // Try version commands first
-    console.log(`[cli-detector]   Trying version commands: ${JSON.stringify(tool.versionCommands)}`)
     let versionOutput: string | null = null
     for (const cmd of tool.versionCommands) {
       versionOutput = await tryCommand(cmd, projectPath, projectId, sshManager)
       if (versionOutput) {
         result.installed = true
         result.version = extractVersion(versionOutput, tool.versionRegex)
-        console.log(`[cli-detector]   Version detected: "${result.version}"`)
         break
       }
     }
@@ -501,13 +535,11 @@ export async function detectCliTool(
     // If no version found, try path commands as fallback
     if (!result.installed) {
       const pathCommands = getPathCommands(tool, context)
-      console.log(`[cli-detector]   No version found, trying path commands: ${JSON.stringify(pathCommands)}`)
       for (const cmd of pathCommands) {
         const pathOutput = await tryCommand(cmd, projectPath, projectId, sshManager)
         if (pathOutput) {
           result.installed = true
           result.path = pathOutput.split('\n')[0].trim() // Take first line in case of multiple paths
-          console.log(`[cli-detector]   Path detected: "${result.path}"`)
           break
         }
       }
@@ -517,24 +549,23 @@ export async function detectCliTool(
     } else if (!result.path) {
       // If we got version, also try to get path
       const pathCommands = getPathCommands(tool, context)
-      console.log(`[cli-detector]   Version found, also trying path commands: ${JSON.stringify(pathCommands)}`)
       for (const cmd of pathCommands) {
         const pathOutput = await tryCommand(cmd, projectPath, projectId, sshManager)
         if (pathOutput) {
           result.path = pathOutput.split('\n')[0].trim()
-          console.log(`[cli-detector]   Path detected: "${result.path}"`)
           break
         }
       }
     }
 
-    console.log(`[cli-detector]   FINAL RESULT: installed=${result.installed}, version=${result.version || 'N/A'}, path=${result.path || 'N/A'}`)
-    console.log(`[cli-detector] ========================================`)
+    // Infer install method from detected path
+    result.installMethod = inferInstallMethodFromPath(result.path)
+
+    console.log(`[cli-detector] ${tool.name}: installed=${result.installed}, version=${result.version || 'N/A'}, path=${result.path || 'N/A'}, installMethod=${result.installMethod}`)
     return result
   } catch (error: unknown) {
     result.error = error instanceof Error ? error.message : String(error)
-    console.log(`[cli-detector]   DETECTION ERROR: ${result.error}`)
-    console.log(`[cli-detector] ========================================`)
+    console.log(`[cli-detector] ${tool.name}: ERROR - ${result.error}`)
     return result
   }
 }
@@ -610,6 +641,161 @@ export function createCliToolDefinition(
 }
 
 // ============================================================================
+// Update Check Functions
+// ============================================================================
+
+/**
+ * NPM package names for each agent CLI
+ */
+const NPM_PACKAGES: Record<string, string> = {
+  claude: '@anthropic-ai/claude-code',
+  gemini: '@anthropic-ai/claude-code', // Gemini CLI doesn't have an npm package yet, placeholder
+  codex: '@openai/codex',
+}
+
+/**
+ * Result of checking for updates
+ */
+export interface UpdateCheckResult {
+  agentId: string
+  currentVersion: string | null
+  latestVersion: string | null
+  updateAvailable: boolean
+  error?: string
+}
+
+/**
+ * Fetch the latest version of an npm package
+ *
+ * @param packageName - The npm package name (e.g., '@anthropic-ai/claude-code')
+ * @returns The latest version string or null if failed
+ */
+async function fetchLatestVersion(packageName: string): Promise<string | null> {
+  try {
+    const url = `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+      },
+      // Add timeout
+      signal: AbortSignal.timeout(10000),
+    })
+
+    if (!response.ok) {
+      console.log(`[cli-detector] Failed to fetch ${packageName}: ${response.status}`)
+      return null
+    }
+
+    const data = await response.json() as { version?: string }
+    return data.version || null
+  } catch (error: unknown) {
+    console.error(`[cli-detector] Error fetching latest version for ${packageName}:`, error)
+    return null
+  }
+}
+
+/**
+ * Compare two semantic version strings
+ *
+ * @param current - Current version (e.g., "1.0.0")
+ * @param latest - Latest version (e.g., "1.1.0")
+ * @returns true if latest is newer than current
+ */
+function isNewerVersion(current: string, latest: string): boolean {
+  const currentParts = current.replace(/^v/, '').split('.').map(Number)
+  const latestParts = latest.replace(/^v/, '').split('.').map(Number)
+
+  // Pad arrays to same length
+  while (currentParts.length < 3) currentParts.push(0)
+  while (latestParts.length < 3) latestParts.push(0)
+
+  for (let i = 0; i < 3; i++) {
+    if (latestParts[i] > currentParts[i]) return true
+    if (latestParts[i] < currentParts[i]) return false
+  }
+
+  return false
+}
+
+/**
+ * Check for updates for a single agent
+ *
+ * @param agentId - The agent ID (e.g., 'claude', 'codex', 'gemini')
+ * @param currentVersion - The currently installed version (or null if not installed)
+ * @returns UpdateCheckResult with update availability
+ */
+export async function checkAgentUpdate(
+  agentId: string,
+  currentVersion: string | null
+): Promise<UpdateCheckResult> {
+  console.log(`[cli-detector] Checking update for ${agentId}, current version: ${currentVersion}`)
+
+  const result: UpdateCheckResult = {
+    agentId,
+    currentVersion,
+    latestVersion: null,
+    updateAvailable: false,
+  }
+
+  // Can't check for updates if not installed
+  if (!currentVersion) {
+    result.error = 'Agent not installed'
+    return result
+  }
+
+  // Get the npm package name
+  const packageName = NPM_PACKAGES[agentId]
+  if (!packageName) {
+    result.error = `Unknown agent: ${agentId}`
+    return result
+  }
+
+  // Gemini doesn't have an npm package yet
+  if (agentId === 'gemini') {
+    result.error = 'Update check not available for Gemini CLI'
+    return result
+  }
+
+  try {
+    const latestVersion = await fetchLatestVersion(packageName)
+
+    if (!latestVersion) {
+      result.error = 'Failed to fetch latest version'
+      return result
+    }
+
+    result.latestVersion = latestVersion
+    result.updateAvailable = isNewerVersion(currentVersion, latestVersion)
+
+    console.log(`[cli-detector] ${agentId}: current=${currentVersion}, latest=${latestVersion}, updateAvailable=${result.updateAvailable}`)
+
+    return result
+  } catch (error: unknown) {
+    result.error = error instanceof Error ? error.message : String(error)
+    console.error(`[cli-detector] Error checking update for ${agentId}:`, error)
+    return result
+  }
+}
+
+/**
+ * Check for updates for multiple agents
+ *
+ * @param agents - Array of agent IDs and their current versions
+ * @returns Array of UpdateCheckResult
+ */
+export async function checkAgentUpdates(
+  agents: Array<{ id: string; version: string | null }>
+): Promise<UpdateCheckResult[]> {
+  console.log(`[cli-detector] Checking updates for ${agents.length} agents`)
+
+  const results = await Promise.all(
+    agents.map((agent) => checkAgentUpdate(agent.id, agent.version))
+  )
+
+  return results
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -617,6 +803,8 @@ export const CliDetector = {
   detectCliTool,
   detectAllCliTools,
   createCliToolDefinition,
+  checkAgentUpdate,
+  checkAgentUpdates,
   BUILTIN_CLI_TOOLS,
   CLAUDE_CLI,
   GEMINI_CLI,

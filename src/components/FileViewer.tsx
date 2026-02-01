@@ -1,8 +1,9 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react'
 import Editor, { loader, OnMount, DiffEditor } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import { X, Save, Circle, GitCompare, Search, CaseSensitive, Regex, WholeWord } from 'lucide-react'
 import { useFileViewerStore, OpenFile } from '../stores/file-viewer-store'
+import { useProjectStore } from '../stores/project-store'
 import { cn } from '../lib/utils'
 
 // Configure Monaco to use local instance instead of CDN (required for Electron)
@@ -13,9 +14,10 @@ interface FileTabProps {
   isActive: boolean
   onSelect: () => void
   onClose: () => void
+  onContextMenu: (e: React.MouseEvent) => void
 }
 
-function FileTab({ file, isActive, onSelect, onClose }: FileTabProps) {
+function FileTab({ file, isActive, onSelect, onClose, onContextMenu }: FileTabProps) {
   return (
     <div
       className={cn(
@@ -25,6 +27,7 @@ function FileTab({ file, isActive, onSelect, onClose }: FileTabProps) {
           : 'bg-zinc-950 text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-300'
       )}
       onClick={onSelect}
+      onContextMenu={onContextMenu}
     >
       {file.isDirty && (
         <Circle className="w-2 h-2 fill-amber-400 text-amber-400" />
@@ -175,6 +178,10 @@ export function FileViewer() {
     showDiff,
     setActiveFile,
     closeFile,
+    closeOtherFiles,
+    closeAllFiles,
+    closeFilesToRight,
+    closeFilesToLeft,
     updateFileContent,
     markFileSaved,
     setVisibility,
@@ -182,9 +189,57 @@ export function FileViewer() {
     setGitContent,
   } = useFileViewerStore()
 
+  // Get active project to scope tabs
+  const { projects, activeProjectId } = useProjectStore()
+  const activeProject = activeProjectId ? projects.find((p) => p.id === activeProjectId) : null
+
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const activeFile = openFiles.find((f) => f.path === activeFilePath)
   const [showSearch, setShowSearch] = useState(false)
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    filePath: string
+  } | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+
+  // Filter files to only show tabs for the active project
+  const displayedFiles = useMemo(() => {
+    if (!activeProject) return openFiles
+    return openFiles.filter((f) => f.projectPath === activeProject.path)
+  }, [openFiles, activeProject])
+
+  // When switching projects, update the active file to one from that project (or null)
+  useEffect(() => {
+    if (!activeProject) return
+
+    // Check if current active file belongs to the new project
+    const activeFileInProject = activeFilePath
+      ? openFiles.some((f) => f.path === activeFilePath && f.projectPath === activeProject.path)
+      : false
+
+    if (!activeFileInProject) {
+      // Find the first file from this project, or null
+      const firstFileInProject = openFiles.find((f) => f.projectPath === activeProject.path)
+      setActiveFile(firstFileInProject?.path ?? null)
+    }
+  }, [activeProject?.path, openFiles, activeFilePath, setActiveFile])
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null)
+      }
+    }
+
+    if (contextMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [contextMenu])
 
   // Load git content when diff mode is enabled
   useEffect(() => {
@@ -270,13 +325,17 @@ export function FileViewer() {
       {/* Tab bar */}
       <div className="flex items-center bg-zinc-950 border-b border-zinc-800 overflow-x-auto">
         <div className="flex flex-1 min-w-0">
-          {openFiles.map((file) => (
+          {displayedFiles.map((file) => (
             <FileTab
               key={file.path}
               file={file}
               isActive={file.path === activeFilePath}
               onSelect={() => setActiveFile(file.path)}
               onClose={() => closeFile(file.path)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setContextMenu({ x: e.clientX, y: e.clientY, filePath: file.path })
+              }}
             />
           ))}
         </div>
@@ -397,6 +456,69 @@ export function FileViewer() {
         <div className="flex items-center justify-between px-3 py-1 bg-zinc-900 border-t border-zinc-800 text-[11px] text-zinc-500">
           <span className="truncate">{activeFile.path}</span>
           <span>{activeFile.language}</span>
+        </div>
+      )}
+
+      {/* Tab Context Menu */}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="fixed py-1 bg-[#2d2d2d] border border-gray-700 rounded shadow-lg z-[100] min-w-[160px]"
+          style={{
+            top: `${contextMenu.y}px`,
+            left: `${contextMenu.x}px`,
+          }}
+        >
+          <button
+            onClick={() => {
+              closeFile(contextMenu.filePath)
+              setContextMenu(null)
+            }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
+          >
+            <X className="w-3 h-3" />
+            Close
+          </button>
+          <button
+            onClick={() => {
+              closeOtherFiles(contextMenu.filePath)
+              setContextMenu(null)
+            }}
+            disabled={openFiles.length <= 1}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-zinc-300"
+          >
+            Close Others
+          </button>
+          <button
+            onClick={() => {
+              closeAllFiles()
+              setContextMenu(null)
+            }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left"
+          >
+            Close All
+          </button>
+          <div className="border-t border-zinc-700 my-1" />
+          <button
+            onClick={() => {
+              closeFilesToLeft(contextMenu.filePath)
+              setContextMenu(null)
+            }}
+            disabled={openFiles.findIndex((f) => f.path === contextMenu.filePath) === 0}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-zinc-300"
+          >
+            Close to the Left
+          </button>
+          <button
+            onClick={() => {
+              closeFilesToRight(contextMenu.filePath)
+              setContextMenu(null)
+            }}
+            disabled={openFiles.findIndex((f) => f.path === contextMenu.filePath) === openFiles.length - 1}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white text-left disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-zinc-300"
+          >
+            Close to the Right
+          </button>
         </div>
       )}
     </div>

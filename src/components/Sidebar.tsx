@@ -24,7 +24,7 @@ interface SidebarProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
-  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
 const MIN_WIDTH = 180

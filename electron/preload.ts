@@ -170,6 +170,14 @@ export interface AllCliToolsResult {
   error?: string
 }
 
+export interface UpdateCheckResult {
+  agentId: string
+  currentVersion: string | null
+  latestVersion: string | null
+  updateAvailable: boolean
+  error?: string
+}
+
 const electronAPI = {
   pty: {
     create: (options: PtyOptions): Promise<TerminalInfo> =>
@@ -222,8 +230,8 @@ const electronAPI = {
       ipcRenderer.invoke('dialog:open-directory'),
   },
   project: {
-    getScripts: (projectPath: string): Promise<ProjectScripts> =>
-      ipcRenderer.invoke('project:get-scripts', projectPath),
+    getScripts: (projectPath: string, projectId?: string): Promise<ProjectScripts> =>
+      ipcRenderer.invoke('project:get-scripts', projectPath, projectId),
   },
   git: {
     getInfo: (projectPath: string, projectId?: string): Promise<GitInfo> =>
@@ -361,6 +369,10 @@ const electronAPI = {
       ipcRenderer.invoke('cli:install', agentId, method),
     getPlatform: (): Promise<'windows' | 'wsl' | 'macos' | 'linux'> =>
       ipcRenderer.invoke('cli:get-platform'),
+    checkUpdate: (agentId: string, currentVersion: string | null): Promise<UpdateCheckResult> =>
+      ipcRenderer.invoke('cli:check-update', agentId, currentVersion),
+    checkUpdates: (agents: Array<{ id: string; version: string | null }>): Promise<UpdateCheckResult[]> =>
+      ipcRenderer.invoke('cli:check-updates', agents),
   },
   agent: {
     createTerminal: (options: {
@@ -376,6 +388,26 @@ const electronAPI = {
   app: {
     getVersion: (): Promise<string> =>
       ipcRenderer.invoke('app:get-version'),
+  },
+  service: {
+    discover: (projectPath: string, projectId: string): Promise<{ success: boolean; services: any[]; error?: string }> =>
+      ipcRenderer.invoke('service:discover', projectPath, projectId),
+    getStatus: (serviceId: string): Promise<{ success: boolean; status: string; error?: string }> =>
+      ipcRenderer.invoke('service:getStatus', serviceId),
+    start: (serviceId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('service:start', serviceId),
+    stop: (serviceId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('service:stop', serviceId),
+    restart: (serviceId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('service:restart', serviceId),
+    list: (projectId?: string): Promise<{ success: boolean; services: any[]; error?: string }> =>
+      ipcRenderer.invoke('service:list', projectId),
+  },
+  docker: {
+    isAvailable: (): Promise<{ success: boolean; available: boolean; error?: string }> =>
+      ipcRenderer.invoke('docker:isAvailable'),
+    getLogs: (serviceId: string, tail?: number): Promise<{ success: boolean; logs: string; error?: string }> =>
+      ipcRenderer.invoke('docker:getLogs', serviceId, tail),
   },
 }
 

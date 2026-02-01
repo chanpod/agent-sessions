@@ -81,21 +81,16 @@ export function registerGitHandlers(
 ) {
   // Get git repository information
   ipcMain.handle('git:get-info', async (_event, projectPath: string, projectId?: string) => {
-    console.log(`[git:get-info] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
       // Use execution context to check for .git directory
-      const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
-      console.log(`[git:get-info] Execution context: ${context}`)
+      await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
 
       try {
         const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
         if (!gitExists) {
-          console.log(`[git:get-info] .git directory does not exist`)
           return { isGitRepo: false }
         }
-        console.log(`[git:get-info] .git directory exists`)
       } catch (error) {
-        console.log(`[git:get-info] Error checking git directory:`, error)
         return { isGitRepo: false, error: error instanceof Error ? error.message : String(error) }
       }
 
@@ -155,21 +150,16 @@ export function registerGitHandlers(
 
   // List git branches (local and remote)
   ipcMain.handle('git:list-branches', async (_event, projectPath: string, projectId?: string) => {
-    console.log(`[git:list-branches] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
       // Use execution context to check for .git directory
-      const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
-      console.log(`[git:list-branches] Execution context: ${context}`)
+      await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
 
       try {
         const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
         if (!gitExists) {
-          console.log(`[git:list-branches] .git directory does not exist`)
           return { success: false, error: 'Not a git repository' }
         }
-        console.log(`[git:list-branches] .git directory exists`)
       } catch (error) {
-        console.log(`[git:list-branches] Error checking git directory:`, error)
         return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
 
@@ -209,7 +199,6 @@ export function registerGitHandlers(
 
   // Checkout a git branch
   ipcMain.handle('git:checkout', async (_event, projectPath: string, branch: string, projectId?: string) => {
-    console.log(`[git:checkout] Called with projectPath="${projectPath}", branch="${branch}", projectId="${projectId}"`)
     try {
       // Use execution context to check for .git directory
       try {
@@ -248,7 +237,6 @@ export function registerGitHandlers(
 
   // Fetch from remote
   ipcMain.handle('git:fetch', async (_event, projectPath: string, projectId?: string) => {
-    console.log(`[git:fetch] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
       // Use execution context to check for .git directory
       try {
@@ -272,51 +260,33 @@ export function registerGitHandlers(
 
   // Watch a project's git directory for changes (branch switches, commits, staging, file edits)
   ipcMain.handle('git:watch', async (_event, projectPath: string, projectId?: string) => {
-    console.log(`[git-watcher] ========================================`)
-    console.log(`[git-watcher] git:watch called`)
-    console.log(`[git-watcher]   projectPath: "${projectPath}"`)
-    console.log(`[git-watcher]   projectId: "${projectId}"`)
-
     // Handle projectId being passed as the string "undefined" instead of actual undefined
     const actualProjectId = projectId === 'undefined' ? undefined : projectId
-    console.log(`[git-watcher]   actualProjectId: "${actualProjectId}"`)
 
     // Use PathService.getExecutionContext() to determine how to handle this path
     const context = await PathService.getExecutionContext(projectPath, actualProjectId, sshManager || undefined)
-    console.log(`[git-watcher]   executionContext: "${context}"`)
 
     // For SSH remote paths, we cannot watch files in real-time (they're on a remote machine)
     // Return early with an informative message
     if (context === 'ssh-remote') {
-      console.log('[git-watcher] Skipping git watch for SSH project (not supported):', projectPath)
       return { success: false, error: 'Git watching is not supported for SSH projects. Use git:get-info to poll for changes.' }
     }
 
     // Check if this is a WSL path using PathService
-    const isWslPathCheck = PathService.isWslPath(projectPath)
     const pathAnalysis = PathService.analyzePath(projectPath)
-    console.log(`[git-watcher]   PathService.isWslPath(): ${isWslPathCheck}`)
-    console.log(`[git-watcher]   PathService.analyzePath():`, JSON.stringify(pathAnalysis, null, 2))
 
     // Don't double-watch
     if (gitWatchers.has(projectPath)) {
-      console.log(`[git-watcher]   Already watching this path, returning success`)
       return { success: true }
     }
 
     const fsPath = PathService.toFsPath(projectPath)
-    console.log(`[git-watcher]   fsPath (for fs operations): "${fsPath}"`)
     const gitDir = PathService.join(fsPath, '.git')
     const headPath = PathService.join(gitDir, 'HEAD')
     const indexPath = PathService.join(gitDir, 'index')
-    console.log(`[git-watcher]   gitDir: "${gitDir}"`)
-    console.log(`[git-watcher]   headPath: "${headPath}"`)
-    console.log(`[git-watcher]   indexPath: "${indexPath}"`)
 
     const gitDirExists = fs.existsSync(gitDir)
-    console.log(`[git-watcher]   fs.existsSync(gitDir): ${gitDirExists}`)
     if (!gitDirExists) {
-      console.log(`[git-watcher]   ERROR: .git directory does not exist`)
       return { success: false, error: 'Not a git repository' }
     }
 
@@ -328,18 +298,14 @@ export function registerGitHandlers(
 
       try {
         lastHeadContent = fs.readFileSync(headPath, 'utf-8').trim()
-        console.log(`[git-watcher]   Initial HEAD content: "${lastHeadContent}"`)
-      } catch (err) {
-        console.log(`[git-watcher]   Could not read HEAD file:`, err)
+      } catch {
         // HEAD might not exist yet
       }
 
       try {
         const indexStats = fs.statSync(indexPath)
         lastIndexMtime = indexStats.mtimeMs
-        console.log(`[git-watcher]   Initial index mtime: ${lastIndexMtime}`)
-      } catch (err) {
-        console.log(`[git-watcher]   Could not stat index file:`, err)
+      } catch {
         // index might not exist yet
       }
 
@@ -347,20 +313,14 @@ export function registerGitHandlers(
         const logsHeadPath = PathService.join(gitDir, 'logs', 'HEAD')
         const logsHeadStats = fs.statSync(logsHeadPath)
         lastLogsHeadMtime = logsHeadStats.mtimeMs
-        console.log(`[git-watcher]   Initial logs/HEAD mtime: ${lastLogsHeadMtime}`)
-      } catch (err) {
-        console.log(`[git-watcher]   Could not stat logs/HEAD file:`, err)
+      } catch {
         // logs/HEAD might not exist yet
       }
 
       // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
       // Use polling fallback instead with git status --porcelain to detect ALL changes
       const isWslPath = PathService.isWslPath(projectPath)
-      console.log(`[git-watcher]   Final isWslPath check: ${isWslPath}`)
       if (isWslPath) {
-        console.log(`[git-watcher] WSL path detected, using polling fallback with git status --porcelain`)
-        console.log(`[git-watcher]   Setting up polling for: "${projectPath}"`)
-
         // Get initial git status for comparison
         // For WSL paths, we need to run git through wsl.exe with the Linux path
         // because Windows CMD doesn't support UNC paths as cwd
@@ -368,14 +328,11 @@ export function registerGitHandlers(
         try {
           const linuxPath = pathAnalysis.linuxPath || PathService.toWslLinuxPath(projectPath)
           const distro = pathAnalysis.wslDistro || PathService.getEnvironment().defaultWslDistro || 'Ubuntu'
-          console.log(`[git-watcher]   Running git status via wsl.exe -d ${distro} in "${linuxPath}"`)
           const { stdout } = await execAsync(`wsl.exe -d ${distro} -e git -C "${linuxPath}" status --porcelain`, {
             timeout: 5000,
           })
           initialGitStatus = stdout
-          console.log(`[git-watcher]   Initial git status (${initialGitStatus.split('\n').filter(l => l).length} files changed)`)
-        } catch (err) {
-          console.log(`[git-watcher]   Error getting initial git status:`, err)
+        } catch {
           // Continue anyway, will compare against empty string
         }
 
@@ -391,18 +348,13 @@ export function registerGitHandlers(
           lastGitStatus: initialGitStatus,
         }
         gitWatchers.set(projectPath, watcherSet)
-        console.log(`[git-watcher]   Stored watcher in Map for: "${projectPath}"`)
-        console.log(`[git-watcher]   gitWatchers.has(projectPath): ${gitWatchers.has(projectPath)}`)
-        console.log(`[git-watcher]   gitWatchers.size: ${gitWatchers.size}`)
 
-        let pollCount = 0
         const GIT_WATCHER_DEBUG = false // Set to true to enable verbose git-watcher polling logs
         // Set up polling interval for WSL projects
         // Uses git status --porcelain to detect ALL changes (staged, unstaged, untracked)
         watcherSet.pollingInterval = setInterval(async () => {
-          pollCount++
           if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] ----------------------------------------`)
-          if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] Polling iteration #${pollCount} for: "${projectPath}"`)
+          if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] Polling for: "${projectPath}"`)
 
           try {
             // Get the current watcher from the Map (not from closure)
@@ -441,8 +393,8 @@ export function registerGitHandlers(
                 storedWatcher.lastGitStatus = currentStatus
                 hasChanged = true
               }
-            } catch (err) {
-              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   Error running git status:`, err)
+            } catch {
+              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   Error running git status`)
               // Ignore errors - repo might be in the middle of an operation
             }
 
@@ -461,22 +413,15 @@ export function registerGitHandlers(
           }
         }, 3000) // Poll every 3 seconds
 
-        console.log(`[git-watcher]   Polling interval started (every 3 seconds)`)
-        console.log(`[git-watcher]   pollingInterval id: ${watcherSet.pollingInterval}`)
-        console.log(`[git-watcher] ========================================`)
         return { success: true, isPolling: true }
       }
 
       // Non-WSL path: use fs.watch
-      console.log(`[git-watcher] Non-WSL path, using fs.watch`)
-      console.log(`[git-watcher]   Setting up fs.watch on: "${gitDir}"`)
 
       // Notify function with debouncing
       const notifyChange = () => {
-        console.log(`[git-watcher] notifyChange called for: "${projectPath}"`)
         const watcherSet = gitWatchers.get(projectPath)
         if (!watcherSet) {
-          console.log(`[git-watcher]   WARNING: No watcher found in notifyChange`)
           return
         }
 
@@ -498,7 +443,7 @@ export function registerGitHandlers(
                 watcherSet.lastHeadContent = currentHeadContent
                 hasChanged = true
               }
-            } catch (err) {
+            } catch {
               // Ignore errors reading HEAD
             }
 
@@ -509,7 +454,7 @@ export function registerGitHandlers(
                 watcherSet.lastIndexMtime = indexStats.mtimeMs
                 hasChanged = true
               }
-            } catch (err) {
+            } catch {
               // Ignore errors reading index
             }
 
@@ -521,7 +466,7 @@ export function registerGitHandlers(
                 watcherSet.lastLogsHeadMtime = logsHeadStats.mtimeMs
                 hasChanged = true
               }
-            } catch (err) {
+            } catch {
               // Ignore errors - logs/HEAD might not exist yet
             }
 
@@ -582,14 +527,8 @@ export function registerGitHandlers(
 
   // Stop watching a project's git directory
   ipcMain.handle('git:unwatch', async (_event, projectPath: string) => {
-    console.log(`[git-watcher] git:unwatch called for: "${projectPath}"`)
-    console.log(`[git-watcher]   gitWatchers.has(projectPath): ${gitWatchers.has(projectPath)}`)
     const watcherSet = gitWatchers.get(projectPath)
     if (watcherSet) {
-      console.log(`[git-watcher]   Found watcher, cleaning up...`)
-      console.log(`[git-watcher]   has watcher: ${!!watcherSet.watcher}`)
-      console.log(`[git-watcher]   has debounceTimer: ${!!watcherSet.debounceTimer}`)
-      console.log(`[git-watcher]   has pollingInterval: ${!!watcherSet.pollingInterval}`)
       if (watcherSet.watcher) {
         watcherSet.watcher.close()
       }
@@ -598,33 +537,24 @@ export function registerGitHandlers(
       }
       if (watcherSet.pollingInterval) {
         clearInterval(watcherSet.pollingInterval)
-        console.log('[git-watcher] Stopped polling for WSL project:', projectPath)
       }
       gitWatchers.delete(projectPath)
-      console.log(`[git-watcher]   Deleted watcher from Map`)
-    } else {
-      console.log(`[git-watcher]   No watcher found for this path`)
     }
     return { success: true }
   })
 
   // Get list of changed files with their status
   ipcMain.handle('git:get-changed-files', async (_event, projectPath: string, projectId?: string) => {
-    console.log(`[git:get-changed-files] Called with projectPath="${projectPath}", projectId="${projectId}"`)
     try {
       // Use execution context to check for .git directory
-      const context = await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
-      console.log(`[git:get-changed-files] Execution context: ${context}`)
+      await PathService.getExecutionContext(projectPath, projectId, sshManager || undefined)
 
       try {
         const gitExists = await checkGitDirExists(projectPath, projectId, sshManager, execInContextAsync)
         if (!gitExists) {
-          console.log(`[git:get-changed-files] .git directory does not exist`)
           return { success: false, error: 'Not a git repository' }
         }
-        console.log(`[git:get-changed-files] .git directory exists`)
       } catch (error) {
-        console.log(`[git:get-changed-files] Error checking git directory:`, error)
         return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
 
@@ -702,7 +632,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:get-file-content',
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
-      console.log(`[git:get-file-content] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
         // Use execution context to check for .git directory
         try {
@@ -735,7 +664,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:stage-file',
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
-      console.log(`[git:stage-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
         const normalizedFilePath = PathService.toGitPath(filePath)
         await execInContextAsync(`git add "${normalizedFilePath}"`, projectPath, projectId)
@@ -752,7 +680,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:unstage-file',
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
-      console.log(`[git:unstage-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
         const normalizedFilePath = PathService.toGitPath(filePath)
         await execInContextAsync(`git restore --staged "${normalizedFilePath}"`, projectPath, projectId)
@@ -769,7 +696,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:discard-file',
     async (_event, projectPath: string, filePath: string, projectId?: string) => {
-      console.log(`[git:discard-file] Called with projectPath="${projectPath}", filePath="${filePath}", projectId="${projectId}"`)
       try {
         const normalizedFilePath = PathService.toGitPath(filePath)
         // For untracked files, we need to remove them
@@ -822,7 +748,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:commit',
     async (_event, projectPath: string, message: string, projectId?: string) => {
-      console.log(`[git:commit] Called with projectPath="${projectPath}", projectId="${projectId}"`)
       try {
         const escapedMessage = message.replace(/"/g, '\\"')
         await execInContextAsync(`git commit -m "${escapedMessage}"`, projectPath, projectId)
@@ -839,7 +764,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:push',
     async (_event, projectPath: string, projectId?: string) => {
-      console.log(`[git:push] Called with projectPath="${projectPath}", projectId="${projectId}"`)
       try {
         await execInContextAsync(`git push`, projectPath, projectId)
         return { success: true }
@@ -855,7 +779,6 @@ export function registerGitHandlers(
   ipcMain.handle(
     'git:pull',
     async (_event, projectPath: string, projectId?: string) => {
-      console.log(`[git:pull] Called with projectPath="${projectPath}", projectId="${projectId}"`)
       try {
         await execInContextAsync(`git pull`, projectPath, projectId)
         return { success: true }

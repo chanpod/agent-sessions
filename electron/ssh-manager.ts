@@ -687,7 +687,10 @@ export class SSHManager extends EventEmitter {
 
     console.log(`[SSHManager] Executing command via project master ControlMaster`)
 
-    const { stdout } = await this.execSSH(args)
+    const { stdout, stderr } = await this.execSSH(args)
+    if (stderr) {
+      console.log(`[SSHManager] Remote stderr:`, stderr)
+    }
     connection.lastUsed = Date.now()
 
     return stdout

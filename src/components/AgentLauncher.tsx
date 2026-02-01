@@ -3,7 +3,7 @@
  */
 
 import { useState, useMemo } from 'react'
-import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck } from 'lucide-react'
+import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
 import { useGlobalRulesStore } from '../stores/global-rules-store'
@@ -14,7 +14,7 @@ interface AgentLauncherProps {
   projectPath: string
   installedAgents: CliToolDetectionResult[]
   preselectedAgentId?: string
-  onLaunch: (agentId: string, contextId: string | null, contextContent: string | null) => void
+  onLaunch: (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
   onClose: () => void
   onEditContext?: (contextId?: string) => void
 }
@@ -196,6 +196,7 @@ export function AgentLauncher({
     activeContext?.id ?? null
   )
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false)
+  const [skipPermissions, setSkipPermissions] = useState(false)
 
   // Get selected context object
   const selectedContext = useMemo(
@@ -214,8 +215,22 @@ export function AgentLauncher({
     onLaunch(
       selectedAgentId,
       selectedContextId,
-      selectedContext?.content ?? null
+      selectedContext?.content ?? null,
+      skipPermissions
     )
+  }
+
+  // Get the skip permissions label based on selected agent
+  const getSkipPermissionsLabel = () => {
+    switch (selectedAgentId) {
+      case 'claude':
+        return 'Skip permission prompts'
+      case 'gemini':
+      case 'codex':
+        return 'Auto-approve all (YOLO mode)'
+      default:
+        return 'Skip permission prompts'
+    }
   }
 
   const handleContextSelect = (contextId: string | null) => {
@@ -346,6 +361,52 @@ export function AgentLauncher({
                 <span className="text-blue-400">{enabledRulesCount}</span> global{' '}
                 {enabledRulesCount === 1 ? 'rule' : 'rules'} active
               </span>
+            </div>
+          )}
+
+          {/* Skip Permissions Checkbox */}
+          {selectedAgentId && (
+            <div className="px-2">
+              <label
+                className={cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors',
+                  'border',
+                  skipPermissions
+                    ? 'bg-amber-500/10 border-amber-500/50'
+                    : 'bg-zinc-800/30 border-zinc-700 hover:bg-zinc-800/50'
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={skipPermissions}
+                  onChange={(e) => setSkipPermissions(e.target.checked)}
+                  className="sr-only"
+                />
+                <div
+                  className={cn(
+                    'w-4 h-4 rounded border-2 flex items-center justify-center transition-colors',
+                    skipPermissions
+                      ? 'bg-amber-500 border-amber-500'
+                      : 'border-zinc-500'
+                  )}
+                >
+                  {skipPermissions && (
+                    <svg className="w-2.5 h-2.5 text-black" fill="currentColor" viewBox="0 0 12 12">
+                      <path d="M10.28 2.28L3.989 8.575 1.695 6.28A1 1 0 00.28 7.695l3 3a1 1 0 001.414 0l7-7A1 1 0 0010.28 2.28z" />
+                    </svg>
+                  )}
+                </div>
+                <AlertTriangle className={cn(
+                  'w-4 h-4',
+                  skipPermissions ? 'text-amber-400' : 'text-amber-500/70'
+                )} />
+                <span className={cn(
+                  'text-sm',
+                  skipPermissions ? 'text-amber-300' : 'text-zinc-400'
+                )}>
+                  {getSkipPermissionsLabel()}
+                </span>
+              </label>
             </div>
           )}
 

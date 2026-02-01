@@ -164,12 +164,36 @@ export interface CliToolDetectionResult {
   version?: string
   path?: string
   error?: string
+  installMethod?: 'npm' | 'native' | 'brew' | 'unknown'
 }
 
 export interface AllCliToolsResult {
   tools: CliToolDetectionResult[]
   success: boolean
   error?: string
+}
+
+export interface UpdateCheckResult {
+  agentId: string
+  currentVersion: string | null
+  latestVersion: string | null
+  updateAvailable: boolean
+  error?: string
+}
+
+// Service types for Docker Compose integration
+export type ServiceStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'error' | 'unknown'
+
+export interface ServiceInfo {
+  id: string
+  type: 'pty' | 'docker-compose'
+  name: string
+  projectId: string
+  status: ServiceStatus
+  composePath?: string
+  serviceName?: string
+  pid?: number
+  command?: string
 }
 
 export interface ElectronAPI {
@@ -250,6 +274,8 @@ export interface ElectronAPI {
     detect: (toolId: string, projectPath: string, projectId?: string) => Promise<CliToolDetectionResult>
     getPlatform: () => Promise<'windows' | 'wsl' | 'macos' | 'linux'>
     install: (agentId: string, method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>
+    checkUpdate: (agentId: string, currentVersion: string | null) => Promise<UpdateCheckResult>
+    checkUpdates: (agents: Array<{ id: string; version: string | null }>) => Promise<UpdateCheckResult[]>
   }
   agent: {
     createTerminal: (options: {
@@ -259,6 +285,18 @@ export interface ElectronAPI {
       cwd: string
     }) => Promise<{ success: boolean; terminal?: TerminalInfo; error?: string }>
     injectContext: (terminalId: string, context: string) => Promise<{ success: boolean; error?: string }>
+  }
+  service: {
+    discover: (projectPath: string, projectId: string) => Promise<{ success: boolean; services: ServiceInfo[]; error?: string }>
+    getStatus: (serviceId: string) => Promise<{ success: boolean; status: ServiceStatus; error?: string }>
+    start: (serviceId: string) => Promise<{ success: boolean; error?: string }>
+    stop: (serviceId: string) => Promise<{ success: boolean; error?: string }>
+    restart: (serviceId: string) => Promise<{ success: boolean; error?: string }>
+    list: (projectId?: string) => Promise<{ success: boolean; services: ServiceInfo[]; error?: string }>
+  }
+  docker: {
+    isAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>
+    getLogs: (serviceId: string, tail?: number) => Promise<{ success: boolean; logs: string; error?: string }>
   }
 }
 

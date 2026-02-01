@@ -7,6 +7,8 @@ import { useGitStore } from '../stores/git-store'
 import { TerminalsTab } from './TerminalsTab'
 import { ProjectConnectionScreen } from './ProjectConnectionScreen'
 import { PasswordDialog } from './PasswordDialog'
+import { DockerServicesSection } from './DockerServicesSection'
+import { useDockerDiscovery } from '../hooks/useDockerDiscovery'
 
 interface ShellInfo {
   name: string
@@ -23,7 +25,7 @@ interface ProjectContentProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
-  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
 export function ProjectContent({
@@ -48,6 +50,13 @@ export function ProjectContent({
   const [showPasswordDialog, setShowPasswordDialog] = useState(false)
   const [masterTerminalId, setMasterTerminalId] = useState<string | null>(null)
   const [sshConnectionName, setSSHConnectionName] = useState('')
+
+  // Auto-discover Docker Compose services (only for local projects)
+  useDockerDiscovery({
+    projectId: project.id,
+    projectPath: project.isSSHProject ? (project.remotePath || project.path) : project.path,
+    enabled: !project.isSSHProject, // Only for local projects
+  })
 
   // Check if SSH project is connected
   const isSSHProject = project.isSSHProject
@@ -232,6 +241,14 @@ export function ProjectContent({
           onDeleteServer={onDeleteServer}
           onCreateAgentTerminal={onCreateAgentTerminal}
         />
+
+        {/* Docker Compose Services - only for local projects */}
+        {!project.isSSHProject && (
+          <DockerServicesSection
+            projectId={project.id}
+            projectPath={project.path}
+          />
+        )}
       </div>
 
       {/* Password dialog for SSH password authentication */}

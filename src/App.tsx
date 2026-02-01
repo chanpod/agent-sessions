@@ -332,7 +332,8 @@ function App() {
     projectId: string,
     agentId: string,
     contextId: string | null,
-    contextContent: string | null
+    contextContent: string | null,
+    skipPermissions?: boolean
   ) => {
     const project = projects.find(p => p.id === projectId)
     if (!project || !window.electron) return
@@ -343,7 +344,8 @@ function App() {
       contextId,
       hasContext: !!contextContent,
       contextLength: contextContent?.length,
-      contextPreview: contextContent?.substring(0, 100)
+      contextPreview: contextContent?.substring(0, 100),
+      skipPermissions
     })
 
     try {
@@ -379,6 +381,19 @@ function App() {
           default:
             // Fallback: try --append-system-prompt
             initialCommand = `${agentId} --append-system-prompt "${escapedContext}"`
+        }
+      }
+
+      // Append skip permissions flag if enabled
+      if (skipPermissions) {
+        switch (agentId) {
+          case 'claude':
+            initialCommand += ' --dangerously-skip-permissions'
+            break
+          case 'gemini':
+          case 'codex':
+            initialCommand += ' --yolo'
+            break
         }
       }
 

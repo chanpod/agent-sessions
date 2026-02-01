@@ -22,7 +22,7 @@ interface AgentTerminalsSectionProps {
   projectPath: string
   onCloseTerminal: (id: string) => void
   onReconnectTerminal: (id: string) => void
-  onLaunchAgent: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
+  onLaunchAgent: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
 /**
@@ -104,8 +104,8 @@ export function AgentTerminalsSection({
   const installedAgents = agents.filter((a) => a.installed)
 
   // Handle launch from modal
-  const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null) => {
-    onLaunchAgent(projectId, agentId, contextId, contextContent)
+  const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => {
+    onLaunchAgent(projectId, agentId, contextId, contextContent, skipPermissions)
     setShowLauncher(false)
   }
 

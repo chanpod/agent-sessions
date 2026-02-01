@@ -14,7 +14,7 @@ import type { CliToolDetectionResult } from '../types/electron'
 interface AgentsSectionProps {
   projectPath: string
   projectId: string
-  onLaunchAgent?: (agentId: string, contextId: string | null, contextContent: string | null) => void
+  onLaunchAgent?: (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
 /**
@@ -162,9 +162,9 @@ export function AgentsSection({ projectPath, projectId, onLaunchAgent }: AgentsS
   }
 
   // Handle launch from modal
-  const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null) => {
-    console.log('[AgentsSection] Launching agent:', { agentId, contextId, contextContent: contextContent?.substring(0, 100) })
-    onLaunchAgent?.(agentId, contextId, contextContent)
+  const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => {
+    console.log('[AgentsSection] Launching agent:', { agentId, contextId, contextContent: contextContent?.substring(0, 100), skipPermissions })
+    onLaunchAgent?.(agentId, contextId, contextContent, skipPermissions)
     setShowLauncher(false)
   }
 

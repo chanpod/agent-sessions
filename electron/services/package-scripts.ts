@@ -145,14 +145,14 @@ function findPackageJsonFiles(dir, depth = 0) {
   const results = [];
 
   try {
-    if (fs.existsSync(PathService.join(dir, 'package.json'))) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) {
       results.push(dir);
     }
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
-        results.push(...findPackageJsonFiles(PathService.join(dir, entry.name), depth + 1));
+        results.push(...findPackageJsonFiles(path.join(dir, entry.name), depth + 1));
       }
     }
   } catch (err) {
@@ -163,9 +163,9 @@ function findPackageJsonFiles(dir, depth = 0) {
 }
 
 function detectPackageManager(dir) {
-  if (fs.existsSync(PathService.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (fs.existsSync(PathService.join(dir, 'yarn.lock'))) return 'yarn';
-  if (fs.existsSync(PathService.join(dir, 'bun.lockb'))) return 'bun';
+  if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
+  if (fs.existsSync(path.join(dir, 'bun.lockb'))) return 'bun';
   return 'npm';
 }
 

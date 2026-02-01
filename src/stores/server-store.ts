@@ -9,6 +9,8 @@ export interface SavedServerConfig {
   name: string // Display name (e.g., "dev", "build")
   command: string // Full command (e.g., "npm run dev")
   cwd: string
+  serviceId?: string // Optional link to ManagedService for unified stop/restart
+  serviceType?: 'pty' | 'docker-compose' // Type of service backing this server
 }
 
 // Full runtime server (includes terminal id, status)

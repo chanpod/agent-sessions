@@ -39,7 +39,7 @@ interface TerminalsTabProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
-  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
 export function TerminalsTab({
@@ -85,15 +85,26 @@ export function TerminalsTab({
 
   // Fetch package.json scripts
   const fetchScripts = async () => {
+    // For SSH projects, use remotePath; for local projects, use path
+    const effectivePath = isSSHProject ? project.remotePath : projectPath
+
     console.log('[TerminalsTab] fetchScripts called', {
       isSSHProject,
       connectionStatus: project.connectionStatus,
       projectPath,
+      remotePath: project.remotePath,
+      effectivePath,
       projectId
     })
 
     if (!window.electron) {
       console.log('[TerminalsTab] No electron API available')
+      return
+    }
+
+    // Skip if we don't have a valid path
+    if (!effectivePath) {
+      console.log('[TerminalsTab] No effective path available, skipping script fetch')
       return
     }
 
@@ -104,7 +115,7 @@ export function TerminalsTab({
     }
 
     console.log('[TerminalsTab] Calling electron.project.getScripts...')
-    const result = await window.electron!.project.getScripts(projectPath, projectId)
+    const result = await window.electron!.project.getScripts(effectivePath, projectId)
     console.log('[TerminalsTab] Got result:', result)
 
     if (result.hasPackageJson && result.packages) {
@@ -115,7 +126,7 @@ export function TerminalsTab({
 
   useEffect(() => {
     fetchScripts()
-  }, [projectPath, project.connectionStatus])
+  }, [projectPath, project.remotePath, project.connectionStatus, isSSHProject])
 
   const handleRescanScripts = async () => {
     console.log('[TerminalsTab] handleRescanScripts clicked')
