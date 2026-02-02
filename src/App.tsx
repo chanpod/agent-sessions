@@ -99,6 +99,21 @@ function App() {
     }
   }, [isElectron, loadGlobalRules])
 
+  // Listen for SSH project status changes (e.g., when connection is lost after sleep)
+  useEffect(() => {
+    if (!isElectron || !window.electron) return
+
+    const unsubscribe = window.electron.ssh.onProjectStatusChange((projectId, connected, error) => {
+      const { setProjectConnectionStatus } = useProjectStore.getState()
+      if (!connected) {
+        console.log(`[App] SSH project ${projectId} disconnected:`, error || 'Connection lost')
+        setProjectConnectionStatus(projectId, 'disconnected', error)
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [isElectron])
+
   // Helper function to categorize terminal output activity level
   // Returns: 'substantial' (green), 'minor' (yellow), or 'none' (no update)
   const getActivityLevel = (data: string): 'substantial' | 'minor' | 'none' => {

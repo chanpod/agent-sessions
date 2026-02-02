@@ -43,6 +43,11 @@ export class SSHManager extends EventEmitter {
   private controlDir: string
   private ptyManager?: any // Will be set by main.ts
 
+  // Health monitor properties
+  private healthCheckInterval: NodeJS.Timeout | null = null
+  private healthCheckRunning: boolean = false
+  private readonly healthCheckIntervalMs: number = 30000 // 30 seconds default
+
   constructor() {
     super()
     // Use Git Bash compatible path for SSH control sockets
@@ -56,6 +61,7 @@ export class SSHManager extends EventEmitter {
       this.controlDir = path.join(os.tmpdir(), 'agent-sessions-ssh')
     }
     this.ensureControlDir()
+    this.startHealthMonitor()
   }
 
   /**
@@ -63,6 +69,105 @@ export class SSHManager extends EventEmitter {
    */
   setPtyManager(ptyManager: any) {
     this.ptyManager = ptyManager
+  }
+
+  /**
+   * Start the background health monitor that periodically checks all SSH connections.
+   * Detects stale/dead connections (e.g., after computer sleep) and updates UI.
+   */
+  startHealthMonitor(): void {
+    if (this.healthCheckInterval) {
+      return // Already running
+    }
+
+    console.log(`[SSHManager] Starting health monitor (interval: ${this.healthCheckIntervalMs}ms)`)
+
+    this.healthCheckInterval = setInterval(async () => {
+      await this.runHealthCheck()
+    }, this.healthCheckIntervalMs)
+  }
+
+  /**
+   * Stop the background health monitor and clean up the interval.
+   */
+  stopHealthMonitor(): void {
+    if (this.healthCheckInterval) {
+      console.log('[SSHManager] Stopping health monitor')
+      clearInterval(this.healthCheckInterval)
+      this.healthCheckInterval = null
+    }
+  }
+
+  /**
+   * Run a single health check cycle on all active connections.
+   * Skips if a previous check is still running to prevent overlapping checks.
+   */
+  private async runHealthCheck(): Promise<void> {
+    // Prevent concurrent health checks
+    if (this.healthCheckRunning) {
+      return
+    }
+
+    this.healthCheckRunning = true
+
+    try {
+      // Check base SSH connections
+      for (const [connectionId, connection] of this.connections) {
+        // Skip connections already marked as disconnected
+        if (!connection.connected) {
+          continue
+        }
+
+        // Password auth connections don't have a real ControlMaster until interactive use
+        if (connection.config.authMethod === 'password') {
+          continue
+        }
+
+        try {
+          const status = await this.getStatus(connectionId)
+          if (!status.connected && connection.connected) {
+            // Connection was previously connected but is now dead
+            console.log(`[SSHManager] Health check: Connection "${connection.config.name}" (${connectionId}) is stale`)
+            connection.connected = false
+            connection.error = status.error || 'Connection lost'
+            this.emit('status-change', connectionId, false, connection.error)
+          }
+        } catch (error: any) {
+          // Check itself failed - treat as disconnected
+          console.log(`[SSHManager] Health check: Connection "${connection.config.name}" check failed: ${error.message}`)
+          connection.connected = false
+          connection.error = error.message
+          this.emit('status-change', connectionId, false, connection.error)
+        }
+      }
+
+      // Check project master connections
+      for (const [projectId, projectConnection] of this.projectMasterConnections) {
+        // Skip connections already marked as disconnected
+        if (!projectConnection.connected) {
+          continue
+        }
+
+        try {
+          const status = await this.getProjectMasterStatus(projectId)
+          if (!status.connected && projectConnection.connected) {
+            // Project master was previously connected but is now dead
+            console.log(`[SSHManager] Health check: Project master "${projectId}" is stale`)
+            // Note: getProjectMasterStatus already updates projectConnection.connected
+            // but we emit the event explicitly for the UI
+            this.emit('project-status-change', projectId, false, status.error || 'Connection lost')
+          }
+        } catch (error: any) {
+          // Check itself failed - treat as disconnected
+          console.log(`[SSHManager] Health check: Project master "${projectId}" check failed: ${error.message}`)
+          projectConnection.connected = false
+          projectConnection.error = error.message
+          this.emit('project-status-change', projectId, false, projectConnection.error)
+        }
+      }
+    } finally {
+      this.healthCheckRunning = false
+    }
   }
 
   /**
@@ -477,6 +582,10 @@ export class SSHManager extends EventEmitter {
    */
   async disposeAll() {
     console.log('[SSHManager] Disposing all connections...')
+
+    // Stop health monitoring first
+    this.stopHealthMonitor()
+
     const disconnectPromises = Array.from(this.connections.keys()).map(id => this.disconnect(id))
     await Promise.all(disconnectPromises)
     this.connections.clear()

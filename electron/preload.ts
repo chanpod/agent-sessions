@@ -303,6 +303,12 @@ const electronAPI = {
       ipcRenderer.on('ssh:status-change', handler)
       return () => ipcRenderer.removeListener('ssh:status-change', handler)
     },
+    onProjectStatusChange: (callback: (projectId: string, connected: boolean, error?: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, projectId: string, connected: boolean, error?: string) =>
+        callback(projectId, connected, error)
+      ipcRenderer.on('ssh:project-status-change', handler)
+      return () => ipcRenderer.removeListener('ssh:project-status-change', handler)
+    },
     // Project-level SSH connections (using ControlMaster)
     connectProject: (projectId: string, sshConnectionId: string): Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }> =>
       ipcRenderer.invoke('ssh:connect-project', projectId, sshConnectionId),

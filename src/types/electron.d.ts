@@ -256,6 +256,7 @@ export interface ElectronAPI {
     test: (config: SSHConnectionConfig) => Promise<SSHTestResult>
     getStatus: (connectionId: string) => Promise<{ connected: boolean; error?: string }>
     onStatusChange: (callback: (connectionId: string, connected: boolean, error?: string) => void) => () => void
+    onProjectStatusChange: (callback: (projectId: string, connected: boolean, error?: string) => void) => () => void
     // Project-level SSH connections (using ControlMaster)
     connectProject: (projectId: string, sshConnectionId: string) => Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }>
     disconnectProject: (projectId: string) => Promise<{ success: boolean; error?: string }>

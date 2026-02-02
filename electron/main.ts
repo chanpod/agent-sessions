@@ -499,6 +499,13 @@ async function createWindow() {
     }
   })
 
+  // Forward SSH project master status changes to renderer
+  sshManager.on('project-status-change', (projectId: string, connected: boolean, error?: string) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ssh:project-status-change', projectId, connected, error)
+    }
+  })
+
   // Register all git-related IPC handlers
   registerGitHandlers(mainWindow, sshManager, execInContextAsync)
 
