@@ -6,6 +6,7 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { PtyManager } from './pty-manager.js'
+import { AgentProcessManager } from './agent-process-manager.js'
 import { SSHManager, type SSHConnectionConfig } from './ssh-manager.js'
 import { ToolChainDB } from './database.js'
 import { BackgroundClaudeManager } from './background-claude-manager.js'
@@ -391,6 +392,7 @@ let mainWindow: BrowserWindow | null = null
 let ptyManager: PtyManager | null = null
 let sshManager: SSHManager | null = null
 let backgroundClaude: BackgroundClaudeManager | null = null
+let agentProcessManager: AgentProcessManager | null = null
 
 
 // Git watching for detecting branch and file changes
@@ -491,6 +493,10 @@ async function createWindow() {
   await backgroundClaude.initialize()
   console.log('[Main] BackgroundClaudeManager initialized')
 
+  // Initialize AgentProcessManager
+  agentProcessManager = new AgentProcessManager(mainWindow)
+  console.log('[Main] AgentProcessManager initialized')
+
 
   // Forward SSH status changes to renderer
   sshManager.on('status-change', (connectionId: string, connected: boolean, error?: string) => {
@@ -525,6 +531,8 @@ async function createWindow() {
     ptyManager = null
     sshManager?.disposeAll()
     sshManager = null
+    agentProcessManager?.dispose()
+    agentProcessManager = null
     // Clean up all git watchers
     cleanupGitWatchers()
   })
@@ -1084,6 +1092,30 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
   console.log(`[Agent] Injecting context into terminal ${terminalId} (${context.length} bytes)`)
 
   return ptyManager.injectContext(terminalId, context)
+})
+
+// Agent Process handlers
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string }) => {
+  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
+  const info = agentProcessManager.spawn(options)
+  return { success: true, process: info }
+})
+
+ipcMain.handle('agent:send-message', async (_event, id: string, message: { type: 'user_message', content: string }) => {
+  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
+  agentProcessManager.sendMessage(id, message)
+  return { success: true }
+})
+
+ipcMain.handle('agent:kill', async (_event, id: string) => {
+  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
+  agentProcessManager.kill(id)
+  return { success: true }
+})
+
+ipcMain.handle('agent:list', async () => {
+  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
+  return { success: true, processes: agentProcessManager.list() }
 })
 
 // App version IPC handler

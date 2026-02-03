@@ -1,18 +1,21 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
-import { GitBranch, RefreshCw, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown, Folder, Search } from 'lucide-react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
+import { GitBranch, RefreshCw, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown } from 'lucide-react'
+import { diffLines, type Change } from 'diff'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore, type GitInfo } from '../stores/git-store'
-import { useFileViewerStore } from '../stores/file-viewer-store'
-import { FileBrowser } from './FileBrowser'
-import { SearchTab } from './SearchTab'
 import { cn, normalizeFilePath } from '../lib/utils'
 import type { ChangedFile } from '../types/electron'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
+import { ScrollArea } from './ui/scroll-area'
+import { Separator } from './ui/separator'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet'
 
-const MIN_WIDTH = 200
-const MAX_WIDTH = 600
-const DEFAULT_WIDTH = 350
+interface ChangedFilesPanelProps {
+  isOpen: boolean
+  onClose: () => void
+}
 
-// Stable empty git info object to prevent infinite render loops
 const EMPTY_GIT_INFO: GitInfo = {
   branch: null,
   branches: [],
@@ -23,7 +26,6 @@ const EMPTY_GIT_INFO: GitInfo = {
   changedFiles: [],
 }
 
-// Helper function to get file status icon and color
 function getFileStatusIcon(status: ChangedFile['status']) {
   switch (status) {
     case 'modified':
@@ -39,17 +41,13 @@ function getFileStatusIcon(status: ChangedFile['status']) {
   }
 }
 
-export function ChangedFilesPanel() {
+export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
   const { activeProjectId, projects } = useProjectStore()
-  const { openFile, setShowDiff } = useFileViewerStore()
 
-  const [activeTab, setActiveTab] = useState<'files' | 'git' | 'search'>('git') // Default to git tab
-  const [width, setWidth] = useState(() => {
-    const saved = localStorage.getItem('changed-files-panel-width')
-    return saved ? parseInt(saved, 10) : DEFAULT_WIDTH
-  })
-  const [isResizing, setIsResizing] = useState(false)
-  const panelRef = useRef<HTMLElement>(null)
+  const [selectedFile, setSelectedFile] = useState<ChangedFile | null>(null)
+  const [diffParts, setDiffParts] = useState<Change[] | null>(null)
+  const [diffError, setDiffError] = useState<string | null>(null)
+  const [isDiffLoading, setIsDiffLoading] = useState(false)
 
   const [commitMessage, setCommitMessage] = useState('')
   const [isCommitting, setIsCommitting] = useState(false)
@@ -62,64 +60,37 @@ export function ChangedFilesPanel() {
   const activeProject = activeProjectId ? projects.find(p => p.id === activeProjectId) : null
   const projectPath = activeProject?.isSSHProject ? (activeProject.remotePath || activeProject.path) : activeProject?.path || ''
 
-  // Use selector to only subscribe to the active project's git info
-  // Use stable EMPTY_GIT_INFO to prevent infinite render loops
   const projectGitInfo = useGitStore((state) =>
     activeProjectId && state.gitInfo[activeProjectId]
       ? state.gitInfo[activeProjectId]
       : EMPTY_GIT_INFO
   )
 
-  // Resizing logic
-  const startResizing = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setIsResizing(true)
-  }, [])
+  const selectedFilePath = selectedFile?.path || null
+  const selectedFileLabel = selectedFilePath?.split('/').pop() || selectedFilePath?.split('\\').pop() || selectedFilePath
 
-  const stopResizing = useCallback(() => {
-    setIsResizing(false)
-  }, [])
+  const changedFiles = projectGitInfo.changedFiles
+  const stagedCount = changedFiles.filter((file) => file.staged).length
+  const unstagedCount = changedFiles.filter((file) => !file.staged).length
 
-  const resize = useCallback((e: MouseEvent) => {
-    if (isResizing && panelRef.current) {
-      const newWidth = panelRef.current.getBoundingClientRect().right - e.clientX
-      if (newWidth >= MIN_WIDTH && newWidth <= MAX_WIDTH) {
-        setWidth(newWidth)
-        localStorage.setItem('changed-files-panel-width', String(newWidth))
-      }
-    }
-  }, [isResizing])
-
-  useEffect(() => {
-    if (isResizing) {
-      window.addEventListener('mousemove', resize)
-      window.addEventListener('mouseup', stopResizing)
-    }
-    return () => {
-      window.removeEventListener('mousemove', resize)
-      window.removeEventListener('mouseup', stopResizing)
-    }
-  }, [isResizing, resize, stopResizing])
-
-  // Watch active project for git changes
   useEffect(() => {
     if (!activeProjectId || !projectPath) return
-
     const { watchProject } = useGitStore.getState()
-
-    // Start watching this project (idempotent - safe to call multiple times)
     watchProject(activeProjectId, projectPath)
-
-    // No cleanup - keep watching even when component unmounts or switches
-    // The ProjectHeader manages the overall watch lifecycle
   }, [activeProjectId, projectPath])
+
+  useEffect(() => {
+    setSelectedFile(null)
+    setDiffParts(null)
+    setDiffError(null)
+  }, [activeProjectId])
 
   const handleRefreshGitInfo = async () => {
     if (!activeProjectId || !projectPath || !window.electron) return
     const { refreshGitInfo } = useGitStore.getState()
     setIsRefreshing(true)
     try {
-      await window.electron.git.fetch(projectPath, activeProjectId)
+      await window.electron.git.fetch(projectPath, activeProjectId ?? undefined)
       await refreshGitInfo(activeProjectId, projectPath)
     } finally {
       setIsRefreshing(false)
@@ -130,7 +101,7 @@ export function ChangedFilesPanel() {
     if (!window.electron || !projectPath) return
     setIsPushing(true)
     try {
-      const result = await window.electron.git.push(projectPath, activeProjectId)
+      const result = await window.electron.git.push(projectPath, activeProjectId ?? undefined)
       if (result.success) {
         await handleRefreshGitInfo()
       }
@@ -143,7 +114,7 @@ export function ChangedFilesPanel() {
     if (!window.electron || !projectPath) return
     setIsPulling(true)
     try {
-      const result = await window.electron.git.pull(projectPath, activeProjectId)
+      const result = await window.electron.git.pull(projectPath, activeProjectId ?? undefined)
       if (result.success) {
         await handleRefreshGitInfo()
       }
@@ -152,28 +123,14 @@ export function ChangedFilesPanel() {
     }
   }
 
-  const handleOpenChangedFile = async (filePath: string) => {
-    if (!window.electron || !projectPath) return
-
-    const fullPath = normalizeFilePath(projectPath, filePath)
-    const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath
-
-    const result = await window.electron.fs.readFile(fullPath)
-
-    if (result.success && result.content !== undefined) {
-      openFile(fullPath, fileName, result.content, projectPath, activeProjectId)
-      setShowDiff(true)
-    }
-  }
-
-  const handleStageFile = async (filePath: string, e: React.MouseEvent) => {
+  const handleStageFile = async (filePath: string, e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
     if (!window.electron || !projectPath || !activeProjectId) return
     await window.electron.git.stageFile(projectPath, filePath)
     await handleRefreshGitInfo()
   }
 
-  const handleUnstageFile = async (filePath: string, e: React.MouseEvent) => {
+  const handleUnstageFile = async (filePath: string, e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
     if (!window.electron || !projectPath || !activeProjectId) return
     await window.electron.git.unstageFile(projectPath, filePath)
@@ -198,12 +155,12 @@ export function ChangedFilesPanel() {
     await handleRefreshGitInfo()
   }
 
-  const handleDiscardFile = async (filePath: string, e: React.MouseEvent) => {
+  const handleDiscardFile = async (filePath: string, e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
     setPendingDiscardFile(filePath)
   }
 
-  const confirmDiscardFile = async (filePath: string, e: React.MouseEvent) => {
+  const confirmDiscardFile = async (filePath: string, e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
     if (!window.electron || !projectPath || !activeProjectId) return
     await window.electron.git.discardFile(projectPath, filePath, activeProjectId)
@@ -211,7 +168,7 @@ export function ChangedFilesPanel() {
     await handleRefreshGitInfo()
   }
 
-  const cancelDiscardFile = (e: React.MouseEvent) => {
+  const cancelDiscardFile = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
     setPendingDiscardFile(null)
   }
@@ -249,331 +206,330 @@ export function ChangedFilesPanel() {
     }
   }
 
-  // Group files by staged/unstaged
-  const stagedFiles = projectGitInfo.changedFiles.filter(f => f.staged)
-  const unstagedFiles = projectGitInfo.changedFiles.filter(f => !f.staged)
+  const loadDiffForFile = useCallback(async (file: ChangedFile) => {
+    if (!window.electron || !projectPath || !activeProjectId) return
 
-  // File rendering component
-  const FileItem = ({ file, isStaged }: { file: ChangedFile; isStaged: boolean }) => {
-    const { Icon, color } = getFileStatusIcon(file.status)
-    const isDeleted = file.status === 'deleted'
-    const isPendingDiscard = pendingDiscardFile === file.path
+    setIsDiffLoading(true)
+    setDiffError(null)
+
+    try {
+      const fullPath = normalizeFilePath(projectPath, file.path)
+      const [workingResult, gitResult] = await Promise.all([
+        window.electron.fs.readFile(fullPath),
+        window.electron.git.getFileContent(projectPath, file.path, activeProjectId),
+      ])
+
+      const workingContent = workingResult.success && workingResult.content ? workingResult.content : ''
+      const gitContent = gitResult.success && gitResult.content ? gitResult.content : ''
+
+      const parts = diffLines(gitContent, workingContent)
+      setDiffParts(parts)
+    } catch (error) {
+      setDiffError(String(error))
+      setDiffParts(null)
+    } finally {
+      setIsDiffLoading(false)
+    }
+  }, [activeProjectId, projectPath])
+
+  const handleSelectFile = (file: ChangedFile) => {
+    setSelectedFile(file)
+    loadDiffForFile(file)
+  }
+
+  const renderDiff = useMemo(() => {
+    if (!selectedFile) {
+      return (
+        <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
+          Select a file to view diff
+        </div>
+      )
+    }
+
+    if (isDiffLoading) {
+      return (
+        <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
+          Loading diff...
+        </div>
+      )
+    }
+
+    if (diffError) {
+      return (
+        <div className="flex-1 flex items-center justify-center text-xs text-red-400">
+          {diffError}
+        </div>
+      )
+    }
+
+    if (!diffParts) {
+      return (
+        <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
+          Diff unavailable
+        </div>
+      )
+    }
 
     return (
-      <div className="flex items-center gap-1 py-1 text-xs group">
-        <button
-          onClick={() => !isDeleted && handleOpenChangedFile(file.path)}
-          className={cn(
-            'flex items-center gap-2 flex-1 min-w-0 text-left',
-            isDeleted ? 'text-zinc-500' : 'text-zinc-300 hover:text-white'
-          )}
-          disabled={isDeleted}
-        >
-          <Icon className={cn('w-3 h-3 flex-shrink-0', color)} />
-          <span className={cn('truncate', isDeleted && 'line-through')} title={file.path}>
-            {file.path}
-          </span>
-        </button>
-        <div className="flex items-center gap-0.5">
-          {isStaged ? (
-            <button
-              onClick={(e) => handleUnstageFile(file.path, e)}
-              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-yellow-400"
-              title="Unstage"
-            >
-              <Minus className="w-3 h-3" />
-            </button>
-          ) : isPendingDiscard ? (
-            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-              <span className="text-[10px] text-red-400">Discard?</span>
-              <button
-                onClick={(e) => confirmDiscardFile(file.path, e)}
-                className="px-1.5 py-0.5 text-[10px] bg-red-600 hover:bg-red-700 text-white rounded"
+      <div className="flex-1 overflow-auto font-mono text-xs leading-5">
+        {diffParts.map((part, partIndex) => {
+          const lines = part.value.split('\n')
+          return lines.map((line: string, lineIndex: number) => {
+            if (lineIndex === lines.length - 1 && line === '') return null
+            const prefix = part.added ? '+' : part.removed ? '-' : ' '
+            return (
+              <div
+                key={`${partIndex}-${lineIndex}`}
+                className={cn(
+                  'px-3 py-0.5 whitespace-pre-wrap break-words',
+                  part.added && 'bg-emerald-500/10 text-emerald-200',
+                  part.removed && 'bg-rose-500/10 text-rose-200',
+                  !part.added && !part.removed && 'text-zinc-400'
+                )}
               >
-                Yes
-              </button>
-              <button
-                onClick={cancelDiscardFile}
-                className="px-1.5 py-0.5 text-[10px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
-              >
-                No
-              </button>
-            </div>
-          ) : (
-            <>
-              <button
-                onClick={(e) => handleDiscardFile(file.path, e)}
-                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-red-400"
-                title="Discard changes"
-              >
-                <Undo2 className="w-3 h-3" />
-              </button>
-              <button
-                onClick={(e) => handleStageFile(file.path, e)}
-                className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-green-400"
-                title="Stage"
-              >
-                <Plus className="w-3 h-3" />
-              </button>
-            </>
-          )}
-        </div>
+                <span className="select-none pr-2 text-zinc-500">{prefix}</span>
+                {line}
+              </div>
+            )
+          })
+        })}
       </div>
     )
-  }
-
-  // Don't show panel if no project selected
-  if (!activeProject) {
-    return null
-  }
+  }, [selectedFile, isDiffLoading, diffError, diffParts])
 
   return (
-    <aside
-      ref={panelRef}
-      style={{ width }}
-      className={`flex-shrink-0 bg-zinc-900/50 border-l border-zinc-800 flex flex-col relative z-20 ${isResizing ? 'select-none' : ''}`}
-    >
-      {/* Resize Handle */}
-      <div
-        onMouseDown={startResizing}
-        className={`absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors ${isResizing ? 'bg-blue-500' : ''}`}
-      />
-
-      {/* Tabs */}
-      <div className="flex items-center border-b border-zinc-800">
-        <button
-          onClick={() => setActiveTab('files')}
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors relative',
-            activeTab === 'files'
-              ? 'text-blue-400 border-b-2 border-blue-400 -mb-[1px]'
-              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
-          )}
-        >
-          <Folder className="w-3.5 h-3.5" />
-          <span>Files</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('git')}
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors relative',
-            activeTab === 'git'
-              ? 'text-blue-400 border-b-2 border-blue-400 -mb-[1px]'
-              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
-          )}
-        >
-          <GitBranch className="w-3.5 h-3.5" />
-          <span>Git</span>
-          {projectGitInfo.changedFiles.length > 0 && (
-            <span
-              className={cn(
-                'px-1.5 py-0.5 text-[10px] font-semibold rounded-full',
-                activeTab === 'git'
-                  ? 'bg-blue-500/20 text-blue-300'
-                  : 'bg-gray-700/50 text-gray-400'
+    <Sheet open={isOpen} onOpenChange={(open: boolean) => { if (!open) onClose() }}>
+      <SheetContent side="right" className="w-[520px] p-0">
+        <div className="h-full bg-zinc-950 border-l border-zinc-800 flex flex-col">
+          <SheetHeader className="px-4 py-3">
+            <div className="flex items-center justify-between">
+              <SheetTitle className="flex items-center gap-2 text-sm">
+                <GitBranch className="w-4 h-4 text-zinc-400" />
+                Git Changes
+              </SheetTitle>
+              {projectGitInfo.branch && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {projectGitInfo.branch}
+                </Badge>
               )}
-            >
-              {projectGitInfo.changedFiles.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('search')}
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors relative',
-            activeTab === 'search'
-              ? 'text-blue-400 border-b-2 border-blue-400 -mb-[1px]'
-              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-800/30'
-          )}
-        >
-          <Search className="w-3.5 h-3.5" />
-          <span>Search</span>
-        </button>
-      </div>
+            </div>
+          </SheetHeader>
+          <Separator />
 
-      {/* Git Tab Header - only show when git tab is active */}
-      {activeTab === 'git' && projectGitInfo.isGitRepo && (
-        <div className="p-3 border-b border-zinc-800">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold text-zinc-300">Changed Files</h2>
-            <div className="flex items-center gap-1">
-            <button
-              onClick={handleRefreshGitInfo}
-              disabled={isRefreshing || isPushing || isPulling}
-              className="p-1 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white disabled:opacity-50"
-              title="Refresh"
-            >
-              <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
-            </button>
-            <button
-              onClick={handlePull}
-              disabled={isPulling || isRefreshing}
-              className="relative p-1 rounded hover:bg-zinc-700 text-zinc-400 hover:text-blue-400 disabled:opacity-50"
-              title={`Pull${projectGitInfo.behind > 0 ? ` (${projectGitInfo.behind} behind)` : ''}`}
-            >
-              <ArrowDown className="w-3.5 h-3.5" />
-              {projectGitInfo.behind > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[12px] h-[12px] px-0.5 text-[8px] font-medium bg-blue-500 text-white rounded-full">
-                  {projectGitInfo.behind}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={handlePush}
-              disabled={isPushing || isRefreshing}
-              className="relative p-1 rounded hover:bg-zinc-700 text-zinc-400 hover:text-green-400 disabled:opacity-50"
-              title={`Push${projectGitInfo.ahead > 0 ? ` (${projectGitInfo.ahead} ahead)` : ''}`}
-            >
-              <ArrowUp className="w-3.5 h-3.5" />
-              {projectGitInfo.ahead > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[12px] h-[12px] px-0.5 text-[8px] font-medium bg-green-500 text-white rounded-full">
-                  {projectGitInfo.ahead}
-                </span>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Branch info */}
-        {projectGitInfo.branch && (
-          <div className={cn(
-            'flex items-center gap-2 text-xs px-2 py-1.5 rounded',
-            projectGitInfo.hasChanges
-              ? 'bg-amber-500/20 text-amber-400'
-              : 'bg-zinc-700/50 text-zinc-400'
-          )}>
-            <GitBranch className="w-3.5 h-3.5" />
-            <span>{projectGitInfo.branch}</span>
-            {projectGitInfo.hasChanges && <span className="text-amber-400">*</span>}
-          </div>
-        )}
-        </div>
-      )}
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-3">
-        {activeTab === 'files' && (
-          <FileBrowser projectId={activeProject.id} rootPath={projectPath} maxDepth={4} />
-        )}
-
-        {activeTab === 'search' && (
-          <SearchTab projectId={activeProject.id} projectPath={projectPath} />
-        )}
-
-        {activeTab === 'git' && !projectGitInfo.isGitRepo && (
-          <p className="text-xs text-zinc-600 text-center py-4">Not a git repository</p>
-        )}
-
-        {activeTab === 'git' && projectGitInfo.isGitRepo && (projectGitInfo.changedFiles.length === 0 ? (
-          <p className="text-xs text-zinc-600 text-center py-4">No changes</p>
-        ) : (
-          <>
-            {/* Staged Changes */}
-            {stagedFiles.length > 0 && (
-              <div className="mb-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                    Staged ({stagedFiles.length})
-                  </span>
-                  <button
-                    onClick={handleUnstageAll}
-                    className="text-[10px] text-zinc-500 hover:text-zinc-300 uppercase"
-                  >
-                    Unstage All
-                  </button>
+          {!projectGitInfo.isGitRepo ? (
+            <div className="flex-1 flex items-center justify-center text-sm text-zinc-500">
+              Not a git repository
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 flex">
+              <div className="w-[220px] border-r border-zinc-800 flex flex-col min-h-0">
+                <div className="px-3 py-3">
+                  <div className="flex items-center justify-between text-xs text-zinc-500">
+                    <span>{changedFiles.length} files</span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleRefreshGitInfo}
+                      title="Refresh"
+                    >
+                      <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
+                    </Button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleStageAll}
+                      disabled={unstagedCount === 0}
+                      className="flex-1 text-[10px]"
+                    >
+                      Stage All
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleUnstageAll}
+                      disabled={stagedCount === 0}
+                      className="flex-1 text-[10px]"
+                    >
+                      Unstage All
+                    </Button>
+                  </div>
                 </div>
-                <div className="space-y-0.5">
-                  {stagedFiles.map(file => (
-                    <FileItem key={`staged-${file.path}`} file={file} isStaged={true} />
-                  ))}
-                </div>
-              </div>
-            )}
 
-            {/* Unstaged Changes */}
-            {unstagedFiles.length > 0 && (
-              <div className="mb-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                    Changes ({unstagedFiles.length})
-                  </span>
-                  {pendingDiscardAll ? (
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-red-400">Discard All?</span>
-                      <button
-                        onClick={confirmDiscardAll}
-                        className="px-1.5 py-0.5 text-[10px] bg-red-600 hover:bg-red-700 text-white rounded"
-                      >
-                        Yes
-                      </button>
-                      <button
-                        onClick={cancelDiscardAll}
-                        className="px-1.5 py-0.5 text-[10px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded"
-                      >
-                        No
-                      </button>
-                    </div>
+                <Separator />
+
+                <ScrollArea className="flex-1">
+                  {changedFiles.length === 0 ? (
+                    <div className="text-xs text-zinc-600 px-3 py-4">Working tree clean</div>
                   ) : (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleDiscardAll}
-                        className="text-[10px] text-zinc-500 hover:text-red-400 uppercase"
+                    <ul className="py-2">
+                      {changedFiles.map((file) => {
+                        const { Icon, color } = getFileStatusIcon(file.status)
+                        const isSelected = file.path === selectedFilePath
+                        return (
+                          <li key={`${file.path}-${file.staged ? 'staged' : 'unstaged'}`}>
+                            <button
+                              onClick={() => handleSelectFile(file)}
+                              className={cn(
+                                'w-full flex items-center gap-2 px-3 py-2 text-xs text-left',
+                                isSelected
+                                  ? 'bg-zinc-800 text-zinc-100'
+                                  : 'text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-200'
+                              )}
+                            >
+                              <Icon className={cn('w-3.5 h-3.5', color)} />
+                              <span className="truncate flex-1">{file.path}</span>
+                              {file.staged && (
+                                <Badge variant="secondary" className="text-[9px]">
+                                  staged
+                                </Badge>
+                              )}
+                            </button>
+                            <div className="px-3 pb-2 flex items-center gap-1">
+                              {!file.staged ? (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={(e) => handleStageFile(file.path, e)}
+                                  className="h-6 w-6 text-emerald-400"
+                                  title="Stage"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={(e) => handleUnstageFile(file.path, e)}
+                                  className="h-6 w-6 text-amber-400"
+                                  title="Unstage"
+                                >
+                                  <Minus className="w-3 h-3" />
+                                </Button>
+                              )}
+                              {pendingDiscardFile === file.path ? (
+                                <div className="flex items-center gap-1 text-[10px]">
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    onClick={(e) => confirmDiscardFile(file.path, e)}
+                                    className="h-6 px-2"
+                                  >
+                                    Confirm
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={cancelDiscardFile}
+                                    className="h-6 px-2"
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={(e) => handleDiscardFile(file.path, e)}
+                                  className="h-6 w-6 text-red-400"
+                                  title="Discard"
+                                >
+                                  <Undo2 className="w-3 h-3" />
+                                </Button>
+                              )}
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </ScrollArea>
+
+                <Separator />
+
+                <div className="p-3 space-y-2">
+                  <textarea
+                    value={commitMessage}
+                    onChange={(e) => setCommitMessage(e.target.value)}
+                    placeholder="Commit message"
+                    className="w-full min-h-[72px] rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600"
+                  />
+                  <Button
+                    onClick={handleCommit}
+                    disabled={!commitMessage.trim() || isCommitting}
+                    className="w-full text-xs"
+                  >
+                    {isCommitting ? 'Committing...' : 'Commit'}
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handlePull}
+                      disabled={isPulling}
+                      className="flex-1 text-xs"
+                    >
+                      <ArrowDown className="w-3 h-3" />
+                      {isPulling ? 'Pulling...' : 'Pull'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handlePush}
+                      disabled={isPushing}
+                      className="flex-1 text-xs"
+                    >
+                      <ArrowUp className="w-3 h-3" />
+                      {isPushing ? 'Pushing...' : 'Push'}
+                    </Button>
+                  </div>
+                  {unstagedCount > 0 && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleDiscardAll}
+                      className="w-full text-xs"
+                    >
+                      <Undo2 className="w-3 h-3" />
+                      Discard All
+                    </Button>
+                  )}
+                  {pendingDiscardAll && (
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={confirmDiscardAll}
+                        className="flex-1"
                       >
-                        Discard All
-                      </button>
-                      <button
-                        onClick={handleStageAll}
-                        className="text-[10px] text-zinc-500 hover:text-zinc-300 uppercase"
+                        Confirm
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={cancelDiscardAll}
+                        className="flex-1"
                       >
-                        Stage All
-                      </button>
+                        Cancel
+                      </Button>
                     </div>
                   )}
                 </div>
-                <div className="space-y-0.5">
-                  {unstagedFiles.map(file => (
-                    <FileItem key={`unstaged-${file.path}`} file={file} isStaged={false} />
-                  ))}
-                </div>
               </div>
-            )}
 
-            {/* Commit UI */}
-            {stagedFiles.length > 0 && (
-              <div className="mt-3">
-                <div className="text-[10px] text-zinc-500 uppercase mb-2">
-                  Commit Message
+              <div className="flex-1 min-w-0 flex flex-col">
+                <div className="border-b border-zinc-800 px-4 py-2 text-xs text-zinc-500">
+                  {selectedFileLabel || 'Diff'}
                 </div>
-                <textarea
-                  value={commitMessage}
-                  onChange={(e) => setCommitMessage(e.target.value)}
-                  placeholder="Enter commit message..."
-                  className="w-full px-2 py-1.5 text-xs bg-zinc-900 border border-zinc-700 rounded text-zinc-200 placeholder-zinc-600 resize-none"
-                  rows={3}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                      e.preventDefault()
-                      handleCommit()
-                    }
-                  }}
-                />
-                <div className="flex items-center justify-between mt-2">
-                  <span className="text-[10px] text-zinc-600">
-                    {stagedFiles.length} file(s) staged
-                  </span>
-                  <button
-                    onClick={handleCommit}
-                    disabled={!commitMessage.trim() || isCommitting}
-                    className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded transition-colors"
-                  >
-                    {isCommitting ? 'Committing...' : 'Commit'}
-                  </button>
-                </div>
+                <ScrollArea className="flex-1">
+                  {renderDiff}
+                </ScrollArea>
               </div>
-            )}
-          </>
-        ))}
-      </div>
-    </aside>
+            </div>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }

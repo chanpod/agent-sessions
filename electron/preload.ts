@@ -390,6 +390,30 @@ const electronAPI = {
       ipcRenderer.invoke('agent:create-terminal', options),
     injectContext: (terminalId: string, context: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('agent:inject-context', terminalId, context),
+    // Agent process API
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string }) =>
+      ipcRenderer.invoke('agent:spawn', options),
+    sendMessage: (id: string, message: { type: string; content: string }) =>
+      ipcRenderer.invoke('agent:send-message', id, message),
+    kill: (id: string) =>
+      ipcRenderer.invoke('agent:kill', id),
+    list: () =>
+      ipcRenderer.invoke('agent:list'),
+    onStreamEvent: (callback: (id: string, event: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: string, data: unknown) => callback(id, data)
+      ipcRenderer.on('agent:stream-event', handler)
+      return () => ipcRenderer.removeListener('agent:stream-event', handler)
+    },
+    onProcessExit: (callback: (id: string, code: number | null) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: string, code: number | null) => callback(id, code)
+      ipcRenderer.on('agent:process-exit', handler)
+      return () => ipcRenderer.removeListener('agent:process-exit', handler)
+    },
+    onError: (callback: (id: string, error: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: string, error: string) => callback(id, error)
+      ipcRenderer.on('agent:error', handler)
+      return () => ipcRenderer.removeListener('agent:error', handler)
+    },
   },
   app: {
     getVersion: (): Promise<string> =>

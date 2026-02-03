@@ -18,6 +18,7 @@ export interface SavedTerminalConfig {
 }
 
 export type ActivityLevel = 'substantial' | 'minor' | 'idle'
+export type TerminalDisplayMode = 'raw' | 'pretty'
 
 // Full runtime session (includes pid, status, etc.)
 export interface TerminalSession extends SavedTerminalConfig {
@@ -32,6 +33,7 @@ export interface TerminalSession extends SavedTerminalConfig {
   lastSubstantialActivityTime: number // Last time we had substantial (green) activity
   // Agent terminal runtime state
   contextInjected?: boolean            // Was context successfully sent
+  isAgentProcess?: boolean             // True if using AgentProcessManager (JSON streaming) vs PTY
 }
 
 interface TerminalStore {
@@ -44,6 +46,9 @@ interface TerminalStore {
 
   // Flag to track if we've restored sessions
   hasRestored: boolean
+
+  // Display mode preferences (runtime only, not persisted)
+  terminalDisplayModes: Map<string, TerminalDisplayMode>
 
   // Actions for saved configs
   saveConfig: (config: SavedTerminalConfig) => void
@@ -65,6 +70,11 @@ interface TerminalStore {
   // Selectors
   getSessionsByProject: (projectId: string) => TerminalSession[]
   getGlobalSessions: () => TerminalSession[]
+
+  // Display mode actions (runtime only, not persisted)
+  setTerminalDisplayMode: (sessionId: string, mode: TerminalDisplayMode) => void
+  getTerminalDisplayMode: (sessionId: string) => TerminalDisplayMode
+  toggleTerminalDisplayMode: (sessionId: string) => void
 }
 
 export const useTerminalStore = create<TerminalStore>()(
@@ -74,6 +84,7 @@ export const useTerminalStore = create<TerminalStore>()(
       sessions: [],
       activeSessionId: null,
       hasRestored: false,
+      terminalDisplayModes: new Map(),
 
       // Saved config actions
       saveConfig: (config) =>
@@ -225,6 +236,26 @@ export const useTerminalStore = create<TerminalStore>()(
 
       getGlobalSessions: () =>
         get().sessions.filter((s) => s.projectId === '' && s.shell !== ''),
+
+      // Display mode actions
+      setTerminalDisplayMode: (sessionId, mode) =>
+        set((state) => {
+          const newModes = new Map(state.terminalDisplayModes)
+          newModes.set(sessionId, mode)
+          return { terminalDisplayModes: newModes }
+        }),
+
+      getTerminalDisplayMode: (sessionId) =>
+        get().terminalDisplayModes.get(sessionId) ?? 'raw',
+
+      toggleTerminalDisplayMode: (sessionId) =>
+        set((state) => {
+          const currentMode = state.terminalDisplayModes.get(sessionId) ?? 'raw'
+          const newMode: TerminalDisplayMode = currentMode === 'raw' ? 'pretty' : 'raw'
+          const newModes = new Map(state.terminalDisplayModes)
+          newModes.set(sessionId, newMode)
+          return { terminalDisplayModes: newModes }
+        }),
     }),
     {
       name: 'toolchain-terminals',

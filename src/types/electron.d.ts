@@ -181,6 +181,13 @@ export interface UpdateCheckResult {
   error?: string
 }
 
+export interface AgentProcessInfo {
+  id: string
+  agentType: 'claude' | 'codex' | 'gemini'
+  cwd: string
+  isAlive: boolean
+}
+
 // Service types for Docker Compose integration
 export type ServiceStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'error' | 'unknown'
 
@@ -215,6 +222,9 @@ export interface ElectronAPI {
     getShells: (projectPath?: string) => Promise<ShellInfo[]>
     getInfo: () => Promise<SystemInfo>
     openInEditor: (projectPath: string) => Promise<{ success: boolean; editor?: string; error?: string }>
+  }
+  app: {
+    getVersion: () => Promise<string>
   }
   dialog: {
     openDirectory: () => Promise<string | null>
@@ -279,6 +289,7 @@ export interface ElectronAPI {
     checkUpdates: (agents: Array<{ id: string; version: string | null }>) => Promise<UpdateCheckResult[]>
   }
   agent: {
+    // Existing terminal-based methods
     createTerminal: (options: {
       projectId: string
       agentId: string  // 'claude' | 'gemini' | 'codex'
@@ -286,6 +297,17 @@ export interface ElectronAPI {
       cwd: string
     }) => Promise<{ success: boolean; terminal?: TerminalInfo; error?: string }>
     injectContext: (terminalId: string, context: string) => Promise<{ success: boolean; error?: string }>
+
+    // Agent process methods (JSON streaming)
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string }) => Promise<{ success: boolean; process?: AgentProcessInfo; error?: string }>
+    sendMessage: (id: string, message: { type: 'user_message'; content: string }) => Promise<{ success: boolean; error?: string }>
+    kill: (id: string) => Promise<{ success: boolean; error?: string }>
+    list: () => Promise<{ success: boolean; processes?: AgentProcessInfo[]; error?: string }>
+
+    // Event subscriptions
+    onStreamEvent: (callback: (id: string, event: unknown) => void) => () => void
+    onProcessExit: (callback: (id: string, code: number | null) => void) => () => void
+    onError: (callback: (id: string, error: string) => void) => () => void
   }
   service: {
     discover: (projectPath: string, projectId: string) => Promise<{ success: boolean; services: ServiceInfo[]; error?: string }>

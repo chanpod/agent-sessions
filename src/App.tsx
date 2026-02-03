@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import {
   DndContext,
   DragOverlay,
@@ -9,15 +9,13 @@ import {
   useSensors,
   PointerSensor,
 } from '@dnd-kit/core'
-import { Terminal as TerminalIcon } from 'lucide-react'
+import { Terminal as TerminalIcon, ChevronUp } from 'lucide-react'
 import { TitleBar } from './components/TitleBar'
 import { ProjectHeader } from './components/ProjectHeader'
-import { ProjectSubHeader } from './components/ProjectSubHeader'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
 import { ChangedFilesPanel } from './components/ChangedFilesPanel'
 import { UpdateNotification } from './components/UpdateNotification'
-import { FileSearchModal } from './components/FileSearchModal'
 import { ToastContainer } from './components/ToastContainer'
 import { NewProjectModal } from './components/NewProjectModal'
 import { EditProjectModal } from './components/EditProjectModal'
@@ -27,10 +25,141 @@ import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
 import { useViewStore } from './stores/view-store'
 import { useSSHStore } from './stores/ssh-store'
-import { useFileSearchStore } from './stores/file-search-store'
 import { useGlobalRulesStore } from './stores/global-rules-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
+import { AgentMessageView } from './components/agent'
+import { AgentWorkspace } from './components/agent/AgentWorkspace'
+import { useAgentStream } from './hooks/useAgentStream'
+import { useAgentStreamStore } from './stores/agent-stream-store'
+import type { AgentConversation, ContentBlock as UIContentBlock, AgentMessage as UIAgentMessage } from './types/agent-ui'
+import type { TerminalAgentState, AgentMessage as StreamAgentMessage, ContentBlock as StreamContentBlock } from './types/stream-json'
+
+// =============================================================================
+// Mapping Functions for Stream State to AgentConversation
+// =============================================================================
+
+/**
+ * Generate a unique ID for content blocks that don't have one
+ */
+function generateBlockId(messageId: string, index: number): string {
+  return `${messageId}_block_${index}`
+}
+
+/**
+ * Map a stream ContentBlock to a UI ContentBlock
+ */
+function mapContentBlock(
+  block: StreamContentBlock,
+  messageId: string,
+  index: number
+): UIContentBlock {
+  const baseBlock = {
+    id: generateBlockId(messageId, index),
+    timestamp: Date.now(),
+  }
+
+  switch (block.type) {
+    case 'text':
+      return {
+        ...baseBlock,
+        type: 'text',
+        content: block.content,
+        isStreaming: !block.isComplete,
+      }
+
+    case 'thinking':
+      return {
+        ...baseBlock,
+        type: 'thinking',
+        content: block.content,
+        isStreaming: !block.isComplete,
+      }
+
+    case 'tool_use':
+      return {
+        ...baseBlock,
+        type: 'tool_use',
+        toolId: block.toolId || '',
+        toolName: block.toolName || '',
+        input: block.toolInput || '{}',
+        status: block.isComplete ? 'completed' : 'running',
+      }
+
+    default:
+      // Fallback for unknown types - treat as text
+      return {
+        ...baseBlock,
+        type: 'text',
+        content: block.content,
+      }
+  }
+}
+
+/**
+ * Map a stream AgentMessage to a UI AgentMessage
+ */
+function mapMessage(
+  message: StreamAgentMessage,
+  agentType: string
+): UIAgentMessage {
+  return {
+    id: message.id,
+    agentType,
+    role: 'assistant',
+    blocks: message.blocks.map((block, idx) =>
+      mapContentBlock(block, message.id, idx)
+    ),
+    status: message.status,
+    timestamp: message.startedAt,
+    metadata: {
+      model: message.model,
+      usage: message.usage,
+      stopReason: message.stopReason,
+    },
+  }
+}
+
+/**
+ * Convert stream store state to AgentConversation format
+ */
+function mapToConversation(
+  terminalId: string,
+  agentType: string,
+  state: TerminalAgentState | undefined
+): AgentConversation {
+  if (!state) {
+    return {
+      terminalId,
+      agentType,
+      messages: [],
+      currentMessage: null,
+      status: 'idle',
+    }
+  }
+
+  const messages = state.messages.map((msg) => mapMessage(msg, agentType))
+  const currentMessage = state.currentMessage
+    ? mapMessage(state.currentMessage, agentType)
+    : null
+
+  let status: AgentConversation['status'] = 'idle'
+  if (state.isActive) {
+    status = 'streaming'
+  } else if (state.error) {
+    status = 'error'
+  } else if (state.messages.length > 0) {
+    status = 'completed'
+  }
+
+  return {
+    terminalId,
+    agentType,
+    messages,
+    currentMessage,
+    status,
+  }
+}
 
 function App() {
   const [isElectron, setIsElectron] = useState(false)
@@ -38,6 +167,10 @@ function App() {
   const [activeDragTitle, setActiveDragTitle] = useState<string>('')
   const [showNewProjectModal, setShowNewProjectModal] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
+  const [isGitDrawerOpen, setIsGitDrawerOpen] = useState(false)
+  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(true)
+  // State for agent processes (these use child_process, not PTY)
+  const [agentProcesses, setAgentProcesses] = useState<Map<string, { id: string; agentType: string; cwd: string }>>(new Map())
   const {
     addSession,
     addSessionsBatch,
@@ -50,9 +183,11 @@ function App() {
     saveConfig,
     removeSavedConfig,
     sessions,
+    setActiveSession,
+    activeSessionId,
   } = useTerminalStore()
   const restoringRef = useRef(false)
-  const { projects } = useProjectStore()
+  const { projects, activeProjectId } = useProjectStore()
   const { getConnection } = useSSHStore()
   const {
     addServer,
@@ -63,16 +198,44 @@ function App() {
   const {
     dashboard,
     addTerminalToDashboard,
-    removeTerminalFromDashboard,
     reorderDashboardTerminals,
     setDashboardFocusedTerminal,
     cleanupTerminalReferences,
     validateDashboardState,
   } = useGridStore()
-  const { isDashboardActive, activeView } = useViewStore()
-  const { setActiveProject, activeProjectId, removeProject, disconnectProject, addTerminalToProject, setProjectFocusedTerminal, removeTerminalFromProject } = useProjectStore()
-  const { openSearch } = useFileSearchStore()
+  const { activeView } = useViewStore()
+  const { setActiveProject, removeProject, disconnectProject, addTerminalToProject, setProjectFocusedTerminal, removeTerminalFromProject } = useProjectStore()
   const { getEnabledRulesText, loadRules: loadGlobalRules } = useGlobalRulesStore()
+
+  const visibleTerminalSessions = useMemo(() => {
+    return sessions.filter((s) =>
+      s.terminalType !== 'agent' &&
+      s.shell !== '' &&
+      (s.projectId === activeProjectId || s.projectId === '')
+    )
+  }, [sessions, activeProjectId])
+
+  const activeTerminalLabel = useMemo(() => {
+    const activeSession = visibleTerminalSessions.find((s) => s.id === activeSessionId)
+    return activeSession?.title || visibleTerminalSessions[visibleTerminalSessions.length - 1]?.title || 'No terminal'
+  }, [visibleTerminalSessions, activeSessionId])
+
+  // Find active session and check if it's an agent
+  const activeSession = sessions.find(s => s.id === activeSessionId)
+  const isAgentTerminal = activeSession?.terminalType === 'agent'
+  const agentType = activeSession?.agentId || 'claude'
+
+  // Get agent stream data for active session
+  const agentStream = useAgentStream(activeSessionId || '')
+
+  // Map stream data to AgentConversation format for the UI
+  const agentConversation: AgentConversation | null = useMemo(() => {
+    if (!isAgentTerminal || !activeSessionId || !agentStream.state) return null
+    return mapToConversation(activeSessionId, agentType, agentStream.state)
+  }, [isAgentTerminal, activeSessionId, agentStream.state, agentType])
+
+  // Check if active session is an agent process (not PTY)
+  const activeAgentProcess = agentProcesses.get(activeSessionId || '')
 
   // Configure drag sensors with a distance threshold
   // This prevents clicks from being interpreted as drags
@@ -112,6 +275,41 @@ function App() {
     })
 
     return () => unsubscribe?.()
+  }, [isElectron])
+
+  // Subscribe to agent process events (JSON streaming via child_process)
+  useEffect(() => {
+    if (!isElectron || !window.electron?.agent) return
+
+    // Subscribe to stream events for agent processes
+    const unsubStream = window.electron.agent.onStreamEvent((id, event) => {
+      // Forward to agent stream store for processing
+      const agentEvent = event as { type: string; data: unknown }
+      if (agentEvent.type?.startsWith('agent-')) {
+        useAgentStreamStore.getState().processEvent(id, agentEvent as any)
+      }
+    })
+
+    // Subscribe to process exit events
+    const unsubExit = window.electron.agent.onProcessExit((id, _code) => {
+      // Remove from agent processes map
+      setAgentProcesses(prev => {
+        const next = new Map(prev)
+        next.delete(id)
+        return next
+      })
+    })
+
+    // Subscribe to error events
+    const unsubError = window.electron.agent.onError((id, error) => {
+      console.error(`[App] Agent process ${id} error:`, error)
+    })
+
+    return () => {
+      unsubStream?.()
+      unsubExit?.()
+      unsubError?.()
+    }
   }, [isElectron])
 
   // Helper function to categorize terminal output activity level
@@ -291,16 +489,9 @@ function App() {
     }
   }, [isElectron, markSessionExited, updateSessionTitle, updateSessionActivity, updateServerStatus])
 
-  // Keyboard shortcuts: Ctrl+P for file search, Ctrl+N for project switch, Alt+N for terminal focus
+  // Keyboard shortcuts: Ctrl+N for project switch, Alt+N for terminal focus
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+P / Cmd+P: Open file search
-      if ((e.ctrlKey || e.metaKey) && e.key === 'p' && !e.altKey && !e.shiftKey) {
-        e.preventDefault()
-        openSearch()
-        return
-      }
-
       const num = parseInt(e.key, 10)
       if (isNaN(num) || num < 1 || num > 9) return
 
@@ -329,7 +520,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal, openSearch])
+  }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal])
 
   // Helper to get display name for AI agents
   const getAgentDisplayName = (agentId: string): string => {
@@ -341,8 +532,66 @@ function App() {
     return names[agentId] || agentId
   }
 
+  // Spawn agent process using the new child_process-based API (JSON streaming)
+  // Currently only Claude supports proper JSON streaming; Gemini/Codex fall back to PTY
+  const handleSpawnAgentProcess = useCallback(async (
+    projectId: string,
+    agentType: 'claude' | 'codex' | 'gemini',
+    cwd: string,
+    _contextContent?: string | null // Reserved for future context injection
+  ): Promise<string | null> => {
+    if (!window.electron?.agent?.spawn) return null
+
+    try {
+      const result = await window.electron.agent.spawn({ agentType, cwd })
+      if (result.success && result.process) {
+        // Track the agent process
+        setAgentProcesses(prev => {
+          const next = new Map(prev)
+          next.set(result.process!.id, {
+            id: result.process!.id,
+            agentType: result.process!.agentType,
+            cwd: result.process!.cwd
+          })
+          return next
+        })
+
+        // Also add to terminal sessions for consistent tracking
+        addSession({
+          id: result.process.id,
+          projectId,
+          pid: 0, // Process-based agents don't have a PTY pid
+          shell: agentType,
+          shellName: getAgentDisplayName(agentType),
+          cwd,
+          title: `${getAgentDisplayName(agentType)} Agent`,
+          createdAt: Date.now(),
+          terminalType: 'agent',
+          agentId: agentType,
+          isAgentProcess: true, // Flag to distinguish from PTY-based agents
+        })
+
+        // Set as active session
+        setActiveSession(result.process.id)
+
+        // Add to project if applicable
+        if (projectId) {
+          addTerminalToProject(projectId, result.process.id)
+          setProjectFocusedTerminal(projectId, result.process.id)
+        }
+
+        return result.process.id
+      }
+      return null
+    } catch (error) {
+      console.error('[App] Failed to spawn agent process:', error)
+      return null
+    }
+  }, [setActiveSession, addSession, addTerminalToProject, setProjectFocusedTerminal])
+
   // Handler for creating agent terminals (Claude, Gemini, Codex)
-  // Uses the unified pty.create path with initialCommand option
+  // Uses the new AgentProcessManager for Claude (JSON streaming),
+  // falls back to PTY-based approach for other agents
   const handleCreateAgentTerminal = async (
     projectId: string,
     agentId: string,
@@ -363,11 +612,35 @@ function App() {
       skipPermissions
     })
 
-    try {
-      // Combine global rules with project context
-      const globalRulesText = getEnabledRulesText()
-      const combinedContext = [globalRulesText, contextContent].filter(Boolean).join('\n\n') || null
+    // Combine global rules with project context
+    const globalRulesText = getEnabledRulesText()
+    const combinedContext = [globalRulesText, contextContent].filter(Boolean).join('\n\n') || null
 
+    // For Claude, use the new AgentProcessManager with JSON streaming
+    // This provides structured streaming and better message handling
+    if (agentId === 'claude' && window.electron.agent?.spawn !== undefined) {
+      console.log('[App] Using AgentProcessManager for Claude (JSON streaming)')
+
+      const processId = await handleSpawnAgentProcess(
+        projectId,
+        'claude',
+        project.path,
+        combinedContext
+      )
+
+      if (processId) {
+        // Switch to dedicated single terminal view to show the agent workspace
+        const { setProjectTerminalActive } = useViewStore.getState()
+        setProjectTerminalActive(projectId, processId)
+        return
+      }
+
+      // If process spawn failed, fall through to PTY approach
+      console.warn('[App] AgentProcessManager spawn failed, falling back to PTY')
+    }
+
+    // PTY-based approach for Gemini, Codex, or as fallback
+    try {
       // Build the command with optional context
       // Each agent has different context injection syntax
       let initialCommand = agentId
@@ -441,6 +714,9 @@ function App() {
         contextId: contextId ?? undefined,
         contextInjected: !!combinedContext
       })
+
+      // Set as the active session so the Agent Workspace shows it
+      setActiveSession(info.id)
 
       // Add terminal to project grid and focus it
       addTerminalToProject(projectId, info.id)
@@ -684,9 +960,26 @@ function App() {
     // Remove from dashboard if it was pinned there
     cleanupTerminalReferences(id)
 
-    // Dispose the xterm instance from registry
-    disposeTerminal(id)
-    await window.electron.pty.kill(id)
+    // Check if this is an agent process (JSON streaming) vs PTY terminal
+    if (session?.isAgentProcess) {
+      // Kill the agent process
+      if (window.electron.agent?.kill) {
+        await window.electron.agent.kill(id)
+      }
+      // Remove from agent processes state
+      setAgentProcesses(prev => {
+        const next = new Map(prev)
+        next.delete(id)
+        return next
+      })
+      // Clear from agent stream store
+      useAgentStreamStore.getState().clearTerminal(id)
+    } else {
+      // Dispose the xterm instance from registry (for PTY-based terminals)
+      disposeTerminal(id)
+      await window.electron.pty.kill(id)
+    }
+
     removeSession(id)
   }
 
@@ -1020,27 +1313,71 @@ function App() {
           onCreateProject={handleCreateProject}
           onEditProject={handleEditProject}
           onDeleteProject={handleDeleteProject}
+          onToggleGitDrawer={() => setIsGitDrawerOpen((prev) => !prev)}
+          gitDrawerOpen={isGitDrawerOpen}
         />
-        {/* Project-specific sub-header - hidden in dashboard view */}
-        {!isDashboardActive() && <ProjectSubHeader onEditProject={handleEditProject} />}
         {/* Main content area */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Sidebars hidden in dashboard view */}
-          {!isDashboardActive() && (
-            <Sidebar
-              onCreateTerminal={handleCreateTerminal}
-              onCreateQuickTerminal={handleCreateQuickTerminal}
-              onCloseTerminal={handleCloseTerminal}
-              onReconnectTerminal={handleReconnectTerminal}
-              onStartServer={handleStartServer}
-              onStopServer={handleStopServer}
-              onRestartServer={handleRestartServer}
-              onDeleteServer={handleDeleteServer}
-              onCreateAgentTerminal={handleCreateAgentTerminal}
-            />
-          )}
-          <TerminalArea />
-          {!isDashboardActive() && <ChangedFilesPanel />}
+        <div className="flex flex-1 overflow-hidden relative">
+          <Sidebar
+            onCloseTerminal={handleCloseTerminal}
+            onReconnectTerminal={handleReconnectTerminal}
+            onCreateAgentTerminal={handleCreateAgentTerminal}
+          />
+          <div className="flex flex-1 min-w-0 flex-col bg-zinc-950">
+            <div className="flex-1 min-h-0">
+              {activeAgentProcess ? (
+                // New process-based agent (JSON streaming via child_process)
+                <AgentWorkspace
+                  processId={activeAgentProcess.id}
+                  agentType={activeAgentProcess.agentType as 'claude' | 'codex' | 'gemini'}
+                  cwd={activeAgentProcess.cwd}
+                  className="h-full"
+                />
+              ) : isAgentTerminal && agentConversation ? (
+                // Backwards compatible: PTY-based agent terminal
+                <AgentMessageView
+                  conversation={agentConversation}
+                  className="h-full"
+                />
+              ) : (
+                // Empty placeholder
+                <div className="h-full w-full flex items-center justify-center text-zinc-500">
+                  <div className="text-center">
+                    <p className="text-sm uppercase tracking-[0.2em] text-zinc-600">Agent Workspace</p>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      {sessions.some(s => s.terminalType === 'agent') || agentProcesses.size > 0
+                        ? 'Select an agent terminal to view conversation'
+                        : 'Launch an agent to get started'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            {isTerminalDockOpen ? (
+              <div className="h-[30vh] min-h-[220px] max-h-[420px] border-t border-zinc-800 bg-zinc-950">
+                <TerminalArea
+                  onCreateTerminal={handleCreateTerminal}
+                  onCreateQuickTerminal={handleCreateQuickTerminal}
+                  onCloseTerminal={handleCloseTerminal}
+                  onStopServer={handleStopServer}
+                  onRestartServer={handleRestartServer}
+                  onDeleteServer={handleDeleteServer}
+                  onToggleCollapse={() => setIsTerminalDockOpen(false)}
+                />
+              </div>
+            ) : (
+              <button
+                className="h-10 border-t border-zinc-800 bg-zinc-950/90 px-4 text-left text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-3"
+                onClick={() => setIsTerminalDockOpen(true)}
+              >
+                <ChevronUp className="h-4 w-4 text-zinc-500" />
+                <span className="uppercase tracking-[0.2em] text-zinc-500">Terminal Dock</span>
+                <span className="text-zinc-600">{visibleTerminalSessions.length} terminals</span>
+                <span className="text-zinc-500 truncate">{activeTerminalLabel}</span>
+              </button>
+            )}
+          </div>
+          <ChangedFilesPanel isOpen={isGitDrawerOpen} onClose={() => setIsGitDrawerOpen(false)} />
         </div>
       </div>
       <DragOverlay>
@@ -1052,7 +1389,6 @@ function App() {
         ) : null}
       </DragOverlay>
       <UpdateNotification />
-      <FileSearchModal />
       <ToastContainer />
       {showNewProjectModal && (
         <NewProjectModal onClose={() => setShowNewProjectModal(false)} />

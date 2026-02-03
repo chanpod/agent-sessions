@@ -3,10 +3,14 @@
  */
 
 import { useState, useMemo } from 'react'
-import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle } from 'lucide-react'
+import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle, Rocket } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
 import { useGlobalRulesStore } from '../stores/global-rules-store'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from './ui/card'
+import { Separator } from './ui/separator'
 import type { CliToolDetectionResult } from '../types/electron'
 
 interface AgentLauncherProps {
@@ -52,17 +56,17 @@ function AgentCard({
       onClick={onClick}
       className={cn(
         'flex items-center gap-3 p-3 rounded-lg border transition-all',
-        'hover:bg-zinc-800/50',
+        'hover:bg-muted/50',
         selected
-          ? 'border-blue-500 bg-blue-500/10'
-          : 'border-zinc-700 bg-zinc-800/30'
+          ? 'border-emerald-400/60 bg-emerald-400/10'
+          : 'border-border/60 bg-card/40'
       )}
     >
       {/* Agent icon */}
       <div
         className={cn(
           'w-10 h-10 rounded-lg flex items-center justify-center',
-          selected ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-700 text-zinc-400'
+          selected ? 'bg-emerald-400/20 text-emerald-300' : 'bg-muted text-muted-foreground'
         )}
       >
         <AgentIcon id={agent.id} className="w-5 h-5" />
@@ -70,11 +74,14 @@ function AgentCard({
 
       {/* Agent info */}
       <div className="flex-1 text-left">
-        <div className={cn('text-sm font-medium', selected ? 'text-blue-300' : 'text-zinc-200')}>
+        <div className={cn('text-sm font-medium', selected ? 'text-emerald-200' : 'text-foreground')}>
           {agent.name}
         </div>
-        <div className="text-xs text-zinc-500">
-          {agent.version || 'installed'}
+        <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant="outline" className="border-border/60 text-muted-foreground">
+            {agent.version || 'installed'}
+          </Badge>
+          <span>Ready</span>
         </div>
       </div>
 
@@ -82,10 +89,10 @@ function AgentCard({
       <div
         className={cn(
           'w-4 h-4 rounded-full border-2 flex items-center justify-center',
-          selected ? 'border-blue-500 bg-blue-500' : 'border-zinc-600'
+          selected ? 'border-emerald-400 bg-emerald-400' : 'border-muted-foreground/50'
         )}
       >
-        {selected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+        {selected && <div className="w-1.5 h-1.5 rounded-full bg-zinc-900" />}
       </div>
     </button>
   )
@@ -106,9 +113,9 @@ function ContextPreview({
 
   if (!context) {
     return (
-      <div className="p-3 rounded-lg border border-zinc-700 bg-zinc-800/30 text-center">
-        <p className="text-sm text-zinc-500">No context selected</p>
-        <p className="text-xs text-zinc-600 mt-1">
+      <div className="p-3 rounded-lg border border-border/60 bg-card/40 text-center">
+        <p className="text-sm text-muted-foreground">No context selected</p>
+        <p className="text-xs text-muted-foreground/70 mt-1">
           Agent will launch without context injection
         </p>
       </div>
@@ -119,38 +126,41 @@ function ContextPreview({
   const displayContent = expanded ? context.content : context.content.slice(0, maxLength)
 
   return (
-    <div className="rounded-lg border border-zinc-700 bg-zinc-800/30 overflow-hidden">
+    <div className="rounded-lg border border-border/60 bg-card/40 overflow-hidden">
       {/* Preview header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-700/50 bg-zinc-800/50">
-        <div className="flex items-center gap-2 text-xs text-zinc-400">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/60 bg-muted/40">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <FileText className="w-3.5 h-3.5" />
           <span>{context.name}</span>
         </div>
         {onEdit && (
-          <button
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={onEdit}
-            className="p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 transition-colors"
             title="Edit context"
           >
             <Edit3 className="w-3.5 h-3.5" />
-          </button>
+          </Button>
         )}
       </div>
 
       {/* Preview content */}
       <div className="p-3">
-        <pre className="text-xs text-zinc-400 whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
+        <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
           {displayContent}
           {isLong && !expanded && '...'}
         </pre>
 
         {isLong && (
-          <button
+          <Button
+            variant="link"
+            size="xs"
             onClick={() => setExpanded(!expanded)}
-            className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            className="mt-2 h-auto px-0 text-xs text-emerald-300 hover:text-emerald-200"
           >
             {expanded ? 'Show less' : 'Show more'}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -246,31 +256,36 @@ export function AgentLauncher({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[85vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-200">Launch Agent</h2>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+      <Card className="w-full max-w-xl mx-4 max-h-[85vh] flex flex-col border-sidebar-border/70 bg-card/90 shadow-2xl">
+        <CardHeader className="relative overflow-hidden border-b border-border/60">
+          <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_0%_0%,rgba(16,185,129,0.18),transparent_60%)]" />
+          <div className="relative flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Rocket className="w-4 h-4 text-emerald-300" />
+                Launch Session
+              </CardTitle>
+              <CardDescription>Choose your agent, context, and safety posture.</CardDescription>
+            </div>
+            <Button variant="ghost" size="icon-sm" onClick={onClose} className="text-muted-foreground">
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </CardHeader>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+        <CardContent className="flex-1 overflow-y-auto space-y-5">
           {/* Agent Selector */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-2">
+            <label className="block text-xs font-medium text-muted-foreground mb-2">
               Select Agent
             </label>
 
             {availableAgents.length === 0 ? (
-              <div className="p-4 rounded-lg border border-zinc-700 bg-zinc-800/30 text-center">
-                <Bot className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-                <p className="text-sm text-zinc-500">No agents installed</p>
-                <p className="text-xs text-zinc-600 mt-1">
+              <div className="p-4 rounded-lg border border-border/60 bg-card/40 text-center">
+                <Bot className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                <p className="text-sm text-muted-foreground">No agents installed</p>
+                <p className="text-xs text-muted-foreground/70 mt-1">
                   Install Claude, Gemini CLI, or Codex to get started
                 </p>
               </div>
@@ -290,15 +305,16 @@ export function AgentLauncher({
 
           {/* Context Selector */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-2">
+            <label className="block text-xs font-medium text-muted-foreground mb-2">
               Context
             </label>
 
             {/* Dropdown */}
             <div className="relative">
-              <button
+              <Button
+                variant="outline"
                 onClick={() => setContextDropdownOpen(!contextDropdownOpen)}
-                className="w-full flex items-center justify-between px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-md text-sm text-zinc-200 hover:bg-zinc-750 transition-colors"
+                className="w-full justify-between bg-background/60"
               >
                 <span className={selectedContext ? '' : 'text-zinc-500'}>
                   {selectedContext?.name ?? 'No Context'}
@@ -309,22 +325,22 @@ export function AgentLauncher({
                     contextDropdownOpen && 'rotate-180'
                   )}
                 />
-              </button>
+              </Button>
 
               {/* Dropdown menu */}
               {contextDropdownOpen && (
-                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg overflow-hidden">
+                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-card border border-border/60 rounded-md shadow-lg overflow-hidden">
                   {/* No context option */}
                   <button
                     onClick={() => handleContextSelect(null)}
                     className={cn(
                       'w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-zinc-700 transition-colors',
                       selectedContextId === null
-                        ? 'text-blue-400 bg-blue-500/10'
-                        : 'text-zinc-300'
+                        ? 'text-emerald-200 bg-emerald-400/10'
+                        : 'text-foreground'
                     )}
                   >
-                    <span className="text-zinc-500">-</span>
+                    <span className="text-muted-foreground">-</span>
                     <span>No Context</span>
                   </button>
 
@@ -336,11 +352,11 @@ export function AgentLauncher({
                       className={cn(
                         'w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-zinc-700 transition-colors',
                         selectedContextId === context.id
-                          ? 'text-blue-400 bg-blue-500/10'
-                          : 'text-zinc-300'
+                          ? 'text-emerald-200 bg-emerald-400/10'
+                          : 'text-foreground'
                       )}
                     >
-                      <FileText className="w-3.5 h-3.5 text-zinc-500" />
+                      <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                       <span className="truncate">{context.name}</span>
                     </button>
                   ))}
@@ -353,12 +369,12 @@ export function AgentLauncher({
           {/* Global Rules Indicator */}
           {enabledRulesCount > 0 && (
             <div
-              className="flex items-center gap-1.5 px-2 py-1 text-xs text-zinc-400"
+              className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground"
               title="Global rules from Settings will be applied alongside the project context"
             >
-              <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
               <span>
-                <span className="text-blue-400">{enabledRulesCount}</span> global{' '}
+                <span className="text-emerald-300">{enabledRulesCount}</span> global{' '}
                 {enabledRulesCount === 1 ? 'rule' : 'rules'} active
               </span>
             </div>
@@ -366,14 +382,13 @@ export function AgentLauncher({
 
           {/* Skip Permissions Checkbox */}
           {selectedAgentId && (
-            <div className="px-2">
+            <div className="px-1">
               <label
                 className={cn(
-                  'flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors',
-                  'border',
+                  'flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors border',
                   skipPermissions
                     ? 'bg-amber-500/10 border-amber-500/50'
-                    : 'bg-zinc-800/30 border-zinc-700 hover:bg-zinc-800/50'
+                    : 'bg-card/40 border-border/60 hover:bg-card/60'
                 )}
               >
                 <input
@@ -387,7 +402,7 @@ export function AgentLauncher({
                     'w-4 h-4 rounded border-2 flex items-center justify-center transition-colors',
                     skipPermissions
                       ? 'bg-amber-500 border-amber-500'
-                      : 'border-zinc-500'
+                      : 'border-muted-foreground/50'
                   )}
                 >
                   {skipPermissions && (
@@ -402,7 +417,7 @@ export function AgentLauncher({
                 )} />
                 <span className={cn(
                   'text-sm',
-                  skipPermissions ? 'text-amber-300' : 'text-zinc-400'
+                  skipPermissions ? 'text-amber-300' : 'text-muted-foreground'
                 )}>
                   {getSkipPermissionsLabel()}
                 </span>
@@ -412,7 +427,7 @@ export function AgentLauncher({
 
           {/* Context Preview */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-2">
+            <label className="block text-xs font-medium text-muted-foreground mb-2">
               Preview
             </label>
             <ContextPreview
@@ -420,31 +435,29 @@ export function AgentLauncher({
               onEdit={selectedContext && onEditContext ? handleEditContext : undefined}
             />
           </div>
-        </div>
+        </CardContent>
 
+        <Separator />
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-4 py-3 border-t border-zinc-800">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
-          >
+        <CardFooter className="justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} className="text-muted-foreground">
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleLaunch}
             disabled={!selectedAgentId}
             className={cn(
-              'px-4 py-1.5 text-sm rounded-md transition-colors flex items-center gap-2',
+              'gap-2',
               selectedAgentId
-                ? 'bg-blue-600 hover:bg-blue-500 text-white'
-                : 'bg-zinc-700 text-zinc-500 cursor-not-allowed'
+                ? 'bg-emerald-500 text-zinc-900 hover:bg-emerald-400'
+                : 'bg-muted text-muted-foreground'
             )}
           >
             {selectedAgent && <AgentIcon id={selectedAgent.id} className="w-4 h-4" />}
             <span>Launch {selectedAgent?.name ?? 'Agent'}</span>
-          </button>
-        </div>
-      </div>
+          </Button>
+        </CardFooter>
+      </Card>
     </div>
   )
 }

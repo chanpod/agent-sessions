@@ -6,6 +6,7 @@ import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
 import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
+import { StreamJsonDetector } from './output-monitors/stream-json-detector'
 import { PathService } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
@@ -105,6 +106,7 @@ export class PtyManager {
     // Initialize output monitoring
     this.detectorManager = new DetectorManager()
     this.detectorManager.registerDetector(new ServerDetector())
+    this.detectorManager.registerDetector(new StreamJsonDetector())
 
     // Forward detected events to renderer
     this.detectorManager.onEvent((event) => {
@@ -473,7 +475,7 @@ export class PtyManager {
       // Agent-specific context injection
       switch (agentCommand) {
         case 'claude':
-          fullCommand = `claude --append-system-prompt "${escapedContext}"`
+          fullCommand = `claude --output-format stream-json --append-system-prompt "${escapedContext}"`
           break
         case 'gemini':
           fullCommand = `gemini -p "${escapedContext}"`
@@ -484,6 +486,9 @@ export class PtyManager {
         default:
           fullCommand = `${agentCommand} --append-system-prompt "${escapedContext}"`
       }
+    } else if (agentCommand === 'claude') {
+      // Claude without context still needs the output format flag
+      fullCommand = 'claude --output-format stream-json'
     }
 
     // Delegate to unified createTerminal

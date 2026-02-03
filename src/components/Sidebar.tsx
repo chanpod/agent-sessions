@@ -1,47 +1,25 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Settings, Terminal, ChevronDown } from 'lucide-react'
+import { AgentTerminalsSection } from './AgentTerminalsSection'
 import { useProjectStore } from '../stores/project-store'
-import { useTerminalStore } from '../stores/terminal-store'
-import { useSSHStore } from '../stores/ssh-store'
-import { ProjectContent } from './ProjectContent'
-import { NewProjectModal } from './NewProjectModal'
-import { SettingsModal } from './SettingsModal'
-import { DraggableTerminalItem } from './DraggableTerminalItem'
-import { TerminalItem } from './ProjectItem'
-import { AgentFooterToolbar } from './AgentFooterToolbar'
-
-interface ShellInfo {
-  name: string
-  path: string
-}
+import { cn } from '../lib/utils'
+import { ScrollArea } from './ui/scroll-area'
+import { Separator } from './ui/separator'
 
 interface SidebarProps {
-  onCreateTerminal: (projectId: string, shell: ShellInfo) => void
-  onCreateQuickTerminal: (shell: ShellInfo) => void
   onCloseTerminal: (id: string) => void
   onReconnectTerminal: (id: string) => void
-  onStartServer: (projectId: string, name: string, command: string) => void
-  onStopServer: (serverId: string) => void
-  onRestartServer: (serverId: string) => void
-  onDeleteServer: (serverId: string) => void
   onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
-const MIN_WIDTH = 180
-const MAX_WIDTH = 650
-const DEFAULT_WIDTH = 500
+const MIN_WIDTH = 220
+const MAX_WIDTH = 420
+const DEFAULT_WIDTH = 280
 
-export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTerminal, onReconnectTerminal, onStartServer, onStopServer, onRestartServer, onDeleteServer, onCreateAgentTerminal }: SidebarProps) {
+export function Sidebar(props: SidebarProps) {
+  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal } = props
   const { projects, activeProjectId } = useProjectStore()
-  const { connections: sshConnections } = useSSHStore()
-  const { getGlobalSessions, activeSessionId, setActiveSession } = useTerminalStore()
-
   const activeProject = projects.find(p => p.id === activeProjectId)
-  const [shells, setShells] = useState<ShellInfo[]>([])
   const [appVersion, setAppVersion] = useState<string>('')
-  const [showNewProject, setShowNewProject] = useState(false)
-  const [showQuickTerminalMenu, setShowQuickTerminalMenu] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH
@@ -80,19 +58,6 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
   }, [isResizing, resize, stopResizing])
 
   useEffect(() => {
-    async function loadShells() {
-      if (!window.electron) return
-      try {
-        const availableShells = await window.electron.system.getShells(activeProject?.path)
-        setShells(availableShells)
-      } catch (err) {
-        console.error('Failed to load shells:', err)
-      }
-    }
-    loadShells()
-  }, [activeProject])
-
-  useEffect(() => {
     async function loadVersion() {
       if (!window.electron?.app?.getVersion) return
       try {
@@ -105,152 +70,60 @@ export function Sidebar({ onCreateTerminal, onCreateQuickTerminal, onCloseTermin
     loadVersion()
   }, [])
 
-  // Combine local shells with SSH connections for terminal creation
-  // Only show SSH options if the active project is an SSH project
-  const allShells = [
-    ...shells,
-    ...(activeProject?.isSSHProject
-      ? sshConnections.map((conn) => ({
-          name: `SSH: ${conn.name}`,
-          path: `ssh:${conn.id}`,
-        }))
-      : []),
-  ]
-
-  // Get global terminals
-  const globalSessions = getGlobalSessions()
 
   return (
     <>
       <aside
         ref={sidebarRef}
         style={{ width }}
-        className={`flex-shrink-0 bg-zinc-900/50 border-r border-zinc-800 flex flex-col relative z-20 ${isResizing ? 'select-none' : ''}`}
+        className={cn(
+          'flex-shrink-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col relative z-20',
+          isResizing && 'select-none'
+        )}
       >
-        {/* Project Content */}
-        <div className="flex-1 overflow-y-auto p-2">
-          {/* Quick Terminal */}
-          <div className="mb-4">
-            <div className="relative">
-              <button
-                onClick={() => setShowQuickTerminalMenu(!showQuickTerminalMenu)}
-                className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <Terminal className="w-4 h-4" />
-                  New Terminal
-                </div>
-                <ChevronDown className={`w-4 h-4 transition-transform ${showQuickTerminalMenu ? 'rotate-180' : ''}`} />
-              </button>
-
-              {/* Shell Dropdown */}
-              {showQuickTerminalMenu && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-zinc-800 border border-zinc-700 rounded-md shadow-lg z-10 max-h-60 overflow-y-auto">
-                  {allShells.map((shell) => (
-                    <button
-                      key={shell.path}
-                      onClick={() => {
-                        onCreateQuickTerminal(shell)
-                        setShowQuickTerminalMenu(false)
-                      }}
-                      className="w-full px-3 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-700 transition-colors"
-                    >
-                      {shell.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+        <div className="relative px-4 pt-4 pb-3 overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(120%_100%_at_0%_0%,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.02)_35%,transparent_60%)]" />
+          <div className="relative flex items-center justify-between gap-2">
+            <div className="text-[11px] uppercase tracking-[0.35em] text-muted-foreground">Agents</div>
           </div>
+        </div>
 
-          {/* Global Terminals Section */}
-          {globalSessions.length > 0 && (
-            <div className="mb-4 bg-zinc-900/40 rounded-lg p-2 border border-zinc-800/30">
-              <div className="mb-2 bg-zinc-800/20 rounded-md p-2">
-                <div className="flex items-center justify-between px-2 py-2">
-                  <span className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
-                    Global
-                  </span>
-                </div>
-                <ul className="space-y-0.5">
-                  {globalSessions.map((session) => (
-                    <DraggableTerminalItem
-                      key={session.id}
-                      terminalId={session.id}
-                      terminalTitle={session.title}
-                    >
-                      <TerminalItem
-                        session={session}
-                        isActive={activeSessionId === session.id}
-                        onSelect={() => setActiveSession(session.id)}
-                        onClose={() => onCloseTerminal(session.id)}
-                        onReconnect={() => onReconnectTerminal(session.id)}
-                      />
-                    </DraggableTerminalItem>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Project Tabs Section - Only show active project */}
+        <ScrollArea className="flex-1 px-4 pb-4">
+          <div className="space-y-4 pt-2">
           {!activeProject ? (
-            <div className="px-2 py-4 text-center">
-              <p className="text-xs text-zinc-600 mb-2">No project selected</p>
-              <p className="text-xs text-zinc-500">Select a project from the header</p>
+            <div className="text-xs text-muted-foreground">
+              Select a project to view sessions and servers.
             </div>
           ) : (
-            <ProjectContent
-              project={activeProject}
-              shells={allShells}
-              onCreateTerminal={onCreateTerminal}
-              onCloseTerminal={onCloseTerminal}
-              onReconnectTerminal={onReconnectTerminal}
-              onStartServer={onStartServer}
-              onStopServer={onStopServer}
-              onRestartServer={onRestartServer}
-              onDeleteServer={onDeleteServer}
-              onCreateAgentTerminal={onCreateAgentTerminal}
-            />
+            <>
+              <AgentTerminalsSection
+                projectId={activeProject.id}
+                projectPath={activeProject.path}
+                onCloseTerminal={onCloseTerminal}
+                onReconnectTerminal={onReconnectTerminal}
+                onLaunchAgent={onCreateAgentTerminal}
+              />
+            </>
           )}
+          </div>
+        </ScrollArea>
+
+        <Separator />
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-end text-xs text-muted-foreground">
+            {appVersion && <span>v{appVersion}</span>}
+          </div>
         </div>
 
-        {/* Agent Footer Toolbar - only show when project is active */}
-        {activeProject && (
-          <AgentFooterToolbar
-            projectId={activeProject.id}
-            projectPath={activeProject.path}
-          />
-        )}
-
-        {/* Footer */}
-        <div className="p-3 border-t border-zinc-800 flex items-center justify-between">
-          <button
-            onClick={() => setShowSettings(true)}
-            className="flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md transition-colors"
-          >
-            <Settings className="w-4 h-4" />
-            Settings
-          </button>
-          {appVersion && (
-            <span className="text-sm text-zinc-500">v{appVersion}</span>
-          )}
-        </div>
-
-        {/* Resize Handle */}
         <div
           onMouseDown={startResizing}
-          className={`absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors ${isResizing ? 'bg-blue-500' : ''}`}
+          className={cn(
+            'absolute top-0 right-0 w-1 h-full cursor-col-resize transition-colors',
+            isResizing ? 'bg-sidebar-accent' : 'hover:bg-sidebar-accent/60'
+          )}
         />
       </aside>
 
-      {showNewProject && (
-        <NewProjectModal onClose={() => setShowNewProject(false)} />
-      )}
-
-      {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} />
-      )}
     </>
   )
 }
