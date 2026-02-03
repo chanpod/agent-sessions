@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useState, useMemo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 
-import { useAgentStream } from '@/hooks/useAgentStream'
+import { useAgentStreamStore } from '@/stores/agent-stream-store'
 import { AgentMessageView } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
 import { cn } from '@/lib/utils'
@@ -167,49 +168,174 @@ function mapToConversation(
  * - Disables input while streaming or when process is dead
  */
 export function AgentWorkspace({
-  processId,
+  processId: initialProcessId,
   agentType,
-  cwd: _cwd, // Reserved for future use (e.g., displaying working directory)
+  cwd,
   className,
 }: AgentWorkspaceProps) {
-  const { state, isStreaming } = useAgentStream(processId)
-  const [isAlive, setIsAlive] = useState(true)
+  // Track all process IDs that belong to this conversation (for multi-turn)
+  const [activeProcessIds, setActiveProcessIds] = useState<Set<string>>(new Set([initialProcessId]))
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [userMessages, setUserMessages] = useState<UIAgentMessage[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
 
-  // Subscribe to process exit
+  // Subscribe to process exit - marks processing as done for ANY of our processes
   useEffect(() => {
     if (!window.electron?.agent?.onProcessExit) return
 
     const unsubscribe = window.electron.agent.onProcessExit((id, _code) => {
-      if (id === processId) {
-        setIsAlive(false)
+      if (activeProcessIds.has(id)) {
+        setIsProcessing(false)
       }
     })
     return unsubscribe
-  }, [processId])
+  }, [activeProcessIds])
+
+  // Subscribe to raw events to capture session_id for multi-turn
+  useEffect(() => {
+    if (!window.electron?.agent?.onStreamEvent) return
+
+    const unsubscribe = window.electron.agent.onStreamEvent((id, event) => {
+      if (activeProcessIds.has(id)) {
+        const rawEvent = event as { type?: string; session_id?: string; data?: { messageId?: string } }
+        // Capture session_id from system init event or agent-message-start
+        if (rawEvent.session_id && !sessionId) {
+          setSessionId(rawEvent.session_id)
+          console.log(`[AgentWorkspace] Captured session_id: ${rawEvent.session_id}`)
+        }
+        // Also check transformed events for session info
+        if (rawEvent.data?.messageId && !sessionId) {
+          setSessionId(rawEvent.data.messageId)
+          console.log(`[AgentWorkspace] Captured session_id from messageId: ${rawEvent.data.messageId}`)
+        }
+      }
+    })
+    return unsubscribe
+  }, [activeProcessIds, sessionId])
 
   // Handle sending messages
   const handleSend = useCallback(
     async (message: string) => {
-      if (!window.electron?.agent?.sendMessage) return
+      if (!window.electron?.agent) return
 
-      await window.electron.agent.sendMessage(processId, {
-        type: 'user_message',
-        content: message,
-      })
+      // Optimistically add user message to UI
+      const userMessage: UIAgentMessage = {
+        id: `user_${Date.now()}`,
+        agentType,
+        role: 'user',
+        blocks: [
+          {
+            id: `user_${Date.now()}_block_0`,
+            type: 'text',
+            content: message,
+            timestamp: Date.now(),
+          },
+        ],
+        status: 'completed',
+        timestamp: Date.now(),
+      }
+      setUserMessages((prev) => [...prev, userMessage])
+      setIsProcessing(true)
+
+      // For multi-turn: spawn new process with --resume if we have a session
+      // The first message uses the existing process, follow-ups spawn new ones
+      if (sessionId) {
+        console.log(`[AgentWorkspace] Multi-turn: spawning new process with --resume ${sessionId}`)
+        const result = await window.electron.agent.spawn({
+          agentType,
+          cwd,
+          resumeSessionId: sessionId,
+        })
+        if (result.success && result.process) {
+          // Track the new process ID
+          setActiveProcessIds((prev) => new Set([...prev, result.process!.id]))
+          // Send message to the new process
+          await window.electron.agent.sendMessage(result.process.id, {
+            type: 'user',
+            message: {
+              role: 'user',
+              content: message,
+            },
+          })
+        }
+      } else {
+        // First message - send to existing process
+        await window.electron.agent.sendMessage(initialProcessId, {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: message,
+          },
+        })
+      }
     },
-    [processId]
+    [initialProcessId, agentType, cwd, sessionId]
   )
 
-  // Convert stream state to AgentConversation format
-  const conversation = useMemo(
-    () => mapToConversation(processId, agentType, state),
-    [processId, agentType, state]
+  // Get state from all active processes in this conversation
+  // Use useShallow to prevent infinite re-renders from array creation
+  const allProcessStates = useAgentStreamStore(
+    useShallow((store) => {
+      const states: TerminalAgentState[] = []
+      for (const pid of activeProcessIds) {
+        const state = store.terminals.get(pid)
+        if (state) states.push(state)
+      }
+      return states
+    })
   )
+
+  // Convert stream state to AgentConversation format, merging user messages
+  const conversation = useMemo(() => {
+    // Merge messages from all process states
+    const assistantMessages: UIAgentMessage[] = []
+    let currentMessage: UIAgentMessage | null = null
+    let anyActive = false
+
+    for (const processState of allProcessStates) {
+      // Add completed messages
+      for (const msg of processState.messages) {
+        assistantMessages.push(mapMessage(msg, agentType))
+      }
+      // Track current streaming message (from most recent process)
+      if (processState.currentMessage) {
+        currentMessage = mapMessage(processState.currentMessage, agentType)
+      }
+      if (processState.isActive) {
+        anyActive = true
+      }
+    }
+
+    // Merge user messages with assistant messages, sorted by timestamp
+    const allMessages = [...userMessages, ...assistantMessages].sort(
+      (a, b) => a.timestamp - b.timestamp
+    )
+
+    // Determine status
+    let status: AgentConversation['status'] = 'idle'
+    if (isProcessing || anyActive) {
+      status = 'streaming'
+    } else if (allMessages.length > 0) {
+      status = 'completed'
+    }
+
+    return {
+      terminalId: initialProcessId,
+      agentType,
+      messages: allMessages,
+      currentMessage,
+      status,
+    }
+  }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing])
 
   // Determine placeholder text
-  const placeholder = isStreaming
+  const placeholder = conversation.status === 'streaming'
     ? 'Agent is responding...'
     : `Send a message to ${agentType}...`
+
+  // Disable input while processing, but NOT based on process alive state
+  // (since processes exit normally after each message in our architecture)
+  const inputDisabled = conversation.status === 'streaming'
 
   return (
     <div className={cn('flex flex-col h-full', className)}>
@@ -224,9 +350,9 @@ export function AgentWorkspace({
       {/* Input Area - Fixed at bottom */}
       <div className="border-t border-border p-4">
         <AgentInputArea
-          processId={processId}
+          processId={initialProcessId}
           onSend={handleSend}
-          disabled={!isAlive || isStreaming}
+          disabled={inputDisabled}
           placeholder={placeholder}
         />
       </div>

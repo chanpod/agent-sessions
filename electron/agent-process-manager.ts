@@ -1,11 +1,166 @@
 import { spawn, ChildProcess } from 'child_process'
 import { BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
+import { getGitBashPath } from './services/cli-detector.js'
 
 /**
  * Supported agent types for the process manager
  */
 export type AgentType = 'claude' | 'codex' | 'gemini'
+
+// =============================================================================
+// Claude CLI Print Mode Event Types & Transformer
+// =============================================================================
+
+/**
+ * Claude CLI print mode events (different from raw API streaming events)
+ */
+interface ClaudeSystemEvent {
+  type: 'system'
+  subtype: 'init'
+  session_id: string
+  model: string
+  cwd: string
+  tools: string[]
+  [key: string]: unknown
+}
+
+interface ClaudeAssistantEvent {
+  type: 'assistant'
+  message: {
+    id: string
+    model: string
+    role: 'assistant'
+    content: Array<{ type: string; text?: string; [key: string]: unknown }>
+    usage?: {
+      input_tokens: number
+      output_tokens: number
+      cache_read_input_tokens?: number
+      cache_creation_input_tokens?: number
+    }
+    [key: string]: unknown
+  }
+  session_id: string
+  [key: string]: unknown
+}
+
+interface ClaudeResultEvent {
+  type: 'result'
+  subtype: 'success' | 'error'
+  result: string
+  session_id: string
+  duration_ms: number
+  total_cost_usd?: number
+  usage?: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
+  [key: string]: unknown
+}
+
+type ClaudePrintModeEvent = ClaudeSystemEvent | ClaudeAssistantEvent | ClaudeResultEvent | { type: string; [key: string]: unknown }
+
+/**
+ * Transformed agent events (what the UI expects)
+ */
+interface AgentStreamEvent {
+  type: string
+  data: unknown
+}
+
+/**
+ * Transform Claude CLI print-mode events to agent-* events for the UI
+ */
+function transformClaudeEvent(event: ClaudePrintModeEvent): AgentStreamEvent[] {
+  const events: AgentStreamEvent[] = []
+
+  switch (event.type) {
+    case 'system': {
+      const sysEvent = event as ClaudeSystemEvent
+      if (sysEvent.subtype === 'init') {
+        events.push({
+          type: 'agent-message-start',
+          data: {
+            messageId: sysEvent.session_id,
+            model: sysEvent.model,
+          },
+        })
+      }
+      break
+    }
+
+    case 'assistant': {
+      const assistantEvent = event as ClaudeAssistantEvent
+      const content = assistantEvent.message?.content || []
+
+      content.forEach((block, index) => {
+        if (block.type === 'text' && block.text) {
+          events.push({
+            type: 'agent-text-delta',
+            data: {
+              text: block.text,
+              blockIndex: index,
+            },
+          })
+        } else if (block.type === 'thinking' && block.thinking) {
+          events.push({
+            type: 'agent-thinking-delta',
+            data: {
+              text: block.thinking as string,
+              blockIndex: index,
+            },
+          })
+        } else if (block.type === 'tool_use') {
+          events.push({
+            type: 'agent-tool-start',
+            data: {
+              toolId: block.id as string,
+              name: block.name as string,
+              blockIndex: index,
+            },
+          })
+          if (block.input) {
+            events.push({
+              type: 'agent-tool-input-delta',
+              data: {
+                partialJson: JSON.stringify(block.input),
+                blockIndex: index,
+              },
+            })
+          }
+          events.push({
+            type: 'agent-tool-end',
+            data: { blockIndex: index },
+          })
+        }
+      })
+      break
+    }
+
+    case 'result': {
+      const resultEvent = event as ClaudeResultEvent
+      events.push({
+        type: 'agent-message-end',
+        data: {
+          stopReason: resultEvent.subtype === 'success' ? 'end_turn' : 'error',
+          usage: resultEvent.usage
+            ? {
+                inputTokens: resultEvent.usage.input_tokens,
+                outputTokens: resultEvent.usage.output_tokens,
+                cacheReadInputTokens: resultEvent.usage.cache_read_input_tokens,
+                cacheCreationInputTokens: resultEvent.usage.cache_creation_input_tokens,
+              }
+            : { inputTokens: 0, outputTokens: 0 },
+        },
+      })
+      break
+    }
+  }
+
+  return events
+}
 
 /**
  * Internal representation of a running agent process
@@ -36,14 +191,20 @@ export interface SpawnOptions {
   agentType: AgentType
   cwd: string
   sessionId?: string
+  /** Resume a previous session (for multi-turn conversations) */
+  resumeSessionId?: string
 }
 
 /**
  * Message types that can be sent to agent processes
+ * Claude CLI stream-json format expects: { type: 'user', message: { role: 'user', content: '...' } }
  */
 export interface UserMessage {
-  type: 'user_message'
-  content: string
+  type: 'user'
+  message: {
+    role: 'user'
+    content: string
+  }
 }
 
 /**
@@ -73,22 +234,25 @@ export class AgentProcessManager {
    * @returns AgentProcessInfo with process details
    */
   spawn(options: SpawnOptions): AgentProcessInfo {
-    const { agentType, cwd, sessionId } = options
+    const { agentType, cwd, sessionId, resumeSessionId } = options
     const id = sessionId || randomUUID()
 
-    // Build the command based on agent type
-    const command = this.buildCommand(agentType)
+    // Build the command based on agent type (with optional --resume for multi-turn)
+    const command = this.buildCommand(agentType, resumeSessionId)
 
     console.log(`[AgentProcessManager] Spawning ${agentType} process:`, {
       id,
       command,
       cwd,
+      resumeSessionId,
     })
 
-    // Spawn the process using bash.exe on Windows for proper PATH resolution
+    // Spawn the process using Git Bash on Windows for proper PATH resolution
+    // Note: We must use the full path to Git Bash, not just 'bash.exe', because
+    // WSL's bash.exe may be found first in PATH and it can't resolve Windows node
     const isWindows = process.platform === 'win32'
-    const shell = isWindows ? 'bash.exe' : '/bin/bash'
-    const shellArgs = ['-c', command]
+    const shell = isWindows ? (getGitBashPath() || 'bash.exe') : '/bin/bash'
+    const shellArgs = ['-l', '-c', command] // -l for login shell to load PATH properly
 
     const childProcess = spawn(shell, shellArgs, {
       cwd,
@@ -127,11 +291,17 @@ export class AgentProcessManager {
   /**
    * Build the CLI command for the given agent type
    */
-  private buildCommand(agentType: AgentType): string {
+  private buildCommand(agentType: AgentType, resumeSessionId?: string): string {
     switch (agentType) {
-      case 'claude':
+      case 'claude': {
         // Claude CLI with streaming JSON input/output and partial message support
-        return 'claude -p --input-format stream-json --output-format stream-json --include-partial-messages'
+        // --verbose is required when using --print with --output-format=stream-json
+        let cmd = 'claude -p --verbose --input-format stream-json --output-format stream-json'
+        if (resumeSessionId) {
+          cmd += ` --resume ${resumeSessionId}`
+        }
+        return cmd
+      }
       case 'codex':
         // Codex doesn't support JSON streaming yet - placeholder
         return 'codex'
@@ -208,6 +378,8 @@ export class AgentProcessManager {
     const agentProcess = this.processes.get(id)
     if (!agentProcess) return
 
+    console.log(`[AgentProcessManager] stdout from ${id}:`, data.substring(0, 200))
+
     // Append new data to buffer
     agentProcess.buffer += data
 
@@ -220,8 +392,20 @@ export class AgentProcessManager {
       if (!line.trim()) continue
 
       try {
-        const event = JSON.parse(line)
-        this.emitToRenderer('agent:stream-event', id, event)
+        const rawEvent = JSON.parse(line) as ClaudePrintModeEvent
+        console.log(`[AgentProcessManager] Parsed event type:`, rawEvent.type, (rawEvent as { subtype?: string }).subtype || '')
+
+        // Transform Claude CLI print-mode events to agent-* events
+        const transformedEvents = transformClaudeEvent(rawEvent)
+
+        // Emit each transformed event
+        for (const event of transformedEvents) {
+          console.log(`[AgentProcessManager] Emitting transformed event:`, event.type)
+          this.emitToRenderer('agent:stream-event', id, event)
+        }
+
+        // Also emit the raw event for any listeners that want it
+        this.emitToRenderer('agent:raw-event', id, rawEvent)
       } catch (e) {
         console.error(`[AgentProcessManager] Failed to parse NDJSON:`, line)
         // Optionally emit parse errors as events
@@ -258,8 +442,12 @@ export class AgentProcessManager {
 
     // Write JSON message with newline (NDJSON format)
     const jsonLine = JSON.stringify(message) + '\n'
-    console.log(`[AgentProcessManager] Sending message to ${id}:`, message.content.substring(0, 100))
+    console.log(`[AgentProcessManager] Sending message to ${id}:`, message.message.content.substring(0, 100))
     stdin.write(jsonLine)
+
+    // Close stdin to signal end of input - Claude CLI requires EOF to start processing
+    // Note: For multi-turn conversations, we'll need to spawn a new process with --resume
+    stdin.end()
   }
 
   /**

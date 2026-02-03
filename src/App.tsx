@@ -285,19 +285,18 @@ function App() {
     const unsubStream = window.electron.agent.onStreamEvent((id, event) => {
       // Forward to agent stream store for processing
       const agentEvent = event as { type: string; data: unknown }
+      console.log(`[App] Received stream event:`, agentEvent.type, agentEvent)
       if (agentEvent.type?.startsWith('agent-')) {
+        console.log(`[App] Processing agent event:`, agentEvent.type)
         useAgentStreamStore.getState().processEvent(id, agentEvent as any)
       }
     })
 
     // Subscribe to process exit events
-    const unsubExit = window.electron.agent.onProcessExit((id, _code) => {
-      // Remove from agent processes map
-      setAgentProcesses(prev => {
-        const next = new Map(prev)
-        next.delete(id)
-        return next
-      })
+    const unsubExit = window.electron.agent.onProcessExit((id, code) => {
+      // Don't remove from map - keep the UI visible so user can see the response
+      // Just log for now; multi-turn will spawn new processes with --resume
+      console.log(`[App] Agent process ${id} exited with code ${code}`)
     })
 
     // Subscribe to error events

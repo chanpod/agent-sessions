@@ -15,6 +15,108 @@ import { buildWslCommand } from '../utils/wsl-utils.js'
 const execAsync = promisify(exec)
 
 // ============================================================================
+// Detection Cache
+// ============================================================================
+
+/**
+ * Cached detection result with timestamp
+ */
+interface CachedDetectionResult {
+  result: AllCliToolsResult
+  timestamp: number
+  executionContext: string
+}
+
+/** Cache for detection results, keyed by projectPath + context */
+const detectionCache = new Map<string, CachedDetectionResult>()
+
+/** Cache TTL in milliseconds (5 minutes) */
+const CACHE_TTL_MS = 5 * 60 * 1000
+
+/** Set of cache keys currently being refreshed (to prevent duplicate refreshes) */
+const refreshInProgress = new Set<string>()
+
+/**
+ * Generate a cache key from projectPath and execution context
+ */
+function generateCacheKey(projectPath: string, executionContext: string): string {
+  return `${projectPath}:${executionContext}`
+}
+
+/**
+ * Check if a cached result is stale (older than TTL)
+ */
+function isCacheStale(cached: CachedDetectionResult): boolean {
+  return Date.now() - cached.timestamp > CACHE_TTL_MS
+}
+
+/**
+ * Get cached detection result if available
+ *
+ * @param projectPath - The project path
+ * @param executionContext - The execution context (local-windows, local-unix, wsl, ssh-remote)
+ * @returns Cached result and staleness status, or null if no cache
+ */
+function getCachedDetectionResult(
+  projectPath: string,
+  executionContext: string
+): { cached: CachedDetectionResult; isStale: boolean } | null {
+  const cacheKey = generateCacheKey(projectPath, executionContext)
+  const cached = detectionCache.get(cacheKey)
+
+  if (!cached) {
+    return null
+  }
+
+  return {
+    cached,
+    isStale: isCacheStale(cached),
+  }
+}
+
+/**
+ * Store detection result in cache
+ */
+function setCachedDetectionResult(
+  projectPath: string,
+  executionContext: string,
+  result: AllCliToolsResult
+): void {
+  const cacheKey = generateCacheKey(projectPath, executionContext)
+  detectionCache.set(cacheKey, {
+    result,
+    timestamp: Date.now(),
+    executionContext,
+  })
+  console.log(`[cli-detector] Cached detection result for ${cacheKey}`)
+}
+
+/**
+ * Clear all cached detection results
+ * Useful for testing or when configuration changes
+ */
+export function clearDetectionCache(): void {
+  detectionCache.clear()
+  refreshInProgress.clear()
+  console.log('[cli-detector] Detection cache cleared')
+}
+
+/**
+ * Get cache statistics for debugging
+ */
+export function getDetectionCacheStats(): {
+  size: number
+  keys: string[]
+  refreshesInProgress: string[]
+} {
+  return {
+    size: detectionCache.size,
+    keys: Array.from(detectionCache.keys()),
+    refreshesInProgress: Array.from(refreshInProgress),
+  }
+}
+
+// ============================================================================
 // Git Bash Detection (Windows)
 // ============================================================================
 
@@ -78,7 +180,7 @@ function findGitBashPath(): string | null {
  * Get the cached Git Bash path or find it if not yet cached.
  * This is the main entry point for getting Git Bash path.
  */
-function getGitBashPath(): string | null {
+export function getGitBashPath(): string | null {
   return findGitBashPath()
 }
 
@@ -571,15 +673,23 @@ export async function detectCliTool(
 }
 
 /**
- * Detect all built-in CLI tools
- *
- * @param projectPath - The project path (used to determine execution context)
- * @param projectId - Optional project ID for SSH connections
- * @param sshManager - Optional SSH manager for remote execution
- * @param additionalTools - Optional additional custom tool definitions to check
- * @returns All detection results
+ * Options for detectAllCliTools
  */
-export async function detectAllCliTools(
+export interface DetectAllCliToolsOptions {
+  /** Optional project ID for SSH connections */
+  projectId?: string
+  /** Optional SSH manager for remote execution */
+  sshManager?: SSHManagerLike
+  /** Optional additional custom tool definitions to check */
+  additionalTools?: CliToolDefinition[]
+  /** Force refresh - bypass cache and run fresh detection */
+  forceRefresh?: boolean
+}
+
+/**
+ * Internal function to perform the actual detection (no caching)
+ */
+async function detectAllCliToolsInternal(
   projectPath: string,
   projectId?: string,
   sshManager?: SSHManagerLike,
@@ -611,6 +721,153 @@ export async function detectAllCliTools(
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+/**
+ * Trigger a background refresh of the cache
+ * Returns immediately without waiting for the refresh to complete
+ */
+function triggerBackgroundRefresh(
+  cacheKey: string,
+  projectPath: string,
+  executionContext: string,
+  projectId?: string,
+  sshManager?: SSHManagerLike,
+  additionalTools?: CliToolDefinition[]
+): void {
+  // Don't start a new refresh if one is already in progress for this key
+  if (refreshInProgress.has(cacheKey)) {
+    console.log(`[cli-detector] Background refresh already in progress for ${cacheKey}`)
+    return
+  }
+
+  console.log(`[cli-detector] Starting background refresh for ${cacheKey}`)
+  refreshInProgress.add(cacheKey)
+
+  // Run detection in background (fire and forget)
+  detectAllCliToolsInternal(projectPath, projectId, sshManager, additionalTools)
+    .then((result) => {
+      setCachedDetectionResult(projectPath, executionContext, result)
+      console.log(`[cli-detector] Background refresh completed for ${cacheKey}`)
+    })
+    .catch((error) => {
+      console.error(`[cli-detector] Background refresh failed for ${cacheKey}:`, error)
+    })
+    .finally(() => {
+      refreshInProgress.delete(cacheKey)
+    })
+}
+
+/**
+ * Detect all built-in CLI tools with caching support
+ *
+ * This function implements a stale-while-revalidate caching strategy:
+ * - Cache hit (fresh): Return cached results immediately
+ * - Cache hit (stale): Return cached results immediately AND trigger background refresh
+ * - Cache miss: Run detection, cache results, return
+ *
+ * @param projectPath - The project path (used to determine execution context)
+ * @param projectId - Optional project ID for SSH connections
+ * @param sshManager - Optional SSH manager for remote execution
+ * @param additionalTools - Optional additional custom tool definitions to check
+ * @returns All detection results
+ */
+export async function detectAllCliTools(
+  projectPath: string,
+  projectId?: string,
+  sshManager?: SSHManagerLike,
+  additionalTools?: CliToolDefinition[]
+): Promise<AllCliToolsResult>
+
+/**
+ * Detect all built-in CLI tools with caching support (options object signature)
+ *
+ * @param projectPath - The project path (used to determine execution context)
+ * @param options - Detection options including forceRefresh flag
+ * @returns All detection results
+ */
+export async function detectAllCliTools(
+  projectPath: string,
+  options: DetectAllCliToolsOptions
+): Promise<AllCliToolsResult>
+
+/**
+ * Implementation of detectAllCliTools with overloaded signatures
+ */
+export async function detectAllCliTools(
+  projectPath: string,
+  projectIdOrOptions?: string | DetectAllCliToolsOptions,
+  sshManager?: SSHManagerLike,
+  additionalTools?: CliToolDefinition[]
+): Promise<AllCliToolsResult> {
+  // Parse arguments based on overload used
+  let projectId: string | undefined
+  let resolvedSshManager: SSHManagerLike | undefined
+  let resolvedAdditionalTools: CliToolDefinition[] | undefined
+  let forceRefresh = false
+
+  if (typeof projectIdOrOptions === 'object' && projectIdOrOptions !== null) {
+    // Options object signature
+    const options = projectIdOrOptions as DetectAllCliToolsOptions
+    projectId = options.projectId
+    resolvedSshManager = options.sshManager
+    resolvedAdditionalTools = options.additionalTools
+    forceRefresh = options.forceRefresh ?? false
+  } else {
+    // Legacy positional arguments signature
+    projectId = projectIdOrOptions
+    resolvedSshManager = sshManager
+    resolvedAdditionalTools = additionalTools
+  }
+
+  // Determine execution context for cache key
+  let executionContext: string
+  try {
+    executionContext = await PathService.getExecutionContext(projectPath, projectId, resolvedSshManager)
+  } catch {
+    // If we can't determine context, use a fallback
+    executionContext = 'unknown'
+  }
+
+  const cacheKey = generateCacheKey(projectPath, executionContext)
+
+  // Force refresh: bypass cache entirely
+  if (forceRefresh) {
+    console.log(`[cli-detector] Force refresh requested for ${cacheKey}`)
+    const result = await detectAllCliToolsInternal(projectPath, projectId, resolvedSshManager, resolvedAdditionalTools)
+    setCachedDetectionResult(projectPath, executionContext, result)
+    return result
+  }
+
+  // Check cache
+  const cacheResult = getCachedDetectionResult(projectPath, executionContext)
+
+  if (cacheResult) {
+    const { cached, isStale } = cacheResult
+
+    if (isStale) {
+      // Return cached data immediately, but trigger background refresh
+      console.log(`[cli-detector] Cache hit (stale) for ${cacheKey}, triggering background refresh`)
+      triggerBackgroundRefresh(
+        cacheKey,
+        projectPath,
+        executionContext,
+        projectId,
+        resolvedSshManager,
+        resolvedAdditionalTools
+      )
+    } else {
+      console.log(`[cli-detector] Cache hit (fresh) for ${cacheKey}`)
+    }
+
+    return cached.result
+  }
+
+  // Cache miss: run detection and cache results
+  console.log(`[cli-detector] Cache miss for ${cacheKey}, running detection`)
+  const result = await detectAllCliToolsInternal(projectPath, projectId, resolvedSshManager, resolvedAdditionalTools)
+  setCachedDetectionResult(projectPath, executionContext, result)
+  return result
 }
 
 /**
@@ -805,6 +1062,8 @@ export const CliDetector = {
   createCliToolDefinition,
   checkAgentUpdate,
   checkAgentUpdates,
+  clearDetectionCache,
+  getDetectionCacheStats,
   BUILTIN_CLI_TOOLS,
   CLAUDE_CLI,
   GEMINI_CLI,

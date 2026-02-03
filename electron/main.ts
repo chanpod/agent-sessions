@@ -1095,13 +1095,13 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 })
 
 // Agent Process handlers
-ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string }) => {
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string }) => {
   if (!agentProcessManager) throw new Error('Agent process manager not initialized')
   const info = agentProcessManager.spawn(options)
   return { success: true, process: info }
 })
 
-ipcMain.handle('agent:send-message', async (_event, id: string, message: { type: 'user_message', content: string }) => {
+ipcMain.handle('agent:send-message', async (_event, id: string, message: { type: 'user', message: { role: 'user', content: string } }) => {
   if (!agentProcessManager) throw new Error('Agent process manager not initialized')
   agentProcessManager.sendMessage(id, message)
   return { success: true }
