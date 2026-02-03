@@ -397,6 +397,16 @@ let sshManager: SSHManager | null = null
 let backgroundClaude: BackgroundClaudeManager | null = null
 let agentProcessManager: AgentProcessManager | null = null
 
+// Track PTY-based agent terminals (for streaming support)
+interface AgentTerminalInfo {
+  id: string
+  agentType: 'claude' | 'codex' | 'gemini'
+  cwd: string
+  sessionId?: string
+  createdAt: number
+}
+const agentTerminals: Map<string, AgentTerminalInfo> = new Map()
+
 
 // Git watching for detecting branch and file changes
 
@@ -1101,28 +1111,106 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
   return ptyManager.injectContext(terminalId, context)
 })
 
-// Agent Process handlers
+// Agent Process handlers (PTY-based for true streaming support)
 ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string }) => {
-  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
-  const info = agentProcessManager.spawn(options)
-  return { success: true, process: info }
+  if (!ptyManager) throw new Error('PTY manager not initialized')
+
+  const { agentType, cwd, resumeSessionId } = options
+  console.log(`[Agent] Spawning PTY-based agent: ${agentType} in ${cwd}`, resumeSessionId ? `(resuming ${resumeSessionId})` : '')
+
+  // Build the CLI command based on agent type
+  let command: string
+  switch (agentType) {
+    case 'claude':
+      // Use print mode with streaming JSON for real-time output
+      // cat | keeps stdin open so we can pipe JSON messages to Claude
+      // -p: print mode (non-interactive, required for --output-format)
+      // --output-format stream-json: realtime streaming JSON events
+      // --input-format stream-json: accept JSON input via stdin for multi-turn
+      // --verbose: include additional metadata
+      // --include-partial-messages: get incremental deltas, not just complete blocks
+      let claudeCmd = 'claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages'
+      if (resumeSessionId) {
+        claudeCmd += ` --resume ${resumeSessionId}`
+      }
+      // Use cat as a stdin wrapper to keep input open
+      command = `cat | ${claudeCmd}`
+      break
+    case 'codex':
+      command = 'codex'
+      break
+    case 'gemini':
+      command = 'gemini'
+      break
+    default:
+      throw new Error(`Unknown agent type: ${agentType}`)
+  }
+
+  // Create a hidden PTY terminal for the agent
+  const terminalInfo = ptyManager.createTerminal({
+    cwd,
+    initialCommand: command,
+    hidden: true, // Don't show in regular terminal list
+    title: agentType,
+  })
+
+  // Track the agent terminal
+  const agentInfo: AgentTerminalInfo = {
+    id: terminalInfo.id,
+    agentType,
+    cwd,
+    sessionId: resumeSessionId,
+    createdAt: Date.now(),
+  }
+  agentTerminals.set(terminalInfo.id, agentInfo)
+
+  console.log(`[Agent] Created PTY terminal ${terminalInfo.id} for ${agentType}`)
+
+  return {
+    success: true,
+    process: {
+      id: terminalInfo.id,
+      agentType,
+      cwd,
+      sessionId: resumeSessionId,
+      pid: terminalInfo.pid,
+    }
+  }
 })
 
 ipcMain.handle('agent:send-message', async (_event, id: string, message: { type: 'user', message: { role: 'user', content: string } }) => {
-  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
-  agentProcessManager.sendMessage(id, message)
+  if (!ptyManager) throw new Error('PTY manager not initialized')
+
+  const agentInfo = agentTerminals.get(id)
+  if (!agentInfo) {
+    throw new Error(`Agent terminal ${id} not found`)
+  }
+
+  // With --input-format stream-json, Claude expects NDJSON messages
+  // Format: {"type": "user", "message": {"role": "user", "content": "..."}}
+  const jsonMessage = JSON.stringify(message)
+  console.log(`[Agent] Sending JSON message to ${id}:`, jsonMessage.substring(0, 200))
+
+  // Write JSON followed by newline (NDJSON format)
+  ptyManager.write(id, jsonMessage + '\n')
+
   return { success: true }
 })
 
 ipcMain.handle('agent:kill', async (_event, id: string) => {
-  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
-  agentProcessManager.kill(id)
+  if (!ptyManager) throw new Error('PTY manager not initialized')
+
+  console.log(`[Agent] Killing agent terminal ${id}`)
+  ptyManager.kill(id)
+  agentTerminals.delete(id)
+
   return { success: true }
 })
 
 ipcMain.handle('agent:list', async () => {
-  if (!agentProcessManager) throw new Error('Agent process manager not initialized')
-  return { success: true, processes: agentProcessManager.list() }
+  // Return list of active agent terminals
+  const processes = Array.from(agentTerminals.values())
+  return { success: true, processes }
 })
 
 // App version IPC handler

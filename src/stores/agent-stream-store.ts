@@ -73,6 +73,7 @@ export const useAgentStreamStore = create<AgentStreamStore>((set, get) => ({
       switch (event.type) {
         case 'agent-message-start': {
           const data = event.data as AgentMessageStartData
+          console.log('[AgentStreamStore] agent-message-start:', data.messageId, 'terminalId:', terminalId)
           const newMessage: AgentMessage = {
             id: data.messageId,
             model: data.model,
@@ -91,8 +92,9 @@ export const useAgentStreamStore = create<AgentStreamStore>((set, get) => ({
 
         case 'agent-text-delta': {
           const data = event.data as AgentTextDeltaData
+          console.log('[AgentStreamStore] agent-text-delta:', data.text?.substring(0, 50), 'terminalId:', terminalId)
           if (!terminalState.currentMessage) {
-            // No current message, ignore the delta
+            console.warn('[AgentStreamStore] No currentMessage for text delta! terminalId:', terminalId)
             newState = terminalState
             break
           }
@@ -252,8 +254,16 @@ export const useAgentStreamStore = create<AgentStreamStore>((set, get) => ({
 
         case 'agent-message-end': {
           const data = event.data as AgentMessageEndData
+          console.log('[AgentStreamStore] agent-message-end received, currentMessage:', !!terminalState.currentMessage)
           if (!terminalState.currentMessage) {
-            newState = terminalState
+            // No message to complete - this can happen with duplicate events from
+            // Claude CLI emitting both print mode (assistant) and streaming mode (message_stop) events.
+            // Still ensure isActive is false to handle any edge cases.
+            console.log('[AgentStreamStore] No currentMessage to complete (duplicate event?), ensuring isActive=false')
+            newState = {
+              ...terminalState,
+              isActive: false,
+            }
             break
           }
 
@@ -341,9 +351,12 @@ export const useAgentStreamStore = create<AgentStreamStore>((set, get) => ({
 
     // Subscribe to detector events via IPC
     if (window.electron?.detector?.onEvent) {
+      console.log('[AgentStreamStore] Subscribing to detector events')
       unsubscribe = window.electron.detector.onEvent((event) => {
+        console.log('[AgentStreamStore] Received detector event:', event.type, event.terminalId)
         // Filter for agent-* events and convert to AgentStreamEvent
         if (event.type.startsWith('agent-')) {
+          console.log('[AgentStreamStore] Processing agent event:', event.type)
           const agentEvent = {
             type: event.type,
             data: event.data,
@@ -426,6 +439,16 @@ export const useAgentStreamStore = create<AgentStreamStore>((set, get) => ({
     }
   },
 }))
+
+// Auto-subscribe to detector events when the store is created
+// This ensures the listener is set up BEFORE any component mounts,
+// preventing race conditions where events fire before subscription
+if (typeof window !== 'undefined' && window.electron?.detector?.onEvent) {
+  // Defer subscription to next tick to ensure window.electron is fully initialized
+  setTimeout(() => {
+    useAgentStreamStore.getState().subscribeToEvents()
+  }, 0)
+}
 
 // Cleanup function for when the app unmounts
 if (typeof window !== 'undefined') {

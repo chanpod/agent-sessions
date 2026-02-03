@@ -110,6 +110,7 @@ export class PtyManager {
 
     // Forward detected events to renderer
     this.detectorManager.onEvent((event) => {
+      console.log(`[PtyManager] Forwarding detector event to renderer:`, event.type, event.terminalId)
       if (!this.window.isDestroyed()) {
         this.window.webContents.send('detector:event', event)
       }
@@ -320,9 +321,14 @@ export class PtyManager {
     // Combine parsed args with any existing shellArgs
     const finalArgs = [...parsedShellArgs, ...shellArgs]
 
+    // For agent/hidden terminals, use very wide terminal to prevent line wrapping
+    // that corrupts JSON streaming output. Regular terminals use standard 80x24.
+    const isAgentTerminal = options.hidden || !!options.initialCommand
+    const cols = isAgentTerminal ? 10000 : 80
+
     const ptyProcess = pty.spawn(shellExecutable, finalArgs, {
       name: 'xterm-256color',
-      cols: 80,
+      cols,
       rows: 24,
       cwd: effectiveCwd,
       env: {
@@ -356,6 +362,11 @@ export class PtyManager {
 
     // Forward PTY data to renderer
     ptyProcess.onData((data) => {
+      // Debug: log raw PTY output for agent terminals
+      if (options.hidden) {
+        console.log(`[PtyManager] Agent PTY ${id} output (${data.length} bytes):`, data.substring(0, 500))
+      }
+
       // Process through detectors
       this.detectorManager.processOutput(id, data)
 

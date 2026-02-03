@@ -112,47 +112,6 @@ function mapMessage(
   }
 }
 
-/**
- * Convert stream store state to AgentConversation format
- */
-function mapToConversation(
-  processId: string,
-  agentType: string,
-  state: TerminalAgentState | undefined
-): AgentConversation {
-  if (!state) {
-    return {
-      terminalId: processId,
-      agentType,
-      messages: [],
-      currentMessage: null,
-      status: 'idle',
-    }
-  }
-
-  const messages = state.messages.map((msg) => mapMessage(msg, agentType))
-  const currentMessage = state.currentMessage
-    ? mapMessage(state.currentMessage, agentType)
-    : null
-
-  let status: AgentConversation['status'] = 'idle'
-  if (state.isActive) {
-    status = 'streaming'
-  } else if (state.error) {
-    status = 'error'
-  } else if (state.messages.length > 0) {
-    status = 'completed'
-  }
-
-  return {
-    terminalId: processId,
-    agentType,
-    messages,
-    currentMessage,
-    status,
-  }
-}
-
 // =============================================================================
 // Component
 // =============================================================================
@@ -175,21 +134,11 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps) {
   // Track all process IDs that belong to this conversation (for multi-turn)
   const [activeProcessIds, setActiveProcessIds] = useState<Set<string>>(new Set([initialProcessId]))
+  // isProcessing: true between user sending message and agent starting to respond
+  // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
   const [userMessages, setUserMessages] = useState<UIAgentMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
-
-  // Subscribe to process exit - marks processing as done for ANY of our processes
-  useEffect(() => {
-    if (!window.electron?.agent?.onProcessExit) return
-
-    const unsubscribe = window.electron.agent.onProcessExit((id, _code) => {
-      if (activeProcessIds.has(id)) {
-        setIsProcessing(false)
-      }
-    })
-    return unsubscribe
-  }, [activeProcessIds])
 
   // Subscribe to raw events to capture session_id for multi-turn
   useEffect(() => {
@@ -285,12 +234,24 @@ export function AgentWorkspace({
     })
   )
 
+  // Check if any process is actively streaming (from store state)
+  const anyActive = useMemo(() => {
+    return allProcessStates.some((state) => state.isActive)
+  }, [allProcessStates])
+
+  // Clear isProcessing when agent starts responding (anyActive becomes true)
+  // This transitions from "waiting for agent" to "agent is responding"
+  useEffect(() => {
+    if (anyActive && isProcessing) {
+      setIsProcessing(false)
+    }
+  }, [anyActive, isProcessing])
+
   // Convert stream state to AgentConversation format, merging user messages
   const conversation = useMemo(() => {
     // Merge messages from all process states
     const assistantMessages: UIAgentMessage[] = []
     let currentMessage: UIAgentMessage | null = null
-    let anyActive = false
 
     for (const processState of allProcessStates) {
       // Add completed messages
@@ -301,9 +262,6 @@ export function AgentWorkspace({
       if (processState.currentMessage) {
         currentMessage = mapMessage(processState.currentMessage, agentType)
       }
-      if (processState.isActive) {
-        anyActive = true
-      }
     }
 
     // Merge user messages with assistant messages, sorted by timestamp
@@ -311,7 +269,9 @@ export function AgentWorkspace({
       (a, b) => a.timestamp - b.timestamp
     )
 
-    // Determine status
+    // Determine status:
+    // - isProcessing: user sent message, waiting for agent to start
+    // - anyActive: agent is actively responding (from store's isActive)
     let status: AgentConversation['status'] = 'idle'
     if (isProcessing || anyActive) {
       status = 'streaming'
@@ -326,7 +286,7 @@ export function AgentWorkspace({
       currentMessage,
       status,
     }
-  }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing])
+  }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive])
 
   // Determine placeholder text
   const placeholder = conversation.status === 'streaming'

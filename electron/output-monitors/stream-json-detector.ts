@@ -11,6 +11,89 @@ function stripAnsi(str: string): string {
 }
 
 /**
+ * Extracts complete JSON objects from a buffer using brace-matching.
+ * Handles PTY output corruption where newlines are inserted mid-JSON.
+ *
+ * @param buffer - Raw input buffer that may contain partial/complete JSON objects
+ * @returns Object with extracted JSON strings and remaining buffer content
+ */
+function extractCompleteJsonObjects(buffer: string): {
+  jsonObjects: string[]
+  remaining: string
+} {
+  const jsonObjects: string[] = []
+  let remaining = ''
+  let i = 0
+
+  while (i < buffer.length) {
+    // Skip non-JSON content until we find a '{'
+    if (buffer[i] !== '{') {
+      i++
+      continue
+    }
+
+    // Found a '{', try to extract a complete JSON object
+    const startIndex = i
+    let depth = 0
+    let inString = false
+    let escapeNext = false
+    let j = i
+
+    while (j < buffer.length) {
+      const char = buffer[j]
+
+      if (escapeNext) {
+        escapeNext = false
+        j++
+        continue
+      }
+
+      if (char === '\\' && inString) {
+        escapeNext = true
+        j++
+        continue
+      }
+
+      if (char === '"' && !escapeNext) {
+        inString = !inString
+        j++
+        continue
+      }
+
+      if (!inString) {
+        if (char === '{') {
+          depth++
+        } else if (char === '}') {
+          depth--
+          if (depth === 0) {
+            // Found complete JSON object
+            const jsonStr = buffer.slice(startIndex, j + 1)
+            // Remove any embedded newlines/carriage returns that PTY may have inserted
+            const cleanedJson = jsonStr.replace(/[\r\n]+/g, '')
+            jsonObjects.push(cleanedJson)
+            i = j + 1
+            break
+          }
+        }
+      }
+      j++
+    }
+
+    // If we exited the loop without finding complete JSON, it's incomplete
+    if (depth !== 0) {
+      // Save from startIndex to end as remaining (incomplete JSON)
+      remaining = buffer.slice(startIndex)
+      break
+    }
+  }
+
+  // If we finished scanning and depth is 0, there's no incomplete JSON
+  // But there may be trailing non-JSON content - we can discard it
+
+  return { jsonObjects, remaining }
+}
+
+/**
  * State tracked per terminal for streaming messages
  */
 interface TerminalStreamState {
@@ -77,28 +160,47 @@ export class StreamJsonDetector implements OutputDetector {
     const events: DetectedEvent[] = []
     const state = this.getOrCreateState(terminalId)
 
-    // Append new data to buffer
-    state.buffer += data
+    // Strip ANSI codes first, then append to buffer
+    const cleanData = stripAnsi(data)
+    state.buffer += cleanData
 
-    // Split on newlines, keeping incomplete last line in buffer
-    const lines = state.buffer.split('\n')
-    state.buffer = lines.pop() || '' // Keep the last (potentially incomplete) line
+    // Extract complete JSON objects using brace-matching
+    // This handles PTY corruption where newlines are inserted mid-JSON
+    const { jsonObjects, remaining } = extractCompleteJsonObjects(state.buffer)
+    state.buffer = remaining
 
-    // Process each complete line
-    for (const line of lines) {
-      const trimmedLine = line.trim()
-      if (!trimmedLine) continue
+    // Debug: log extraction results
+    if (remaining.length > 0) {
+      console.log(`[StreamJsonDetector] Buffer holding ${remaining.length} bytes (incomplete JSON)`)
+    }
+    if (jsonObjects.length > 0) {
+      console.log(`[StreamJsonDetector] Extracted ${jsonObjects.length} complete JSON objects`)
+    }
 
-      // Strip ANSI codes and attempt to parse as JSON
-      const cleanLine = stripAnsi(trimmedLine)
-
+    // Process each extracted JSON object
+    for (const jsonStr of jsonObjects) {
       try {
-        const event = JSON.parse(cleanLine) as ClaudeStreamEvent
+        const parsed = JSON.parse(jsonStr)
+
+        // Handle Claude CLI's stream_event wrapper format:
+        // {"type":"stream_event","event":{"type":"message_start",...}}
+        let event: ClaudeStreamEvent
+        if (parsed.type === 'stream_event' && parsed.event) {
+          event = parsed.event as ClaudeStreamEvent
+          console.log(`[StreamJsonDetector] Unwrapped stream_event: ${event.type}`)
+        } else {
+          event = parsed as ClaudeStreamEvent
+          console.log(`[StreamJsonDetector] Direct event: ${event.type}`)
+        }
+
         const detectedEvents = this.processStreamEvent(terminalId, state, event)
+        if (detectedEvents.length > 0) {
+          console.log(`[StreamJsonDetector] Emitting ${detectedEvents.length} events:`, detectedEvents.map(e => e.type))
+        }
         events.push(...detectedEvents)
-      } catch {
-        // Not valid JSON, skip this line
-        // This is expected for non-JSON output from the CLI
+      } catch (e) {
+        // Failed to parse JSON - log for debugging
+        console.log(`[StreamJsonDetector] Failed to parse extracted JSON (${jsonStr.length} chars):`, jsonStr.substring(0, 100))
       }
     }
 
@@ -300,6 +402,144 @@ export class StreamJsonDetector implements OutputDetector {
         state.usage = null
         state.stopReason = null
         break
+
+      // ========================================
+      // Claude CLI Print Mode Events
+      // These provide complete content blocks (not streaming deltas)
+      // ========================================
+
+      case 'system': {
+        // System init event - extract session info
+        const sysEvent = event as unknown as { subtype?: string; session_id?: string; model?: string }
+        if (sysEvent.subtype === 'init' && sysEvent.session_id) {
+          state.messageId = sysEvent.session_id
+          state.model = sysEvent.model || null
+          console.log(`[StreamJsonDetector] System init: session=${sysEvent.session_id}, model=${sysEvent.model}`)
+        }
+        break
+      }
+
+      case 'assistant': {
+        // Assistant message with complete content - emit as full message
+        const assistantEvent = event as unknown as {
+          message?: {
+            id?: string
+            model?: string
+            content?: Array<{ type: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown }>
+            stop_reason?: string
+            usage?: { input_tokens?: number; output_tokens?: number }
+          }
+          session_id?: string
+        }
+
+        if (assistantEvent.message) {
+          const msg = assistantEvent.message
+          state.messageId = msg.id || state.messageId
+          state.model = msg.model || state.model
+
+          // Emit message start
+          events.push({
+            terminalId,
+            type: 'agent-message-start',
+            timestamp,
+            data: {
+              messageId: state.messageId,
+              model: state.model,
+              usage: msg.usage ? {
+                inputTokens: msg.usage.input_tokens || 0,
+                outputTokens: msg.usage.output_tokens || 0,
+              } : undefined,
+            },
+          })
+
+          // Process each content block
+          const content = msg.content || []
+          content.forEach((block, index) => {
+            if (block.type === 'text' && block.text) {
+              // Emit text block as a single delta (complete content)
+              events.push({
+                terminalId,
+                type: 'agent-text-delta',
+                timestamp,
+                data: {
+                  messageId: state.messageId,
+                  blockIndex: index,
+                  blockType: 'text',
+                  text: block.text,
+                },
+              })
+            } else if (block.type === 'thinking' && block.thinking) {
+              // Emit thinking block
+              events.push({
+                terminalId,
+                type: 'agent-thinking-delta',
+                timestamp,
+                data: {
+                  messageId: state.messageId,
+                  blockIndex: index,
+                  blockType: 'thinking',
+                  thinking: block.thinking,
+                },
+              })
+            } else if (block.type === 'tool_use') {
+              // Emit tool use block
+              events.push({
+                terminalId,
+                type: 'agent-tool-start',
+                timestamp,
+                data: {
+                  messageId: state.messageId,
+                  blockIndex: index,
+                  toolId: block.id,
+                  name: block.name,
+                },
+              })
+              if (block.input) {
+                events.push({
+                  terminalId,
+                  type: 'agent-tool-input-delta',
+                  timestamp,
+                  data: {
+                    messageId: state.messageId,
+                    blockIndex: index,
+                    partialJson: JSON.stringify(block.input),
+                  },
+                })
+              }
+            }
+          })
+
+          // Emit message end
+          events.push({
+            terminalId,
+            type: 'agent-message-end',
+            timestamp,
+            data: {
+              messageId: state.messageId,
+              model: state.model,
+              stopReason: msg.stop_reason,
+              usage: msg.usage ? {
+                inputTokens: msg.usage.input_tokens || 0,
+                outputTokens: msg.usage.output_tokens || 0,
+              } : undefined,
+            },
+          })
+
+          console.log(`[StreamJsonDetector] Processed assistant message with ${content.length} blocks`)
+        }
+        break
+      }
+
+      case 'result': {
+        // Result event - final summary (optional additional processing)
+        const resultEvent = event as unknown as {
+          subtype?: string
+          result?: string
+          usage?: { input_tokens?: number; output_tokens?: number }
+        }
+        console.log(`[StreamJsonDetector] Result: ${resultEvent.subtype}, usage: ${JSON.stringify(resultEvent.usage)}`)
+        break
+      }
     }
 
     return events

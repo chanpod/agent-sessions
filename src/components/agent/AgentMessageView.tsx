@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react'
+import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { IconLoader2, IconUser, IconRobot, IconSettings } from '@tabler/icons-react'
 
 import type {
@@ -113,6 +113,11 @@ export function AgentMessageView({
 }: AgentMessageViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isStreaming = conversation.status === 'streaming'
+  // Track if user is at the bottom (should auto-scroll)
+  // Start as true so initial load scrolls to bottom
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  // Track if we should skip the next scroll check (after programmatic scroll)
+  const skipNextScrollCheck = useRef(false)
 
   // Build render context
   const context: RenderContext = useMemo(
@@ -134,18 +139,47 @@ export function AgentMessageView({
     return messages
   }, [conversation.messages, conversation.currentMessage])
 
-  // Auto-scroll to bottom when streaming
+  // Handle scroll events to detect if user scrolled away from bottom
+  const handleScroll = useCallback(() => {
+    if (skipNextScrollCheck.current) {
+      skipNextScrollCheck.current = false
+      return
+    }
+    if (!scrollRef.current) return
+
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
+    // Consider "at bottom" if within 50px of the bottom
+    const threshold = 50
+    const atBottom = scrollHeight - scrollTop - clientHeight < threshold
+    setIsAtBottom(atBottom)
+  }, [])
+
+  // Auto-scroll to bottom when new content arrives, but only if user is at bottom
   useEffect(() => {
-    if (autoScroll && scrollRef.current) {
+    if (autoScroll && isAtBottom && scrollRef.current) {
+      skipNextScrollCheck.current = true
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [autoScroll, allMessages, conversation.currentMessage?.blocks])
+  }, [autoScroll, isAtBottom, allMessages, conversation.currentMessage?.blocks])
+
+  // Reset to bottom when streaming starts (new message)
+  useEffect(() => {
+    if (isStreaming && scrollRef.current) {
+      setIsAtBottom(true)
+      skipNextScrollCheck.current = true
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [isStreaming])
 
   return (
     <ScrollArea
       className={cn('h-full', className)}
     >
-      <div ref={scrollRef} className="flex flex-col gap-4 p-4">
+      <div
+        ref={scrollRef}
+        className="flex flex-col gap-4 p-4"
+        onScroll={handleScroll}
+      >
         {allMessages.map((message) => (
           <MessageRenderer
             key={message.id}

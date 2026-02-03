@@ -12,22 +12,24 @@ export function useAgentStream(terminalId: string): {
   isStreaming: boolean
   isComplete: boolean
 } {
-  const store = useAgentStreamStore()
-
-  // Subscribe to IPC events on mount
+  // Subscribe to IPC events on mount (uses store methods, not state)
+  const subscribeToEvents = useAgentStreamStore((s) => s.subscribeToEvents)
   useEffect(() => {
-    const unsubscribe = store.subscribeToEvents()
+    const unsubscribe = subscribeToEvents()
     return unsubscribe
-  }, []) // Only once per component mount
+  }, [subscribeToEvents])
 
-  const state = store.getTerminalState(terminalId)
+  // Use selector to properly subscribe to state changes for this terminal
+  // This ensures React re-renders when the terminal's state changes
+  const state = useAgentStreamStore((s) => s.terminals.get(terminalId))
+  const isComplete = useAgentStreamStore((s) => s.isMessageComplete(terminalId))
 
   return {
     state,
     currentMessage: state?.currentMessage ?? null,
     messages: state?.messages ?? [],
     isStreaming: state?.currentMessage?.status === 'streaming',
-    isComplete: store.isMessageComplete(terminalId),
+    isComplete,
   }
 }
 
