@@ -15,6 +15,7 @@ export interface SavedTerminalConfig {
   terminalType?: 'regular' | 'agent'  // Type of terminal
   agentId?: string                     // Which agent (claude/gemini/codex) if agent terminal
   contextId?: string                   // Which context was injected
+  sessionId?: string                   // Claude CLI session ID for multi-turn resume
 }
 
 export type ActivityLevel = 'substantial' | 'minor' | 'idle'

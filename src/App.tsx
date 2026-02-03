@@ -31,7 +31,7 @@ import { useDetectedServers } from './hooks/useDetectedServers'
 import { AgentMessageView } from './components/agent'
 import { AgentWorkspace } from './components/agent/AgentWorkspace'
 import { useAgentStream } from './hooks/useAgentStream'
-import { useAgentStreamStore } from './stores/agent-stream-store'
+import { useAgentStreamStore, waitForRehydration } from './stores/agent-stream-store'
 import type { AgentConversation, ContentBlock as UIContentBlock, AgentMessage as UIAgentMessage } from './types/agent-ui'
 import type { TerminalAgentState, AgentMessage as StreamAgentMessage, ContentBlock as StreamContentBlock } from './types/stream-json'
 
@@ -372,13 +372,83 @@ function App() {
       // SSH connections should only be established when user explicitly clicks "Connect"
       // This prevents password prompts on app startup
 
+      // Wait for agent stream store to complete async rehydration before restoring agent sessions
+      // This prevents a race condition where we try to restore sessions before the persisted
+      // session data has been loaded from storage
+      await waitForRehydration()
+      console.log('[App] Agent stream store rehydrated, proceeding with terminal restoration')
+
       // Step 2: Now restore terminals with connections ready
       const sessionsToAdd: Parameters<typeof addSession>[0][] = []
       const configUpdates: { oldId: string; newConfig: Parameters<typeof saveConfig>[0] }[] = []
       const terminalsToAddToProjects: { projectId: string; terminalId: string }[] = []
+      // Collect agent processes to add to the agentProcesses Map (needed for AgentWorkspace rendering)
+      const agentProcessesToAdd: { id: string; agentType: string; cwd: string }[] = []
 
       for (const config of configs) {
         try {
+          // Check if this is an agent terminal
+          if (config.terminalType === 'agent') {
+            // Agent terminals don't need a PTY - they use the AgentProcessManager
+            // Generate a new terminal ID (terminal IDs always regenerate on app restart)
+            const newTerminalId = `agent-restored-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+            // Restore conversation history if we have a sessionId
+            if (config.sessionId) {
+              const { restoreSessionToTerminal } = useAgentStreamStore.getState()
+              restoreSessionToTerminal(newTerminalId, config.sessionId)
+              console.log(`[App] Restored agent session ${config.sessionId} to terminal ${newTerminalId}`)
+            }
+
+            // Create session entry with isAgentProcess flag (indicates no PTY)
+            sessionsToAdd.push({
+              id: newTerminalId,
+              projectId: config.projectId,
+              pid: 0, // No actual process yet - will be spawned when user sends a message
+              shell: config.shell,
+              shellName: config.shellName,
+              cwd: config.cwd,
+              title: config.shellName,
+              createdAt: Date.now(),
+              // Agent-specific fields
+              terminalType: 'agent',
+              agentId: config.agentId,
+              contextId: config.contextId,
+              isAgentProcess: true, // Flag to indicate this uses AgentProcessManager, not PTY
+            })
+
+            // Also add to agentProcesses Map so AgentWorkspace renders instead of AgentMessageView
+            agentProcessesToAdd.push({
+              id: newTerminalId,
+              agentType: config.agentId || 'claude',
+              cwd: config.cwd,
+            })
+
+            // Add terminal to its project grid
+            if (config.projectId) {
+              terminalsToAddToProjects.push({ projectId: config.projectId, terminalId: newTerminalId })
+            }
+
+            // Update saved config with new terminal ID, but preserve sessionId
+            configUpdates.push({
+              oldId: config.id,
+              newConfig: {
+                id: newTerminalId,
+                projectId: config.projectId,
+                shell: config.shell,
+                shellName: config.shellName,
+                cwd: config.cwd,
+                terminalType: 'agent',
+                agentId: config.agentId,
+                contextId: config.contextId,
+                sessionId: config.sessionId, // Preserve sessionId for future restores
+              },
+            })
+
+            console.log(`[App] Restored agent terminal: ${config.shellName} (new ID: ${newTerminalId})`)
+            continue
+          }
+
           let info
 
           // Check if this config has an SSH connection
@@ -430,6 +500,19 @@ function App() {
       // Batch add all sessions at once
       if (sessionsToAdd.length > 0) {
         addSessionsBatch(sessionsToAdd)
+      }
+
+      // Add restored agent processes to the agentProcesses Map
+      // This is required for AgentWorkspace to render instead of AgentMessageView
+      if (agentProcessesToAdd.length > 0) {
+        setAgentProcesses(prev => {
+          const next = new Map(prev)
+          for (const agent of agentProcessesToAdd) {
+            next.set(agent.id, agent)
+          }
+          return next
+        })
+        console.log(`[App] Added ${agentProcessesToAdd.length} restored agent(s) to agentProcesses Map`)
       }
 
       // Add terminals to their project grids
@@ -570,6 +653,17 @@ function App() {
           isAgentProcess: true, // Flag to distinguish from PTY-based agents
         })
 
+        // Save config for persistence (sessionId added later by AgentWorkspace when stream captures it)
+        saveConfig({
+          id: result.process.id,
+          projectId,
+          shell: agentType,
+          shellName: getAgentDisplayName(agentType),
+          cwd,
+          terminalType: 'agent',
+          agentId: agentType,
+        })
+
         // Set as active session
         setActiveSession(result.process.id)
 
@@ -586,7 +680,7 @@ function App() {
       console.error('[App] Failed to spawn agent process:', error)
       return null
     }
-  }, [setActiveSession, addSession, addTerminalToProject, setProjectFocusedTerminal])
+  }, [setActiveSession, addSession, saveConfig, addTerminalToProject, setProjectFocusedTerminal])
 
   // Handler for creating agent terminals (Claude, Gemini, Codex)
   // Uses the new AgentProcessManager for Claude (JSON streaming),

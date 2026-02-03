@@ -20,15 +20,45 @@ claude -p --verbose --input-format stream-json --output-format stream-json
 | `--output-format stream-json` | Emit NDJSON events on stdout |
 | `--resume <session_id>` | Resume a previous session (for multi-turn) |
 
-## Input Format
+## Input Format (CRITICAL!)
 
-Messages sent to stdin must be NDJSON (newline-delimited JSON):
+Messages sent to stdin must be NDJSON (newline-delimited JSON) with the **FULL** format:
 
 ```json
-{"type":"user","message":{"role":"user","content":"Hello"}}
+{"type":"user","message":{"role":"user","content":"Hello"},"session_id":"default","parent_tool_use_id":null}
 ```
 
-**Important:** The CLI expects `type: "user"` with a nested `message` object containing `role` and `content`. Earlier attempts with `type: "user_message"` or flat structures failed.
+### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"user"` | Message type identifier |
+| `message` | object | Contains `role` and `content` |
+| `message.role` | `"user"` | Role identifier |
+| `message.content` | string | The actual user message |
+| `session_id` | string | Session identifier (use actual session_id for --resume, or `"default"`) |
+| `parent_tool_use_id` | null | Tool use context (null for user messages) |
+
+### ⚠️ Common Mistakes
+
+1. **Missing `session_id`**: Without this field, Claude may receive garbage input
+2. **Missing `parent_tool_use_id`**: Must be explicitly set to `null`
+3. **Using minimal format**: `{"type":"user","message":{...}}` alone is **NOT sufficient**
+
+### TypeScript Implementation
+
+```typescript
+const fullMessage = {
+  type: 'user',
+  message: {
+    role: 'user',
+    content: userInput,
+  },
+  session_id: agentInfo.sessionId || 'default',
+  parent_tool_use_id: null,
+}
+ptyManager.write(id, JSON.stringify(fullMessage) + '\n')
+```
 
 ## Output Events
 
@@ -172,8 +202,33 @@ This allows the UI store to handle events uniformly regardless of source.
 ## Gotchas
 
 1. **`--verbose` is required** with `-p` and `--output-format=stream-json`
-2. **stdin must close** for processing to begin
+2. **stdin must close** for processing to begin (for child process approach, not PTY)
 3. **Use full Git Bash path** on Windows to avoid WSL
-4. **Message format is nested**: `{type, message: {role, content}}`
+4. **CRITICAL: Full message format required**: `{type, message: {role, content}, session_id, parent_tool_use_id: null}` - missing fields cause garbage input!
 5. **Track session_id** from first response for `--resume`
 6. **zustand selectors** that create new arrays cause infinite loops - use `useShallow`
+7. **PTY approach**: For PTY-based agents, the command runs with `-` at the end to read from stdin continuously
+8. **Wait after spawn**: When spawning a new process with --resume, wait ~500ms before sending message
+
+## PTY vs Child Process Approach
+
+This project uses **PTY-based agents** for real-time streaming:
+
+| Aspect | PTY Approach | Child Process Approach |
+|--------|-------------|----------------------|
+| stdin handling | Write directly, no need to close | Must call `stdin.end()` |
+| Command | `claude -p ... -` (trailing dash for stdin) | `claude -p ...` |
+| Events channel | `detector:event` | `agent:stream-event` |
+| Process lifecycle | Stays open until killed or response complete | Exits after stdin closes |
+
+### PTY Command Format
+
+```bash
+claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages -
+```
+
+The trailing `-` tells Claude to read from stdin. For resume:
+
+```bash
+claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages --resume <session_id> -
+```

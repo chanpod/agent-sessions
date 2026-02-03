@@ -4,6 +4,7 @@
 export { MessageBlock, TextContent, CodeContent } from './MessageBlock'
 export { ThinkingBlock } from './ThinkingBlock'
 export { ToolCallCard } from './ToolCallCard'
+export { ContextUsageIndicator } from './ContextUsageIndicator'
 
 // Composite views
 export { AgentMessageView } from './AgentMessageView'
