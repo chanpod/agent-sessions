@@ -9,7 +9,7 @@ import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { ScrollArea } from './ui/scroll-area'
 import { Separator } from './ui/separator'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet'
+import { Sheet, SheetContent } from './ui/sheet'
 
 interface ChangedFilesPanelProps {
   isOpen: boolean
@@ -48,7 +48,7 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
   const [diffParts, setDiffParts] = useState<Change[] | null>(null)
   const [diffError, setDiffError] = useState<string | null>(null)
   const [isDiffLoading, setIsDiffLoading] = useState(false)
-  const [drawerWidth, setDrawerWidth] = useState(720)
+  const [drawerWidth, setDrawerWidth] = useState(860)
   const [hasResized, setHasResized] = useState(false)
   const [isResizing, setIsResizing] = useState(false)
 
@@ -90,17 +90,17 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
 
   const getWidthBounds = useCallback(() => {
     if (typeof window === 'undefined') {
-      return { min: 640, max: 1200 }
+      return { min: 720, max: 1400 }
     }
-    const max = Math.max(520, Math.min(1200, window.innerWidth - 64))
-    const min = Math.min(640, max)
+    const max = Math.max(620, Math.min(1400, window.innerWidth - 72))
+    const min = Math.min(720, max)
     return { min, max }
   }, [])
 
   useEffect(() => {
     if (!isOpen || typeof window === 'undefined') return
     const { min, max } = getWidthBounds()
-    const preferred = Math.round(window.innerWidth * 0.6)
+    const preferred = Math.round(window.innerWidth * 0.68)
     setDrawerWidth((prev) => {
       const next = hasResized ? prev : preferred
       return Math.max(min, Math.min(next, max))
@@ -294,7 +294,7 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
   const renderDiff = useMemo(() => {
     if (!selectedFile) {
       return (
-        <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
+        <div className="min-h-full flex items-center justify-center text-xs text-zinc-500">
           Select a file to view diff
         </div>
       )
@@ -302,7 +302,7 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
 
     if (isDiffLoading) {
       return (
-        <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
+        <div className="min-h-full flex items-center justify-center text-xs text-zinc-500">
           Loading diff...
         </div>
       )
@@ -310,7 +310,7 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
 
     if (diffError) {
       return (
-        <div className="flex-1 flex items-center justify-center text-xs text-red-400">
+        <div className="min-h-full flex items-center justify-center text-xs text-red-400">
           {diffError}
         </div>
       )
@@ -318,14 +318,14 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
 
     if (!diffParts) {
       return (
-        <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
+        <div className="min-h-full flex items-center justify-center text-xs text-zinc-500">
           Diff unavailable
         </div>
       )
     }
 
     return (
-      <div className="flex-1 overflow-auto font-mono text-xs leading-5">
+      <div className="min-h-full font-mono text-xs leading-5">
         {diffParts.map((part, partIndex) => {
           const lines = part.value.split('\n')
           return lines.map((line: string, lineIndex: number) => {
@@ -341,9 +341,9 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
                   !part.added && !part.removed && 'text-zinc-400'
                 )}
               >
-                <span className="select-none pr-2 text-zinc-500">{prefix}</span>
-                {line}
-              </div>
+                  <span className="select-none pr-2 text-zinc-500">{prefix}</span>
+                  {line}
+                </div>
             )
           })
         })}
@@ -364,70 +364,88 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
         className="p-0 max-w-none sm:max-w-none data-[side=right]:sm:max-w-none data-[side=right]:w-auto"
         style={{ width: drawerWidth, maxWidth: drawerWidth }}
       >
-        <div className={cn('relative h-full bg-zinc-950 border-l border-zinc-800 flex flex-col', isResizing && 'cursor-col-resize')}>
+        <div
+          className={cn(
+            'relative h-full bg-zinc-950 text-zinc-100 border-l border-zinc-800/70 flex flex-col',
+            'bg-[radial-gradient(900px_500px_at_100%_-10%,rgba(39,39,42,0.35),transparent)]',
+            isResizing && 'cursor-col-resize'
+          )}
+        >
           <div
-            className="absolute left-0 top-0 z-20 h-full w-3 cursor-col-resize group"
+            className="absolute left-0 top-0 z-20 h-full w-4 cursor-col-resize group"
             onMouseDown={handleResizeStart}
             role="separator"
             aria-label="Resize git drawer"
             aria-orientation="vertical"
           >
-            <div className={cn('absolute left-1/2 top-0 h-full w-px bg-zinc-800/80 transition-colors', isResizing ? 'bg-zinc-500' : 'group-hover:bg-zinc-600')} />
+            <div
+              className={cn(
+                'absolute left-1/2 top-0 h-full w-px bg-zinc-800/90 transition-colors',
+                isResizing ? 'bg-zinc-500' : 'group-hover:bg-zinc-600'
+              )}
+            />
+            <div className="absolute left-1/2 top-1/2 h-10 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-800/80 bg-zinc-900/80 shadow-sm" />
           </div>
-          <div className="flex h-full flex-col pl-2">
-            <SheetHeader className="px-5 py-4 pr-14">
-              <div className="flex items-start justify-between gap-4">
-                <div className="space-y-1">
-                  <SheetTitle className="text-[11px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
+          <div className="flex h-full flex-col pl-3">
+            <div className="px-8 py-6 pr-16">
+              <div className="flex items-start justify-between gap-6">
+                <div className="space-y-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.35em] text-zinc-500">
                     Git Workspace
-                  </SheetTitle>
-                  <div className="flex items-center gap-2 text-xs text-zinc-400">
-                    <GitBranch className="w-3.5 h-3.5 text-zinc-500" />
-                    <span className="text-zinc-200">
-                      {projectGitInfo.branch || 'No branch'}
-                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2 rounded-full border border-zinc-800/80 bg-zinc-900/50 px-3 py-1 text-sm">
+                      <GitBranch className="h-4 w-4 text-zinc-400" />
+                      <span className="text-zinc-100">
+                        {projectGitInfo.branch || 'No branch'}
+                      </span>
+                    </div>
                     {projectGitInfo.isGitRepo && (
-                      <>
-                        <span className="text-zinc-600">·</span>
-                        <span>{changedFiles.length} files</span>
-                      </>
+                      <div className="text-xs text-zinc-400">
+                        {changedFiles.length} changed files
+                      </div>
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={handleRefreshGitInfo}
-                    title="Refresh"
-                  >
-                    <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
-                    Refresh
-                  </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRefreshGitInfo}
+                  title="Refresh"
+                  className="h-9 px-4 text-xs uppercase tracking-[0.2em]"
+                >
+                  <RefreshCw className={cn('mr-2 h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
+                  Refresh
+                </Button>
+              </div>
+
+              <div className="mt-6 grid grid-cols-2 gap-3 text-xs text-zinc-400">
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.25em] text-emerald-300/90">Staged</div>
+                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{stagedCount}</div>
+                </div>
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.25em] text-amber-300/90">Unstaged</div>
+                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{unstagedCount}</div>
+                </div>
+                <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/60 px-4 py-3">
+                  <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
+                    <ArrowUp className="h-3 w-3 text-emerald-400" />
+                    Ahead
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{projectGitInfo.ahead}</div>
+                </div>
+                <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/60 px-4 py-3">
+                  <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
+                    <ArrowDown className="h-3 w-3 text-sky-400" />
+                    Behind
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{projectGitInfo.behind}</div>
                 </div>
               </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
-                <Badge variant="secondary" className="text-[10px]">
-                  Staged {stagedCount}
-                </Badge>
-                <Badge variant="secondary" className="text-[10px]">
-                  Unstaged {unstagedCount}
-                </Badge>
-                {projectGitInfo.ahead > 0 && (
-                  <Badge variant="secondary" className="text-[10px]">
-                    <ArrowUp className="w-3 h-3" />
-                    Ahead {projectGitInfo.ahead}
-                  </Badge>
-                )}
-                {projectGitInfo.behind > 0 && (
-                  <Badge variant="secondary" className="text-[10px]">
-                    <ArrowDown className="w-3 h-3" />
-                    Behind {projectGitInfo.behind}
-                  </Badge>
-                )}
-              </div>
-            </SheetHeader>
-            <Separator />
+            </div>
+
+            <Separator className="bg-zinc-800/70" />
 
             {!projectGitInfo.isGitRepo ? (
               <div className="flex-1 flex items-center justify-center text-sm text-zinc-500">
@@ -435,174 +453,282 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
               </div>
             ) : (
               <div className="flex-1 min-h-0 flex">
-                <div className="w-[260px] border-r border-zinc-800 flex flex-col min-h-0">
-                  <div className="px-4 py-3 space-y-2">
-                    <div className="flex items-center justify-between text-[11px] text-zinc-500">
-                      <span className="uppercase tracking-[0.2em]">Changes</span>
-                      <span>{changedFiles.length} files</span>
-                    </div>
+                <div className="w-[320px] min-w-[300px] border-r border-zinc-800/70 flex flex-col min-h-0">
+                  <div className="px-6 py-5 space-y-4">
+                  <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                    <span className="uppercase tracking-[0.3em]">Changes</span>
+                    <span>{changedFiles.length} files</span>
+                  </div>
                     <div className="flex items-center gap-2">
                       <Button
                         variant="outline"
-                        size="xs"
+                        size="sm"
                         onClick={handleStageAll}
                         disabled={unstagedCount === 0}
-                        className="flex-1"
+                        className="flex-1 h-9 text-[11px] uppercase tracking-[0.2em]"
                       >
                         Stage all
                       </Button>
                       <Button
                         variant="outline"
-                        size="xs"
+                        size="sm"
                         onClick={handleUnstageAll}
                         disabled={stagedCount === 0}
-                        className="flex-1"
+                        className="flex-1 h-9 text-[11px] uppercase tracking-[0.2em]"
                       >
                         Unstage all
                       </Button>
                     </div>
                   </div>
 
-                  <Separator />
+                  <Separator className="bg-zinc-800/70" />
 
-                  <ScrollArea className="flex-1">
+                  <ScrollArea className="flex-1 min-h-0">
                     {changedFiles.length === 0 ? (
-                      <div className="text-xs text-zinc-600 px-4 py-4">Working tree clean</div>
+                      <div className="text-xs text-zinc-600 px-6 py-5">Working tree clean</div>
                     ) : (
-                      <ul className="py-2">
-                        {changedFiles.map((file) => {
-                          const { Icon, color } = getFileStatusIcon(file.status)
-                          const isSelected = file.path === selectedFilePath
-                          return (
-                            <li key={`${file.path}-${file.staged ? 'staged' : 'unstaged'}`}>
-                              <div
-                                className={cn(
-                                  'flex items-center gap-2 px-4 py-2 text-xs',
-                                  isSelected
-                                    ? 'bg-zinc-800 text-zinc-100'
-                                    : 'text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-200'
-                                )}
-                              >
-                                <button
-                                  onClick={() => handleSelectFile(file)}
-                                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                                >
-                                  <Icon className={cn('w-3.5 h-3.5', color)} />
-                                  <span className="truncate">{file.path}</span>
-                                  {file.staged && (
-                                    <Badge variant="secondary" className="text-[9px]">
-                                      staged
-                                    </Badge>
-                                  )}
-                                </button>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  {!file.staged ? (
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-xs"
-                                      onClick={(e) => handleStageFile(file.path, e)}
-                                      className="text-emerald-400"
-                                      title="Stage"
+                      <div className="px-3 py-3 space-y-4">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between px-1 text-[9px] uppercase tracking-[0.25em] text-emerald-300/90">
+                            <span>Staged</span>
+                            <span className="text-zinc-500">{stagedCount}</span>
+                          </div>
+                          <ul className="space-y-2">
+                            {changedFiles.filter((file) => file.staged).map((file) => {
+                              const { Icon, color } = getFileStatusIcon(file.status)
+                              const isSelected = file.path === selectedFilePath
+                              return (
+                                <li key={`${file.path}-staged`}>
+                                  <div
+                                    className={cn(
+                                      'group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-xs transition',
+                                      isSelected
+                                        ? 'border-zinc-700/80 bg-zinc-900/80 text-zinc-100'
+                                        : 'text-zinc-400 hover:border-zinc-800/80 hover:bg-zinc-900/40 hover:text-zinc-200'
+                                    )}
+                                  >
+                                    <button
+                                      onClick={() => handleSelectFile(file)}
+                                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
                                     >
-                                      <Plus className="w-3 h-3" />
-                                    </Button>
-                                  ) : (
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-xs"
-                                      onClick={(e) => handleUnstageFile(file.path, e)}
-                                      className="text-amber-400"
-                                      title="Unstage"
-                                    >
-                                      <Minus className="w-3 h-3" />
-                                    </Button>
-                                  )}
-                                  {pendingDiscardFile === file.path ? (
-                                    <div className="flex items-center gap-1 text-[10px]">
+                                      <Icon className={cn('w-4 h-4', color)} />
+                                      <div className="min-w-0">
+                                        <div className="truncate text-[13px] text-zinc-100">
+                                          {file.path}
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.2em]">
+                                          <span
+                                            className={cn(
+                                              'rounded-full border px-2 py-0.5',
+                                              file.status === 'modified' && 'border-sky-500/30 bg-sky-500/10 text-sky-300/90',
+                                              file.status === 'added' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300/90',
+                                              file.status === 'deleted' && 'border-rose-500/30 bg-rose-500/10 text-rose-300/90',
+                                              file.status === 'untracked' && 'border-zinc-700/60 bg-zinc-900/60 text-zinc-400'
+                                            )}
+                                          >
+                                            {file.status}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </button>
+                                    <div className="flex items-center gap-1.5 shrink-0 opacity-0 transition group-hover:opacity-100">
                                       <Button
-                                        variant="destructive"
-                                        size="xs"
-                                        onClick={(e) => confirmDiscardFile(file.path, e)}
-                                        className="h-6 px-2"
+                                        variant="ghost"
+                                        size="icon-xs"
+                                        onClick={(e) => handleUnstageFile(file.path, e)}
+                                        className="text-amber-300"
+                                        title="Unstage"
                                       >
-                                        Confirm
+                                        <Minus className="w-3 h-3" />
                                       </Button>
-                                      <Button
-                                        variant="outline"
-                                        size="xs"
-                                        onClick={cancelDiscardFile}
-                                        className="h-6 px-2"
-                                      >
-                                        Cancel
-                                      </Button>
+                                      {pendingDiscardFile === file.path ? (
+                                        <div className="flex items-center gap-1 text-[10px]">
+                                          <Button
+                                            variant="destructive"
+                                            size="xs"
+                                            onClick={(e) => confirmDiscardFile(file.path, e)}
+                                            className="h-6 px-2"
+                                          >
+                                            Confirm
+                                          </Button>
+                                          <Button
+                                            variant="outline"
+                                            size="xs"
+                                            onClick={cancelDiscardFile}
+                                            className="h-6 px-2"
+                                          >
+                                            Cancel
+                                          </Button>
+                                        </div>
+                                      ) : (
+                                        <Button
+                                          variant="ghost"
+                                          size="icon-xs"
+                                          onClick={(e) => handleDiscardFile(file.path, e)}
+                                          className="text-red-300"
+                                          title="Discard"
+                                        >
+                                          <Undo2 className="w-3 h-3" />
+                                        </Button>
+                                      )}
                                     </div>
-                                  ) : (
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-xs"
-                                      onClick={(e) => handleDiscardFile(file.path, e)}
-                                      className="text-red-400"
-                                      title="Discard"
+                                  </div>
+                                </li>
+                              )
+                            })}
+                            {stagedCount === 0 && (
+                              <div className="px-3 py-2 text-xs text-zinc-600">No staged files</div>
+                            )}
+                          </ul>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between px-1 text-[9px] uppercase tracking-[0.25em] text-amber-300/90">
+                            <span>Unstaged</span>
+                            <span className="text-zinc-500">{unstagedCount}</span>
+                          </div>
+                          <ul className="space-y-2">
+                            {changedFiles.filter((file) => !file.staged).map((file) => {
+                              const { Icon, color } = getFileStatusIcon(file.status)
+                              const isSelected = file.path === selectedFilePath
+                              return (
+                                <li key={`${file.path}-unstaged`}>
+                                  <div
+                                    className={cn(
+                                      'group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-xs transition',
+                                      isSelected
+                                        ? 'border-zinc-700/80 bg-zinc-900/80 text-zinc-100'
+                                        : 'text-zinc-400 hover:border-zinc-800/80 hover:bg-zinc-900/40 hover:text-zinc-200'
+                                    )}
+                                  >
+                                    <button
+                                      onClick={() => handleSelectFile(file)}
+                                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
                                     >
-                                      <Undo2 className="w-3 h-3" />
-                                    </Button>
-                                  )}
-                                </div>
-                              </div>
-                            </li>
-                          )
-                        })}
-                      </ul>
+                                      <Icon className={cn('w-4 h-4', color)} />
+                                      <div className="min-w-0">
+                                        <div className="truncate text-[13px] text-zinc-100">
+                                          {file.path}
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.2em]">
+                                          <span
+                                            className={cn(
+                                              'rounded-full border px-2 py-0.5',
+                                              file.status === 'modified' && 'border-sky-500/30 bg-sky-500/10 text-sky-300/90',
+                                              file.status === 'added' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300/90',
+                                              file.status === 'deleted' && 'border-rose-500/30 bg-rose-500/10 text-rose-300/90',
+                                              file.status === 'untracked' && 'border-zinc-700/60 bg-zinc-900/60 text-zinc-400'
+                                            )}
+                                          >
+                                            {file.status}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </button>
+                                    <div className="flex items-center gap-1.5 shrink-0 opacity-0 transition group-hover:opacity-100">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-xs"
+                                        onClick={(e) => handleStageFile(file.path, e)}
+                                        className="text-emerald-300"
+                                        title="Stage"
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                      </Button>
+                                      {pendingDiscardFile === file.path ? (
+                                        <div className="flex items-center gap-1 text-[10px]">
+                                          <Button
+                                            variant="destructive"
+                                            size="xs"
+                                            onClick={(e) => confirmDiscardFile(file.path, e)}
+                                            className="h-6 px-2"
+                                          >
+                                            Confirm
+                                          </Button>
+                                          <Button
+                                            variant="outline"
+                                            size="xs"
+                                            onClick={cancelDiscardFile}
+                                            className="h-6 px-2"
+                                          >
+                                            Cancel
+                                          </Button>
+                                        </div>
+                                      ) : (
+                                        <Button
+                                          variant="ghost"
+                                          size="icon-xs"
+                                          onClick={(e) => handleDiscardFile(file.path, e)}
+                                          className="text-red-300"
+                                          title="Discard"
+                                        >
+                                          <Undo2 className="w-3 h-3" />
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </li>
+                              )
+                            })}
+                            {unstagedCount === 0 && (
+                              <div className="px-3 py-2 text-xs text-zinc-600">No unstaged files</div>
+                            )}
+                          </ul>
+                        </div>
+                      </div>
                     )}
                   </ScrollArea>
 
-                  <Separator />
+                  <Separator className="bg-zinc-800/70" />
 
-                  <div className="p-4 space-y-3">
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">Commit</div>
-                    <textarea
-                      value={commitMessage}
-                      onChange={(e) => setCommitMessage(e.target.value)}
-                      placeholder="Commit message"
-                      className="w-full min-h-[84px] rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-600"
-                    />
-                    <Button
-                      onClick={handleCommit}
-                      disabled={!commitMessage.trim() || isCommitting}
-                      className="w-full text-xs"
-                    >
-                      {isCommitting ? 'Committing...' : 'Commit'}
-                    </Button>
-                    <div className="flex items-center gap-2">
+                  <div className="px-6 py-5 space-y-4">
+                    <div className="text-[11px] uppercase tracking-[0.3em] text-zinc-500">Actions</div>
+                    <div className="space-y-3">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">Commit</div>
+                      <textarea
+                        value={commitMessage}
+                        onChange={(e) => setCommitMessage(e.target.value)}
+                        placeholder="Write a commit message"
+                        className="w-full min-h-[110px] rounded-xl border border-zinc-800/80 bg-zinc-900/70 px-4 py-3 text-xs text-zinc-100 placeholder:text-zinc-600"
+                      />
+                      <Button
+                        onClick={handleCommit}
+                        disabled={!commitMessage.trim() || isCommitting}
+                        className="w-full h-10 text-xs uppercase tracking-[0.2em]"
+                      >
+                        {isCommitting ? 'Committing...' : 'Commit changes'}
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
                       <Button
                         variant="outline"
-                        size="xs"
+                        size="sm"
                         onClick={handlePull}
                         disabled={isPulling}
-                        className="flex-1"
+                        className="h-9 text-[11px] uppercase tracking-[0.2em]"
                       >
-                        <ArrowDown className="w-3 h-3" />
+                        <ArrowDown className="w-3 h-3 mr-2" />
                         {isPulling ? 'Pulling...' : 'Pull'}
                       </Button>
                       <Button
                         variant="outline"
-                        size="xs"
+                        size="sm"
                         onClick={handlePush}
                         disabled={isPushing}
-                        className="flex-1"
+                        className="h-9 text-[11px] uppercase tracking-[0.2em]"
                       >
-                        <ArrowUp className="w-3 h-3" />
+                        <ArrowUp className="w-3 h-3 mr-2" />
                         {isPushing ? 'Pushing...' : 'Push'}
                       </Button>
                     </div>
                     {unstagedCount > 0 && (
                       <Button
                         variant="destructive"
-                        size="xs"
+                        size="sm"
                         onClick={handleDiscardAll}
-                        className="w-full"
+                        className="w-full h-9 text-[11px] uppercase tracking-[0.2em]"
                       >
-                        <Undo2 className="w-3 h-3" />
+                        <Undo2 className="w-3 h-3 mr-2" />
                         Discard all
                       </Button>
                     )}
@@ -630,11 +756,14 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
                 </div>
 
                 <div className="flex-1 min-w-0 flex flex-col">
-                  <div className="border-b border-zinc-800 px-4 py-2 text-xs text-zinc-500">
-                    {selectedFileLabel || 'Diff'}
+                  <div className="border-b border-zinc-800/70 px-8 py-4">
+                    <div className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Diff</div>
+                    <div className="mt-2 text-sm text-zinc-200">
+                      {selectedFileLabel || 'Select a file to review changes'}
+                    </div>
                   </div>
-                  <ScrollArea className="flex-1">
-                    {renderDiff}
+                  <ScrollArea className="flex-1 min-h-0">
+                    <div className="px-6 py-4">{renderDiff}</div>
                   </ScrollArea>
                 </div>
               </div>
