@@ -36,6 +36,7 @@ import {
   detectAllCliTools,
   checkAgentUpdate,
   checkAgentUpdates,
+  setCliDetectorDatabase,
   BUILTIN_CLI_TOOLS,
   type CliToolDetectionResult,
   type AllCliToolsResult,
@@ -160,6 +161,8 @@ let dbReady = false
   try {
     await db.initialize()
     dbReady = true
+    // Set database instance on CLI detector for persistent caching
+    setCliDetectorDatabase(db)
     console.log('[Database] Ready')
   } catch (err) {
     console.error('[Database] Initialization failed:', err)
@@ -520,7 +523,7 @@ async function createWindow() {
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
-    mainWindow.webContents.openDevTools()
+    // Dev tools can be opened manually with F12 or Ctrl+Shift+I
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
@@ -931,10 +934,14 @@ ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) =
 })
 
 // CLI Detection IPC Handlers
-ipcMain.handle('cli:detect-all', async (_event, projectPath: string, projectId?: string): Promise<AllCliToolsResult> => {
-  console.log(`[CLI] Detecting all CLI tools for path="${projectPath}", projectId="${projectId}"`)
+ipcMain.handle('cli:detect-all', async (_event, projectPath: string, projectId?: string, forceRefresh?: boolean): Promise<AllCliToolsResult> => {
+  console.log(`[CLI] Detecting all CLI tools for path="${projectPath}", projectId="${projectId}", forceRefresh=${forceRefresh}`)
   try {
-    const result = await detectAllCliTools(projectPath, projectId, sshManager || undefined)
+    const result = await detectAllCliTools(projectPath, {
+      projectId,
+      sshManager: sshManager || undefined,
+      forceRefresh: forceRefresh ?? false
+    })
     console.log(`[CLI] Detection complete:`, result.tools.map(t => `${t.id}:${t.installed}`))
     return result
   } catch (error: unknown) {

@@ -3,6 +3,10 @@
  *
  * Detects if various AI CLI tools (Claude Code, Gemini CLI, OpenAI Codex) are installed.
  * Supports Windows, WSL, and SSH execution contexts.
+ *
+ * Implements a two-tier caching strategy:
+ * - L1: In-memory cache for fast lookups within the same session
+ * - L2: SQLite persistent cache for fast startup across sessions
  */
 
 import { exec } from 'child_process'
@@ -11,26 +15,43 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { PathService, type ExecutionContext } from '../utils/path-service.js'
 import { buildWslCommand } from '../utils/wsl-utils.js'
+import type { ToolChainDB, CachedCliDetectionResult } from '../database.js'
 
 const execAsync = promisify(exec)
 
 // ============================================================================
-// Detection Cache
+// Database Instance (set via setDatabase)
+// ============================================================================
+
+/** Database instance for persistent caching */
+let dbInstance: ToolChainDB | null = null
+
+/**
+ * Set the database instance for persistent caching
+ * Must be called before detectAllCliTools for persistent caching to work
+ */
+export function setCliDetectorDatabase(db: ToolChainDB): void {
+  dbInstance = db
+  console.log('[cli-detector] Database instance set for persistent caching')
+}
+
+// ============================================================================
+// Detection Cache (Two-tier: Memory L1 + SQLite L2)
 // ============================================================================
 
 /**
- * Cached detection result with timestamp
+ * Cached detection result with timestamp (in-memory format)
  */
-interface CachedDetectionResult {
+interface MemoryCachedResult {
   result: AllCliToolsResult
   timestamp: number
   executionContext: string
 }
 
-/** Cache for detection results, keyed by projectPath + context */
-const detectionCache = new Map<string, CachedDetectionResult>()
+/** L1 Memory cache for detection results, keyed by projectPath + context */
+const memoryCache = new Map<string, MemoryCachedResult>()
 
-/** Cache TTL in milliseconds (5 minutes) */
+/** Cache TTL in milliseconds (5 minutes for staleness check) */
 const CACHE_TTL_MS = 5 * 60 * 1000
 
 /** Set of cache keys currently being refreshed (to prevent duplicate refreshes) */
@@ -46,12 +67,12 @@ function generateCacheKey(projectPath: string, executionContext: string): string
 /**
  * Check if a cached result is stale (older than TTL)
  */
-function isCacheStale(cached: CachedDetectionResult): boolean {
-  return Date.now() - cached.timestamp > CACHE_TTL_MS
+function isCacheStale(timestamp: number): boolean {
+  return Date.now() - timestamp > CACHE_TTL_MS
 }
 
 /**
- * Get cached detection result if available
+ * Get cached detection result from L1 (memory) or L2 (database)
  *
  * @param projectPath - The project path
  * @param executionContext - The execution context (local-windows, local-unix, wsl, ssh-remote)
@@ -60,22 +81,53 @@ function isCacheStale(cached: CachedDetectionResult): boolean {
 function getCachedDetectionResult(
   projectPath: string,
   executionContext: string
-): { cached: CachedDetectionResult; isStale: boolean } | null {
+): { result: AllCliToolsResult; timestamp: number; isStale: boolean } | null {
   const cacheKey = generateCacheKey(projectPath, executionContext)
-  const cached = detectionCache.get(cacheKey)
 
-  if (!cached) {
-    return null
+  // L1: Check memory cache first (fastest)
+  const memoryCached = memoryCache.get(cacheKey)
+  if (memoryCached) {
+    console.log(`[cli-detector] L1 cache hit for ${cacheKey}`)
+    return {
+      result: memoryCached.result,
+      timestamp: memoryCached.timestamp,
+      isStale: isCacheStale(memoryCached.timestamp),
+    }
   }
 
-  return {
-    cached,
-    isStale: isCacheStale(cached),
+  // L2: Check database cache (persistent across sessions)
+  if (dbInstance) {
+    try {
+      const dbCached = dbInstance.getCachedCliDetection(cacheKey)
+      if (dbCached) {
+        console.log(`[cli-detector] L2 cache hit for ${cacheKey}`)
+        const result = dbCached.result as AllCliToolsResult
+
+        // Populate L1 cache from L2 for subsequent fast lookups
+        memoryCache.set(cacheKey, {
+          result,
+          timestamp: dbCached.detectedAt,
+          executionContext,
+        })
+
+        return {
+          result,
+          timestamp: dbCached.detectedAt,
+          isStale: isCacheStale(dbCached.detectedAt),
+        }
+      }
+    } catch (err) {
+      console.error(`[cli-detector] Error reading from L2 cache:`, err)
+      // Fall through to return null
+    }
   }
+
+  console.log(`[cli-detector] Cache miss for ${cacheKey}`)
+  return null
 }
 
 /**
- * Store detection result in cache
+ * Store detection result in both L1 (memory) and L2 (database) caches
  */
 function setCachedDetectionResult(
   projectPath: string,
@@ -83,35 +135,80 @@ function setCachedDetectionResult(
   result: AllCliToolsResult
 ): void {
   const cacheKey = generateCacheKey(projectPath, executionContext)
-  detectionCache.set(cacheKey, {
+  const timestamp = Date.now()
+
+  // L1: Store in memory cache
+  memoryCache.set(cacheKey, {
     result,
-    timestamp: Date.now(),
+    timestamp,
     executionContext,
   })
-  console.log(`[cli-detector] Cached detection result for ${cacheKey}`)
+  console.log(`[cli-detector] L1 cached detection result for ${cacheKey}`)
+
+  // L2: Store in database (persistent)
+  if (dbInstance) {
+    try {
+      dbInstance.setCachedCliDetection(cacheKey, projectPath, executionContext, result)
+      console.log(`[cli-detector] L2 cached detection result for ${cacheKey}`)
+    } catch (err) {
+      console.error(`[cli-detector] Error writing to L2 cache:`, err)
+      // Non-fatal: memory cache is still populated
+    }
+  }
 }
 
 /**
- * Clear all cached detection results
- * Useful for testing or when configuration changes
+ * Clear all cached detection results (both L1 and L2)
+ * @param projectPath - If provided, only clear cache for this project; otherwise clear all
  */
-export function clearDetectionCache(): void {
-  detectionCache.clear()
+export function clearDetectionCache(projectPath?: string): void {
+  if (projectPath) {
+    // Clear memory cache entries for this project
+    for (const key of memoryCache.keys()) {
+      if (key.startsWith(`${projectPath}:`)) {
+        memoryCache.delete(key)
+      }
+    }
+  } else {
+    memoryCache.clear()
+  }
+
   refreshInProgress.clear()
-  console.log('[cli-detector] Detection cache cleared')
+
+  // Clear database cache
+  if (dbInstance) {
+    try {
+      dbInstance.clearCliDetectionCache(projectPath)
+    } catch (err) {
+      console.error(`[cli-detector] Error clearing L2 cache:`, err)
+    }
+  }
+
+  console.log(`[cli-detector] Detection cache cleared${projectPath ? ` for project: ${projectPath}` : ''}`)
 }
 
 /**
  * Get cache statistics for debugging
  */
 export function getDetectionCacheStats(): {
-  size: number
-  keys: string[]
+  memoryCacheSize: number
+  memoryCacheKeys: string[]
+  dbCacheKeys: string[]
   refreshesInProgress: string[]
 } {
+  let dbCacheKeys: string[] = []
+  if (dbInstance) {
+    try {
+      dbCacheKeys = dbInstance.getCliDetectionCacheKeys()
+    } catch {
+      // Ignore errors
+    }
+  }
+
   return {
-    size: detectionCache.size,
-    keys: Array.from(detectionCache.keys()),
+    memoryCacheSize: memoryCache.size,
+    memoryCacheKeys: Array.from(memoryCache.keys()),
+    dbCacheKeys,
     refreshesInProgress: Array.from(refreshInProgress),
   }
 }
@@ -839,11 +936,11 @@ export async function detectAllCliTools(
     return result
   }
 
-  // Check cache
+  // Check cache (L1 memory + L2 database)
   const cacheResult = getCachedDetectionResult(projectPath, executionContext)
 
   if (cacheResult) {
-    const { cached, isStale } = cacheResult
+    const { result, isStale } = cacheResult
 
     if (isStale) {
       // Return cached data immediately, but trigger background refresh
@@ -860,7 +957,7 @@ export async function detectAllCliTools(
       console.log(`[cli-detector] Cache hit (fresh) for ${cacheKey}`)
     }
 
-    return cached.result
+    return result
   }
 
   // Cache miss: run detection and cache results
@@ -1064,6 +1161,7 @@ export const CliDetector = {
   checkAgentUpdates,
   clearDetectionCache,
   getDetectionCacheStats,
+  setCliDetectorDatabase,
   BUILTIN_CLI_TOOLS,
   CLAUDE_CLI,
   GEMINI_CLI,

@@ -281,7 +281,7 @@ export interface ElectronAPI {
     onDownloadProgress: (callback: (progress: any) => void) => () => void
   }
   cli: {
-    detectAll: (projectPath: string, projectId?: string) => Promise<AllCliToolsResult>
+    detectAll: (projectPath: string, projectId?: string, forceRefresh?: boolean) => Promise<AllCliToolsResult>
     detect: (toolId: string, projectPath: string, projectId?: string) => Promise<CliToolDetectionResult>
     getPlatform: () => Promise<'windows' | 'wsl' | 'macos' | 'linux'>
     install: (agentId: string, method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>

@@ -86,6 +86,23 @@ export class ToolChainDB {
       ON kv_store(updated_at)
     `)
 
+    // CLI detection cache table
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS cli_detection_cache (
+        cache_key TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        execution_context TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        detected_at INTEGER NOT NULL
+      )
+    `)
+
+    // Create index on project_path for clearing cache by project
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_cli_cache_project
+      ON cli_detection_cache(project_path)
+    `)
+
     this.save()
   }
 
@@ -214,4 +231,133 @@ export class ToolChainDB {
       this.db = null
     }
   }
+
+  // ============================================================================
+  // CLI Detection Cache Methods
+  // ============================================================================
+
+  /**
+   * Result structure for cached CLI detection
+   */
+  getCachedCliDetection(cacheKey: string): CachedCliDetectionResult | null {
+    if (!this.db) throw new Error('Database not initialized')
+
+    try {
+      const stmt = this.db.prepare(
+        'SELECT project_path, execution_context, result_json, detected_at FROM cli_detection_cache WHERE cache_key = ?'
+      )
+      stmt.bind([cacheKey])
+
+      if (stmt.step()) {
+        const row = stmt.getAsObject() as {
+          project_path: string
+          execution_context: string
+          result_json: string
+          detected_at: number
+        }
+        stmt.free()
+
+        try {
+          const result = JSON.parse(row.result_json)
+          return {
+            projectPath: row.project_path,
+            executionContext: row.execution_context,
+            result,
+            detectedAt: row.detected_at,
+          }
+        } catch (parseErr) {
+          console.error(`[Database] Failed to parse CLI detection cache for key "${cacheKey}":`, parseErr)
+          return null
+        }
+      }
+
+      stmt.free()
+      return null
+    } catch (err) {
+      console.error(`[Database] Error reading CLI detection cache for key "${cacheKey}":`, err)
+      return null
+    }
+  }
+
+  /**
+   * Store CLI detection result in cache
+   */
+  setCachedCliDetection(
+    cacheKey: string,
+    projectPath: string,
+    executionContext: string,
+    result: unknown
+  ): void {
+    if (!this.db) throw new Error('Database not initialized')
+
+    try {
+      const resultJson = JSON.stringify(result)
+      const now = Date.now()
+
+      this.db.run(
+        `INSERT INTO cli_detection_cache (cache_key, project_path, execution_context, result_json, detected_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(cache_key) DO UPDATE SET
+           project_path = excluded.project_path,
+           execution_context = excluded.execution_context,
+           result_json = excluded.result_json,
+           detected_at = excluded.detected_at`,
+        [cacheKey, projectPath, executionContext, resultJson, now]
+      )
+
+      this.save()
+      console.log(`[Database] Cached CLI detection for key "${cacheKey}"`)
+    } catch (err) {
+      console.error(`[Database] Error storing CLI detection cache for key "${cacheKey}":`, err)
+    }
+  }
+
+  /**
+   * Clear CLI detection cache
+   * @param projectPath - If provided, only clear cache for this project; otherwise clear all
+   */
+  clearCliDetectionCache(projectPath?: string): void {
+    if (!this.db) throw new Error('Database not initialized')
+
+    try {
+      if (projectPath) {
+        this.db.run('DELETE FROM cli_detection_cache WHERE project_path = ?', [projectPath])
+        console.log(`[Database] Cleared CLI detection cache for project: ${projectPath}`)
+      } else {
+        this.db.run('DELETE FROM cli_detection_cache')
+        console.log('[Database] Cleared all CLI detection cache')
+      }
+      this.save()
+    } catch (err) {
+      console.error('[Database] Error clearing CLI detection cache:', err)
+    }
+  }
+
+  /**
+   * Get all cached CLI detection keys (for debugging)
+   */
+  getCliDetectionCacheKeys(): string[] {
+    if (!this.db) throw new Error('Database not initialized')
+
+    const stmt = this.db.prepare('SELECT cache_key FROM cli_detection_cache')
+    const keys: string[] = []
+
+    while (stmt.step()) {
+      const row = stmt.getAsObject()
+      keys.push(row.cache_key as string)
+    }
+
+    stmt.free()
+    return keys
+  }
+}
+
+/**
+ * Cached CLI detection result structure
+ */
+export interface CachedCliDetectionResult {
+  projectPath: string
+  executionContext: string
+  result: unknown
+  detectedAt: number
 }

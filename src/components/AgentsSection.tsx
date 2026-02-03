@@ -107,7 +107,7 @@ export function AgentsSection({ projectPath, projectId, onLaunchAgent }: AgentsS
   const contextCount = projectContexts.length
   const activeContext = getActiveContext()
 
-  const detectAgents = useCallback(async () => {
+  const detectAgents = useCallback(async (forceRefresh = false) => {
     if (!window.electron?.cli) {
       setError('CLI detection not available')
       return
@@ -117,7 +117,7 @@ export function AgentsSection({ projectPath, projectId, onLaunchAgent }: AgentsS
     setError(null)
 
     try {
-      const result = await window.electron.cli.detectAll(projectPath, projectId)
+      const result = await window.electron.cli.detectAll(projectPath, projectId, forceRefresh)
 
       if (result.success) {
         setAgents(result.tools)
@@ -138,7 +138,7 @@ export function AgentsSection({ projectPath, projectId, onLaunchAgent }: AgentsS
   }, [detectAgents])
 
   const handleRefresh = () => {
-    detectAgents()
+    detectAgents(true) // Force refresh bypasses cache
   }
 
   // Handle clicking on an installed agent - quick launch with active context

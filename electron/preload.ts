@@ -367,8 +367,8 @@ const electronAPI = {
       ipcRenderer.invoke('menu:checkForUpdates'),
   },
   cli: {
-    detectAll: (projectPath: string, projectId?: string): Promise<AllCliToolsResult> =>
-      ipcRenderer.invoke('cli:detect-all', projectPath, projectId),
+    detectAll: (projectPath: string, projectId?: string, forceRefresh?: boolean): Promise<AllCliToolsResult> =>
+      ipcRenderer.invoke('cli:detect-all', projectPath, projectId, forceRefresh),
     detect: (toolId: string, projectPath: string, projectId?: string): Promise<CliToolDetectionResult> =>
       ipcRenderer.invoke('cli:detect', toolId, projectPath, projectId),
     install: (agentId: string, method: 'npm' | 'native' | 'brew'): Promise<{success: boolean; output: string; error?: string}> =>
