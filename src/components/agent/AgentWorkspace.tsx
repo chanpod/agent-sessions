@@ -198,6 +198,8 @@ export function AgentWorkspace({
         if (result.success && result.process) {
           // Track the new process ID
           setActiveProcessIds((prev) => new Set([...prev, result.process!.id]))
+          // Mark waiting immediately so sidebar spinner starts
+          useAgentStreamStore.getState().markWaitingForResponse(result.process.id)
           // Send message to the new process
           await window.electron.agent.sendMessage(result.process.id, {
             type: 'user',
@@ -208,7 +210,9 @@ export function AgentWorkspace({
           })
         }
       } else {
-        // First message - send to existing process
+        // First message - mark waiting immediately so sidebar spinner starts
+        useAgentStreamStore.getState().markWaitingForResponse(initialProcessId)
+        // Send to existing process
         await window.electron.agent.sendMessage(initialProcessId, {
           type: 'user',
           message: {

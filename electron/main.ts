@@ -18,7 +18,7 @@ import {
   type PackageScripts,
   type ScriptInfo,
 } from './services/package-scripts.js'
-import { CONSTANTS } from './constants.js'
+import { CONSTANTS, PERMISSION_SERVER_PORT } from './constants.js'
 import {
   type ExecError,
   getErrorMessage,
@@ -30,19 +30,20 @@ import {
   buildWslCommand,
   type WslPathInfo
 } from './utils/wsl-utils.js'
-import { PathService, type ExecutionContext } from './utils/path-service.js'
+import { PathService, getPlatformForInstall, type ExecutionContext } from './utils/path-service.js'
 import {
   detectCliTool,
   detectAllCliTools,
   checkAgentUpdate,
   checkAgentUpdates,
   setCliDetectorDatabase,
-  BUILTIN_CLI_TOOLS,
   type CliToolDetectionResult,
   type AllCliToolsResult,
   type UpdateCheckResult
 } from './services/cli-detector.js'
-import { installCliTool, getPlatformForInstall } from './services/cli-installer.js'
+import { BUILTIN_CLI_TOOLS } from './services/cli-config.js'
+import { installCliTool } from './services/cli-installer.js'
+import { PermissionServer } from './services/permission-server.js'
 import { serviceManager } from './services/service-manager.js'
 import { dockerComposeHandler } from './services/docker/docker-compose-handler.js'
 import { ptyServiceHandler, setPtyManager } from './services/pty/pty-service-handler.js'
@@ -396,6 +397,7 @@ let ptyManager: PtyManager | null = null
 let sshManager: SSHManager | null = null
 let backgroundClaude: BackgroundClaudeManager | null = null
 let agentProcessManager: AgentProcessManager | null = null
+let permissionServer: PermissionServer | null = null
 
 // Track PTY-based agent terminals (for streaming support)
 interface AgentTerminalInfo {
@@ -510,6 +512,13 @@ async function createWindow() {
   agentProcessManager = new AgentProcessManager(mainWindow)
   console.log('[Main] AgentProcessManager initialized')
 
+  // Initialize Permission Server
+  permissionServer = new PermissionServer(mainWindow)
+  permissionServer.start().catch(err => {
+    console.error('[Main] Failed to start permission server:', err)
+  })
+  console.log('[Main] PermissionServer initialized')
+
 
   // Forward SSH status changes to renderer
   sshManager.on('status-change', (connectionId: string, connected: boolean, error?: string) => {
@@ -546,6 +555,8 @@ async function createWindow() {
     sshManager = null
     agentProcessManager?.dispose()
     agentProcessManager = null
+    permissionServer?.stop()
+    permissionServer = null
     // Clean up all git watchers
     cleanupGitWatchers()
   })
@@ -1211,6 +1222,24 @@ ipcMain.handle('agent:list', async () => {
   // Return list of active agent terminals
   const processes = Array.from(agentTerminals.values())
   return { success: true, processes }
+})
+
+// ============================================================================
+// Permission Hook IPC Handlers
+// ============================================================================
+
+ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string) => {
+  if (!permissionServer) return { success: false, error: 'Permission server not running' }
+  const resolved = permissionServer.resolvePermission(id, { decision, reason })
+  return { success: resolved }
+})
+
+ipcMain.handle('permission:check-hook', async (_event, projectPath: string) => {
+  return PermissionServer.isHookInstalled(projectPath)
+})
+
+ipcMain.handle('permission:install-hook', async (_event, projectPath: string) => {
+  return PermissionServer.installHook(projectPath)
 })
 
 // App version IPC handler

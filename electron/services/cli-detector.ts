@@ -13,9 +13,19 @@ import { exec } from 'child_process'
 import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
-import { PathService, type ExecutionContext } from '../utils/path-service.js'
+import { PathService, getGitBashPath, type ExecutionContext, type SSHManagerLike } from '../utils/path-service.js'
 import { buildWslCommand } from '../utils/wsl-utils.js'
+import { isNewerVersion } from '../utils/version-utils.js'
 import type { ToolChainDB, CachedCliDetectionResult } from '../database.js'
+import {
+  type AgentId,
+  type CliToolDefinition,
+  NPM_PACKAGES,
+  CLAUDE_CLI,
+  GEMINI_CLI,
+  CODEX_CLI,
+  BUILTIN_CLI_TOOLS,
+} from './cli-config.js'
 
 const execAsync = promisify(exec)
 
@@ -214,100 +224,8 @@ export function getDetectionCacheStats(): {
 }
 
 // ============================================================================
-// Git Bash Detection (Windows)
-// ============================================================================
-
-/** Cached Git Bash path (null means not found, undefined means not yet checked) */
-let cachedGitBashPath: string | null | undefined = undefined
-
-/**
- * Find Git Bash executable path on Windows.
- * Checks common installation locations and caches the result.
- *
- * @returns Path to bash.exe if found, null otherwise
- */
-function findGitBashPath(): string | null {
-  // Return cached result if already checked
-  if (cachedGitBashPath !== undefined) {
-    return cachedGitBashPath
-  }
-
-  // Only search on Windows
-  if (process.platform !== 'win32') {
-    cachedGitBashPath = null
-    return null
-  }
-
-  console.log('[cli-detector] Searching for Git Bash...')
-
-  // Common Git Bash locations to check
-  const possiblePaths: string[] = []
-
-  // Check Program Files locations
-  const programFiles = process.env['PROGRAMFILES'] || 'C:\\Program Files'
-  const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)'
-
-  possiblePaths.push(
-    path.join(programFiles, 'Git', 'bin', 'bash.exe'),
-    path.join(programFilesX86, 'Git', 'bin', 'bash.exe'),
-    // Also check usr/bin which has more Unix tools
-    path.join(programFiles, 'Git', 'usr', 'bin', 'bash.exe'),
-    path.join(programFilesX86, 'Git', 'usr', 'bin', 'bash.exe'),
-  )
-
-  // Check each path
-  for (const bashPath of possiblePaths) {
-    try {
-      if (fs.existsSync(bashPath)) {
-        console.log(`[cli-detector]   Found Git Bash at: ${bashPath}`)
-        cachedGitBashPath = bashPath
-        return bashPath
-      }
-    } catch {
-      // Ignore errors, continue checking
-    }
-  }
-
-  console.log('[cli-detector]   Git Bash not found, will use default shell')
-  cachedGitBashPath = null
-  return null
-}
-
-/**
- * Get the cached Git Bash path or find it if not yet cached.
- * This is the main entry point for getting Git Bash path.
- */
-export function getGitBashPath(): string | null {
-  return findGitBashPath()
-}
-
-// ============================================================================
 // Types & Interfaces
 // ============================================================================
-
-/**
- * Definition for a CLI tool to detect
- */
-export interface CliToolDefinition {
-  /** Unique identifier for the tool */
-  id: string
-  /** Display name for the tool */
-  name: string
-  /** Commands to try for version detection (tries each until one succeeds) */
-  versionCommands: string[]
-  /** Commands to try for finding the executable path (tries each until one succeeds) */
-  pathCommands: {
-    windows: string[]
-    unix: string[]
-  }
-  /** Regex pattern to extract version from command output */
-  versionRegex: RegExp
-  /**
-   * @deprecated Fallback paths are no longer used since Git Bash handles PATH properly on Windows.
-   * This field is kept for backwards compatibility but is ignored.
-   */
-  fallbackPaths?: string[]
-}
 
 /**
  * Result of detecting a single CLI tool
@@ -339,89 +257,6 @@ export interface AllCliToolsResult {
   success: boolean
   /** Any global error message */
   error?: string
-}
-
-// ============================================================================
-// Built-in Tool Definitions
-// ============================================================================
-
-/**
- * Claude Code CLI definition
- */
-export const CLAUDE_CLI: CliToolDefinition = {
-  id: 'claude',
-  name: 'Claude Code',
-  versionCommands: ['claude --version'],
-  pathCommands: {
-    windows: ['where claude'],
-    unix: ['which claude'],
-  },
-  versionRegex: /v?(\d+\.\d+(?:\.\d+)?)/i,
-  fallbackPaths: [
-    '~/.local/bin/claude',
-    '~/.local/bin/claude.exe',
-    '%LOCALAPPDATA%/Programs/claude/claude.exe',
-    '%APPDATA%/npm/claude',
-    '%APPDATA%/npm/claude.cmd',
-  ],
-}
-
-/**
- * Gemini CLI definition
- */
-export const GEMINI_CLI: CliToolDefinition = {
-  id: 'gemini',
-  name: 'Gemini CLI',
-  versionCommands: ['gemini --version'],
-  pathCommands: {
-    windows: ['where gemini'],
-    unix: ['which gemini'],
-  },
-  versionRegex: /v?(\d+\.\d+(?:\.\d+)?)/i,
-  fallbackPaths: [
-    '~/.local/bin/gemini',
-    '~/.local/bin/gemini.exe',
-    '%APPDATA%/npm/gemini',
-    '%APPDATA%/npm/gemini.cmd',
-  ],
-}
-
-/**
- * OpenAI Codex CLI definition
- */
-export const CODEX_CLI: CliToolDefinition = {
-  id: 'codex',
-  name: 'OpenAI Codex',
-  versionCommands: ['codex --version'],
-  pathCommands: {
-    windows: ['where codex'],
-    unix: ['which codex'],
-  },
-  versionRegex: /v?(\d+\.\d+(?:\.\d+)?)/i,
-  fallbackPaths: [
-    '~/.local/bin/codex',
-    '~/.local/bin/codex.exe',
-    '%APPDATA%/npm/codex',
-    '%APPDATA%/npm/codex.cmd',
-  ],
-}
-
-/**
- * All built-in CLI tools
- */
-export const BUILTIN_CLI_TOOLS: CliToolDefinition[] = [
-  CLAUDE_CLI,
-  GEMINI_CLI,
-  CODEX_CLI,
-]
-
-// ============================================================================
-// SSH Manager Interface (for typing without circular imports)
-// ============================================================================
-
-interface SSHManagerLike {
-  getProjectMasterStatus(projectId: string): Promise<{ connected: boolean; error?: string }>
-  execViaProjectMaster(projectId: string, command: string): Promise<string>
 }
 
 // ============================================================================
@@ -983,7 +818,7 @@ export function createCliToolDefinition(
   versionRegex?: RegExp
 ): CliToolDefinition {
   return {
-    id,
+    id: id as AgentId,
     name,
     versionCommands: [`${command} --version`, `${command} -v`, `${command} version`],
     pathCommands: {
@@ -997,15 +832,6 @@ export function createCliToolDefinition(
 // ============================================================================
 // Update Check Functions
 // ============================================================================
-
-/**
- * NPM package names for each agent CLI
- */
-const NPM_PACKAGES: Record<string, string> = {
-  claude: '@anthropic-ai/claude-code',
-  gemini: '@anthropic-ai/claude-code', // Gemini CLI doesn't have an npm package yet, placeholder
-  codex: '@openai/codex',
-}
 
 /**
  * Result of checking for updates
@@ -1048,28 +874,6 @@ async function fetchLatestVersion(packageName: string): Promise<string | null> {
   }
 }
 
-/**
- * Compare two semantic version strings
- *
- * @param current - Current version (e.g., "1.0.0")
- * @param latest - Latest version (e.g., "1.1.0")
- * @returns true if latest is newer than current
- */
-function isNewerVersion(current: string, latest: string): boolean {
-  const currentParts = current.replace(/^v/, '').split('.').map(Number)
-  const latestParts = latest.replace(/^v/, '').split('.').map(Number)
-
-  // Pad arrays to same length
-  while (currentParts.length < 3) currentParts.push(0)
-  while (latestParts.length < 3) latestParts.push(0)
-
-  for (let i = 0; i < 3; i++) {
-    if (latestParts[i] > currentParts[i]) return true
-    if (latestParts[i] < currentParts[i]) return false
-  }
-
-  return false
-}
 
 /**
  * Check for updates for a single agent
@@ -1098,7 +902,7 @@ export async function checkAgentUpdate(
   }
 
   // Get the npm package name
-  const packageName = NPM_PACKAGES[agentId]
+  const packageName = NPM_PACKAGES[agentId as AgentId]
   if (!packageName) {
     result.error = `Unknown agent: ${agentId}`
     return result

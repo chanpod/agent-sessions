@@ -439,6 +439,24 @@ const electronAPI = {
     getLogs: (serviceId: string, tail?: number): Promise<{ success: boolean; logs: string; error?: string }> =>
       ipcRenderer.invoke('docker:getLogs', serviceId, tail),
   },
+  permission: {
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:respond', id, decision, reason),
+    checkHook: (projectPath: string): Promise<boolean> =>
+      ipcRenderer.invoke('permission:check-hook', projectPath),
+    installHook: (projectPath: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:install-hook', projectPath),
+    onRequest: (callback: (request: { id: string; sessionId: string; toolName: string; toolInput: Record<string, unknown>; receivedAt: number }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, request: { id: string; sessionId: string; toolName: string; toolInput: Record<string, unknown>; receivedAt: number }) => callback(request)
+      ipcRenderer.on('permission:request', handler)
+      return () => ipcRenderer.removeListener('permission:request', handler)
+    },
+    onExpired: (callback: (id: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: string) => callback(id)
+      ipcRenderer.on('permission:expired', handler)
+      return () => ipcRenderer.removeListener('permission:expired', handler)
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('electron', electronAPI)

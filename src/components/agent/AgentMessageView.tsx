@@ -15,10 +15,12 @@ import type {
   ErrorBlock,
   ImageBlock,
 } from '@/types/agent-ui'
+import type { TokenUsage } from '@/types/stream-json'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { MessageBlock } from '@/components/agent/MessageBlock'
 import { ThinkingBlock } from '@/components/agent/ThinkingBlock'
 import { ToolCallCard } from '@/components/agent/ToolCallCard'
+import { ContextUsageIndicator } from '@/components/agent/ContextUsageIndicator'
 import { cn } from '@/lib/utils'
 
 // =============================================================================
@@ -301,14 +303,24 @@ function DefaultMessageHeader({ message }: { message: AgentMessage }) {
   const config = roleConfig[message.role]
   const Icon = config.icon
 
+  // Extract model and usage from metadata for context usage indicator
+  const model = message.metadata?.model as string | undefined
+  const usage = message.metadata?.usage as TokenUsage | undefined
+  const showContextUsage = message.role === 'assistant' && model && usage
+
   return (
-    <div className="flex items-center gap-2">
-      <Icon className={cn('size-4', config.className)} />
-      <span className={cn('text-xs font-medium', config.className)}>
-        {config.label}
-      </span>
-      {message.status === 'streaming' && (
-        <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <Icon className={cn('size-4', config.className)} />
+        <span className={cn('text-xs font-medium', config.className)}>
+          {config.label}
+        </span>
+        {message.status === 'streaming' && (
+          <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
+        )}
+      </div>
+      {showContextUsage && (
+        <ContextUsageIndicator model={model} usage={usage} showTokens={true} />
       )}
     </div>
   )

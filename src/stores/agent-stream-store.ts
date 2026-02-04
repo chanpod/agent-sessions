@@ -50,6 +50,7 @@ interface AgentStreamStore {
   getTerminalState(terminalId: string): TerminalAgentState | undefined
   isMessageComplete(terminalId: string): boolean
   clearTerminal(terminalId: string): void
+  markWaitingForResponse(terminalId: string): void
 
   // Session management actions
   setTerminalSession(terminalId: string, sessionId: string): void
@@ -79,6 +80,7 @@ function getOrCreateTerminalState(
     currentMessage: null,
     messages: [],
     isActive: false,
+    isWaitingForResponse: false,
   }
 }
 
@@ -140,6 +142,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 ...terminalState,
                 currentMessage: newMessage,
                 isActive: true,
+                isWaitingForResponse: false,
                 error: undefined,
               }
               break
@@ -403,6 +406,18 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         })
       },
 
+      markWaitingForResponse: (terminalId: string) => {
+        set((state) => {
+          const terminals = new Map(state.terminals)
+          const terminalState = getOrCreateTerminalState(terminals, terminalId)
+          terminals.set(terminalId, {
+            ...terminalState,
+            isWaitingForResponse: true,
+          })
+          return { terminals }
+        })
+      },
+
       // Session management actions
       setTerminalSession: (terminalId: string, sessionId: string) => {
         set((state) => {
@@ -435,6 +450,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             currentMessage: null,
             messages: sessionData.messages,
             isActive: false,
+            isWaitingForResponse: false,
           })
 
           return { terminals, terminalToSession }
@@ -573,7 +589,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             const termState = state.terminals.get(id)
             const terminals = new Map(state.terminals)
             terminals.set(id, {
-              ...(termState || { currentMessage: null, messages: [], isActive: false }),
+              ...(termState || { currentMessage: null, messages: [], isActive: false, isWaitingForResponse: false }),
               error,
             })
             return { terminals }

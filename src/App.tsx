@@ -19,6 +19,9 @@ import { UpdateNotification } from './components/UpdateNotification'
 import { ToastContainer } from './components/ToastContainer'
 import { NewProjectModal } from './components/NewProjectModal'
 import { EditProjectModal } from './components/EditProjectModal'
+import { PermissionModal } from './components/PermissionModal'
+import { HookInstallPrompt } from './components/HookInstallPrompt'
+import { usePermissionStore } from './stores/permission-store'
 import { useTerminalStore } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
@@ -171,6 +174,13 @@ function App() {
   const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(true)
   // State for agent processes (these use child_process, not PTY)
   const [agentProcesses, setAgentProcesses] = useState<Map<string, { id: string; agentType: string; cwd: string }>>(new Map())
+  const [hookPromptState, setHookPromptState] = useState<{
+    projectId: string
+    projectName: string
+    agentId: string
+    contextId: string | null
+    contextContent: string | null
+  } | null>(null)
   const {
     addSession,
     addSessionsBatch,
@@ -276,6 +286,22 @@ function App() {
 
     return () => unsubscribe?.()
   }, [isElectron])
+
+  // Permission hook event subscription
+  useEffect(() => {
+    if (!window.electron?.permission) return
+    const { addRequest, removeRequest } = usePermissionStore.getState()
+    const unsubRequest = window.electron.permission.onRequest((request) => {
+      addRequest(request)
+    })
+    const unsubExpired = window.electron.permission.onExpired((id) => {
+      removeRequest(id)
+    })
+    return () => {
+      unsubRequest()
+      unsubExpired()
+    }
+  }, [])
 
   // Subscribe to agent process events (JSON streaming via child_process)
   useEffect(() => {
@@ -695,6 +721,21 @@ function App() {
     const project = projects.find(p => p.id === projectId)
     if (!project || !window.electron) return
 
+    // Check if permission hook is installed (Claude only - other agents use their own skip flags)
+    if (agentId === 'claude' && skipPermissions !== true && window.electron.permission) {
+      const { isHookInstalled, setHookInstalled } = usePermissionStore.getState()
+      let hookInstalled = isHookInstalled(project.path)
+      if (hookInstalled === undefined) {
+        const checked = await window.electron.permission.checkHook(project.path)
+        setHookInstalled(project.path, checked)
+        hookInstalled = checked
+      }
+      if (!hookInstalled) {
+        setHookPromptState({ projectId, projectName: project.name, agentId, contextId, contextContent })
+        return
+      }
+    }
+
     console.log('[App] handleCreateAgentTerminal called:', {
       projectId,
       agentId,
@@ -821,6 +862,29 @@ function App() {
     } catch (error) {
       console.error('Failed to create agent terminal:', error)
     }
+  }
+
+  const handleHookInstall = async () => {
+    if (!hookPromptState || !window.electron?.permission) return
+    const project = projects.find(p => p.id === hookPromptState.projectId)
+    if (!project) return
+
+    const result = await window.electron.permission.installHook(project.path)
+    if (result.success) {
+      usePermissionStore.getState().setHookInstalled(project.path, true)
+      setHookPromptState(null)
+      // Re-launch without skipPermissions (hook will handle approvals)
+      handleCreateAgentTerminal(hookPromptState.projectId, hookPromptState.agentId, hookPromptState.contextId, hookPromptState.contextContent)
+    } else {
+      console.error('[App] Failed to install hook:', result.error)
+    }
+  }
+
+  const handleHookSkip = () => {
+    if (!hookPromptState) return
+    setHookPromptState(null)
+    // Re-launch with skipPermissions=true to bypass hook check
+    handleCreateAgentTerminal(hookPromptState.projectId, hookPromptState.agentId, hookPromptState.contextId, hookPromptState.contextContent, true)
   }
 
   const handleCreateTerminal = async (projectId: string, shell: { name: string; path: string }) => {
@@ -1483,6 +1547,15 @@ function App() {
       </DragOverlay>
       <UpdateNotification />
       <ToastContainer />
+      <PermissionModal />
+      {hookPromptState && (
+        <HookInstallPrompt
+          projectName={hookPromptState.projectName}
+          onInstall={handleHookInstall}
+          onSkip={handleHookSkip}
+          onCancel={() => setHookPromptState(null)}
+        />
+      )}
       {showNewProjectModal && (
         <NewProjectModal onClose={() => setShowNewProjectModal(false)} />
       )}

@@ -203,6 +203,14 @@ export interface ServiceInfo {
   command?: string
 }
 
+export interface PermissionRequestForUI {
+  id: string
+  sessionId: string
+  toolName: string
+  toolInput: Record<string, unknown>
+  receivedAt: number
+}
+
 export interface ElectronAPI {
   pty: {
     create: (options: PtyOptions) => Promise<TerminalInfo>
@@ -320,6 +328,13 @@ export interface ElectronAPI {
   docker: {
     isAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>
     getLogs: (serviceId: string, tail?: number) => Promise<{ success: boolean; logs: string; error?: string }>
+  }
+  permission: {
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string) => Promise<{ success: boolean; error?: string }>
+    checkHook: (projectPath: string) => Promise<boolean>
+    installHook: (projectPath: string) => Promise<{ success: boolean; error?: string }>
+    onRequest: (callback: (request: PermissionRequestForUI) => void) => () => void
+    onExpired: (callback: (id: string) => void) => () => void
   }
 }
 

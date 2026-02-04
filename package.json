@@ -5,6 +5,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
+    "dev:log": "node -e \"require('fs').writeFileSync('.dev.log','')\" && bash -c \"npm run dev 2>&1 | tee -a .dev.log\"",
     "build": "vite build",
     "build:dist": "vite build && electron-builder",
     "preview": "vite preview",

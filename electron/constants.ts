@@ -20,3 +20,8 @@ export const CONSTANTS = {
   MAX_DIRECTORY_DEPTH: 10,
   REVIEW_BATCH_SIZE: 5,
 }
+
+// Permission system
+export const PERMISSION_SERVER_PORT = 18923
+export const PERMISSION_REQUEST_TIMEOUT_MS = 300_000 // 5 minutes
+export const PERMISSION_HOOK_FILENAME = 'permission-handler.js'

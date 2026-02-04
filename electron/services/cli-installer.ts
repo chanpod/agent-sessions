@@ -6,21 +6,18 @@
  */
 
 import { spawn } from 'child_process'
-import * as fs from 'fs'
-import * as path from 'path'
+import {
+  type AgentId,
+  type InstallMethod,
+  NPM_PACKAGES,
+  BREW_PACKAGES,
+  NATIVE_INSTALLS,
+} from './cli-config.js'
+import { getGitBashPath, type InstallPlatform } from '../utils/path-service.js'
 
 // ============================================================================
 // Types & Interfaces
 // ============================================================================
-
-/** Supported agent IDs for CLI installation */
-export type AgentId = 'claude' | 'gemini' | 'codex'
-
-/** Supported installation methods */
-export type InstallMethod = 'npm' | 'native' | 'brew'
-
-/** Supported platforms */
-export type Platform = 'windows' | 'wsl' | 'macos' | 'linux'
 
 /**
  * Result of a CLI installation attempt
@@ -49,101 +46,6 @@ interface InstallCommand {
 }
 
 // ============================================================================
-// Installation Command Definitions
-// ============================================================================
-
-/**
- * NPM package names for each CLI tool
- */
-const NPM_PACKAGES: Record<AgentId, string> = {
-  claude: '@anthropic-ai/claude-code',
-  gemini: '@google/gemini-cli',
-  codex: '@openai/codex',
-}
-
-/**
- * Homebrew package names for each CLI tool
- */
-const BREW_PACKAGES: Record<AgentId, { formula?: string; cask?: string }> = {
-  claude: {}, // Claude doesn't have a brew package
-  gemini: { formula: 'gemini-cli' },
-  codex: { cask: 'codex' },
-}
-
-/**
- * Native installation scripts/commands
- */
-const NATIVE_INSTALLS: Record<AgentId, { unix?: string; windows?: string }> = {
-  claude: {
-    unix: 'curl -fsSL https://claude.ai/install.sh | bash',
-    windows: 'irm https://claude.ai/install.ps1 | iex',
-  },
-  gemini: {}, // Gemini doesn't have a native installer (uses npm)
-  codex: {}, // Codex doesn't have a native installer (uses npm/brew)
-}
-
-// ============================================================================
-// Git Bash Detection (Windows)
-// ============================================================================
-
-/** Cached Git Bash path (null means not found, undefined means not yet checked) */
-let cachedGitBashPath: string | null | undefined = undefined
-
-/**
- * Find Git Bash executable path on Windows.
- * Checks common installation locations and caches the result.
- *
- * @returns Path to bash.exe if found, null otherwise
- */
-function findGitBashPath(): string | null {
-  // Return cached result if already checked
-  if (cachedGitBashPath !== undefined) {
-    return cachedGitBashPath
-  }
-
-  // Only search on Windows
-  if (process.platform !== 'win32') {
-    cachedGitBashPath = null
-    return null
-  }
-
-  console.log('[cli-installer] Searching for Git Bash...')
-
-  // Common Git Bash locations to check
-  const possiblePaths: string[] = []
-
-  // Check Program Files locations
-  const programFiles = process.env['PROGRAMFILES'] || 'C:\\Program Files'
-  const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)'
-
-  possiblePaths.push(
-    path.join(programFiles, 'Git', 'bin', 'bash.exe'),
-    path.join(programFilesX86, 'Git', 'bin', 'bash.exe'),
-    // Also check usr/bin which has more Unix tools
-    path.join(programFiles, 'Git', 'usr', 'bin', 'bash.exe'),
-    path.join(programFilesX86, 'Git', 'usr', 'bin', 'bash.exe'),
-  )
-
-  // Check each path
-  for (const bashPath of possiblePaths) {
-    console.log(`[cli-installer]   Checking: ${bashPath}`)
-    try {
-      if (fs.existsSync(bashPath)) {
-        console.log(`[cli-installer]   Found Git Bash at: ${bashPath}`)
-        cachedGitBashPath = bashPath
-        return bashPath
-      }
-    } catch {
-      // Ignore errors, continue checking
-    }
-  }
-
-  console.log('[cli-installer]   Git Bash not found')
-  cachedGitBashPath = null
-  return null
-}
-
-// ============================================================================
 // Installation Command Builders
 // ============================================================================
 
@@ -153,7 +55,7 @@ function findGitBashPath(): string | null {
 function buildInstallCommand(
   agentId: AgentId,
   method: InstallMethod,
-  platform: Platform
+  platform: InstallPlatform
 ): InstallCommand | { error: string } {
   console.log(`[cli-installer] Building install command: agent=${agentId}, method=${method}, platform=${platform}`)
 
@@ -232,7 +134,7 @@ function buildInstallCommand(
  * Execute an installation command using spawn
  * Returns a promise that resolves with the result
  */
-function executeInstallCommand(installCommand: InstallCommand, platform: Platform): Promise<InstallResult> {
+function executeInstallCommand(installCommand: InstallCommand, platform: InstallPlatform): Promise<InstallResult> {
   return new Promise((resolve) => {
     let output = ''
     let command: string
@@ -241,7 +143,7 @@ function executeInstallCommand(installCommand: InstallCommand, platform: Platfor
     // Determine how to run the command based on platform
     if (platform === 'windows' && installCommand.command !== 'powershell.exe') {
       // For non-PowerShell commands on Windows, use Git Bash
-      const gitBashPath = findGitBashPath()
+      const gitBashPath = getGitBashPath()
       if (gitBashPath) {
         // Run through Git Bash as a login shell
         const fullCommand = [installCommand.command, ...installCommand.args].join(' ')
@@ -361,7 +263,7 @@ function executeInstallCommand(installCommand: InstallCommand, platform: Platfor
 export async function installCliTool(
   agentId: AgentId | string,
   method: InstallMethod,
-  platform: Platform,
+  platform: InstallPlatform,
   _cwd?: string
 ): Promise<InstallResult> {
   // Normalize agentId to lowercase and validate
@@ -416,7 +318,7 @@ export async function installCliTool(
  * @param platform - Target platform
  * @returns Array of available installation methods
  */
-export function getAvailableInstallMethods(agentId: AgentId, platform: Platform): InstallMethod[] {
+export function getAvailableInstallMethods(agentId: AgentId, platform: InstallPlatform): InstallMethod[] {
   const methods: InstallMethod[] = []
 
   // npm is always available
@@ -460,7 +362,7 @@ export function getInstallMethodDisplayName(method: InstallMethod): string {
 /**
  * Get the package/command description for an installation
  */
-export function getInstallDescription(agentId: AgentId, method: InstallMethod, platform: Platform): string {
+export function getInstallDescription(agentId: AgentId, method: InstallMethod, platform: InstallPlatform): string {
   switch (method) {
     case 'npm':
       return `npm install -g ${NPM_PACKAGES[agentId]}`
@@ -485,40 +387,6 @@ export function getInstallDescription(agentId: AgentId, method: InstallMethod, p
 }
 
 // ============================================================================
-// Platform Detection
-// ============================================================================
-
-/**
- * Detect the current platform for installation purposes.
- * This is a simple synchronous detection based on process.platform.
- * For WSL detection, the caller should handle that separately.
- *
- * @returns The detected platform
- */
-export async function getPlatformForInstall(): Promise<Platform> {
-  // Check for WSL by looking at the platform and environment
-  if (process.platform === 'linux') {
-    // Check if running under WSL
-    const isWsl = process.env['WSL_DISTRO_NAME'] || process.env['WSLENV']
-    if (isWsl) {
-      return 'wsl'
-    }
-    return 'linux'
-  }
-
-  if (process.platform === 'darwin') {
-    return 'macos'
-  }
-
-  if (process.platform === 'win32') {
-    return 'windows'
-  }
-
-  // Default to linux for unknown platforms
-  return 'linux'
-}
-
-// ============================================================================
 // Exports
 // ============================================================================
 
@@ -527,8 +395,4 @@ export const CliInstaller = {
   getAvailableInstallMethods,
   getInstallMethodDisplayName,
   getInstallDescription,
-  getPlatformForInstall,
-  NPM_PACKAGES,
-  BREW_PACKAGES,
-  NATIVE_INSTALLS,
 }

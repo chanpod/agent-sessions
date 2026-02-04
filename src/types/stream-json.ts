@@ -427,6 +427,8 @@ export interface TerminalAgentState {
   messages: AgentMessage[]
   /** Whether the agent is currently active/streaming */
   isActive: boolean
+  /** Whether we're waiting for the agent to start responding (message sent, no response yet) */
+  isWaitingForResponse: boolean
   /** Error message if something went wrong */
   error?: string
 }
@@ -438,6 +440,7 @@ export const initialTerminalAgentState: TerminalAgentState = {
   currentMessage: null,
   messages: [],
   isActive: false,
+  isWaitingForResponse: false,
 }
 
 // =============================================================================

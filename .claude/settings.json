@@ -10,5 +10,13 @@
       "Bash(git log*)",
       "Bash(git show*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "node \"C:\\\\git\\\\agent-sessions\\\\resources\\\\bin\\\\permission-handler.js\""
+      }
+    ]
   }
 }

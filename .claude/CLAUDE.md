@@ -28,6 +28,18 @@ The following commands ARE allowed:
 - `npm run lint` / `yarn lint` - Linting
 - `npm test` / `yarn test` - Running tests
 
+### Dev Server Output Log
+
+The user runs the dev server separately with `pnpm dev:log`. This outputs to `.dev.log` (gitignored).
+
+**To see dev server output (build errors, TypeScript errors, HMR updates):**
+```bash
+cat .dev.log        # Full log since server start
+tail -n 100 .dev.log  # Last 100 lines
+```
+
+The log file is wiped on each server start, so it won't grow indefinitely.
+
 ## Windows Development Requirements
 
 ### Always Use Git Bash

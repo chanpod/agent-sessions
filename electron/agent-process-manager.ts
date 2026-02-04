@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from 'child_process'
 import { BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
-import { getGitBashPath } from './services/cli-detector.js'
+import { getGitBashPath } from './utils/path-service.js'
 
 /**
  * Supported agent types for the process manager

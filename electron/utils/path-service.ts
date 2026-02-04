@@ -17,6 +17,7 @@
 
 import * as nodePath from 'path'
 import * as posixPath from 'path/posix'
+import * as fs from 'fs'
 import { execSync } from 'child_process'
 
 // ============================================================================
@@ -159,6 +160,111 @@ export function getEnvironment(): PathEnvironment {
  */
 export function clearEnvironmentCache(): void {
   cachedEnvironment = null
+}
+
+// ============================================================================
+// Windows Helpers
+// ============================================================================
+
+/** Get the Program Files directory from environment or default */
+export function getProgramFilesPath(): string {
+  return process.env['PROGRAMFILES'] || 'C:\\Program Files'
+}
+
+/** Get the Program Files (x86) directory from environment or default */
+export function getProgramFilesX86Path(): string {
+  return process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)'
+}
+
+// ============================================================================
+// Git Bash Detection (Cached)
+// ============================================================================
+
+/** Cached Git Bash path (null = not found, undefined = not yet checked) */
+let cachedGitBashPath: string | null | undefined = undefined
+
+/**
+ * Find the Git Bash executable on Windows.
+ * Results are cached after the first call.
+ *
+ * @returns The path to bash.exe, or null if not found / not on Windows
+ */
+export function getGitBashPath(): string | null {
+  if (cachedGitBashPath !== undefined) {
+    return cachedGitBashPath
+  }
+
+  if (process.platform !== 'win32') {
+    cachedGitBashPath = null
+    return null
+  }
+
+  console.log('[path-service] Searching for Git Bash...')
+
+  const programFiles = getProgramFilesPath()
+  const programFilesX86 = getProgramFilesX86Path()
+
+  const possiblePaths = [
+    nodePath.join(programFiles, 'Git', 'bin', 'bash.exe'),
+    nodePath.join(programFilesX86, 'Git', 'bin', 'bash.exe'),
+    nodePath.join(programFiles, 'Git', 'usr', 'bin', 'bash.exe'),
+    nodePath.join(programFilesX86, 'Git', 'usr', 'bin', 'bash.exe'),
+  ]
+
+  for (const bashPath of possiblePaths) {
+    try {
+      if (fs.existsSync(bashPath)) {
+        console.log(`[path-service]   Found Git Bash at: ${bashPath}`)
+        cachedGitBashPath = bashPath
+        return bashPath
+      }
+    } catch {
+      // Ignore errors, continue checking
+    }
+  }
+
+  console.log('[path-service]   Git Bash not found')
+  cachedGitBashPath = null
+  return null
+}
+
+/**
+ * Clear the cached Git Bash path.
+ * Useful for testing.
+ */
+export function clearGitBashCache(): void {
+  cachedGitBashPath = undefined
+}
+
+// ============================================================================
+// Platform Detection
+// ============================================================================
+
+/** Platform identifier for installation context */
+export type InstallPlatform = 'windows' | 'wsl' | 'macos' | 'linux'
+
+/**
+ * Detect the current platform for CLI installation purposes.
+ * Distinguishes between native Linux and WSL.
+ */
+export function getPlatformForInstall(): InstallPlatform {
+  if (process.platform === 'linux') {
+    const isWsl = process.env['WSL_DISTRO_NAME'] || process.env['WSLENV']
+    if (isWsl) {
+      return 'wsl'
+    }
+    return 'linux'
+  }
+
+  if (process.platform === 'darwin') {
+    return 'macos'
+  }
+
+  if (process.platform === 'win32') {
+    return 'windows'
+  }
+
+  return 'linux'
 }
 
 // ============================================================================
@@ -1101,10 +1207,12 @@ export function escapeForSSHRemote(inputPath: string): string {
 }
 
 /**
- * Interface for SSH manager to check connection status
+ * Interface for SSH manager to check connection status and execute remote commands.
+ * This is the shared contract used by both path-service and cli-detector.
  */
-interface SSHManagerLike {
+export interface SSHManagerLike {
   getProjectMasterStatus(projectId: string): Promise<{ connected: boolean; error?: string }>
+  execViaProjectMaster(projectId: string, command: string): Promise<string>
 }
 
 /**
@@ -1254,6 +1362,17 @@ export const PathService = {
   // Environment
   getEnvironment,
   clearEnvironmentCache,
+
+  // Windows Helpers
+  getProgramFilesPath,
+  getProgramFilesX86Path,
+
+  // Git Bash
+  getGitBashPath,
+  clearGitBashCache,
+
+  // Platform
+  getPlatformForInstall,
 
   // Path Analysis
   analyzePath,

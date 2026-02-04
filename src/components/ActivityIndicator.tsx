@@ -1,11 +1,15 @@
 import { useSyncExternalStore, useEffect, useRef } from 'react'
-import { useTerminalStore, type ActivityLevel } from '../stores/terminal-store'
+import { useTerminalStore } from '../stores/terminal-store'
+import { useAgentStreamStore } from '../stores/agent-stream-store'
 import { useToastStore } from '../stores/toast-store'
 import { useProjectStore } from '../stores/project-store'
+import { IconLoader2, IconCheck, IconQuestionMark } from '@tabler/icons-react'
 
 const IDLE_THRESHOLD_MS = 5000
 const MINOR_ACTIVITY_THRESHOLD_MS = 5000 // Yellow goes to grey after 5s
 const NEW_TERMINAL_GRACE_PERIOD_MS = 10000 // Don't notify for 10s after terminal creation
+
+type AgentStatus = 'responding' | 'done' | 'needs-attention' | 'idle' | 'exited'
 
 interface ActivityIndicatorProps {
   sessionId: string
@@ -33,9 +37,11 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
     state.sessions.find((s) => s.id === sessionId)
   )
 
+  // Get agent stream state for this terminal (if it's an agent terminal)
+  const agentState = useAgentStreamStore((state) => state.terminals.get(sessionId))
+
   const addToast = useToastStore((state) => state.addToast)
   const projects = useProjectStore((state) => state.projects)
-  const activeProjectId = useProjectStore((state) => state.activeProjectId)
   const activeSessionId = useTerminalStore((state) => state.activeSessionId)
   const triggerProjectFlash = useProjectStore((state) => state.triggerProjectFlash)
   const previousDisplayStateRef = useRef<'green' | 'yellow' | 'grey' | null>(null)
@@ -48,17 +54,33 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
   let displayState: 'green' | 'yellow' | 'grey' = 'grey'
 
   if (session && session.status !== 'exited') {
-    // Determine color based on recent activity
     if (timeSinceSubstantialActivity < IDLE_THRESHOLD_MS) {
-      // Had substantial activity recently -> green
       displayState = 'green'
     } else if (timeSinceLastActivity < MINOR_ACTIVITY_THRESHOLD_MS && session.lastActivityLevel === 'minor') {
-      // Had minor activity recently (no substantial activity) -> yellow
       displayState = 'yellow'
     } else {
-      // No recent activity -> grey
       displayState = 'grey'
     }
+  }
+
+  // Determine agent-specific status for agent terminals
+  const isAgentTerminal = session?.terminalType === 'agent'
+  let agentStatus: AgentStatus = 'idle'
+
+  if (session?.status === 'exited') {
+    agentStatus = 'exited'
+  } else if (isAgentTerminal && agentState) {
+    if (agentState.isActive || agentState.isWaitingForResponse) {
+      agentStatus = 'responding'
+    } else if (agentState.error) {
+      agentStatus = 'needs-attention'
+    } else if (agentState.messages.length > 0 || agentState.currentMessage) {
+      agentStatus = 'done'
+    } else {
+      agentStatus = 'idle'
+    }
+  } else if (isAgentTerminal) {
+    agentStatus = 'idle'
   }
 
   // Detect green -> grey transition (ignoring yellow)
@@ -66,34 +88,15 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
     if (!session) return
 
     if (previousDisplayStateRef.current === 'green' && displayState === 'grey') {
-      // Check if terminal is still in grace period (newly created)
       const terminalAge = now - session.createdAt
       const isInGracePeriod = terminalAge < NEW_TERMINAL_GRACE_PERIOD_MS
-
-      // Check if this terminal is currently being viewed by the user
       const isTerminalActive = sessionId === activeSessionId
 
-      console.log('[Activity] Green->Grey transition:', {
-        terminalId: sessionId,
-        activeSessionId,
-        projectId: session.projectId,
-        activeProjectId,
-        isTerminalActive,
-        isInGracePeriod,
-        willNotify: !isInGracePeriod && !isTerminalActive
-      })
-
       if (!isInGracePeriod && !isTerminalActive) {
-        // Terminal went from substantial activity (green) to idle (grey)
-        // Only notify if the project is NOT currently active (user isn't watching it)
         const project = projects.find(p => p.id === session.projectId)
         if (project) {
           addToast(`Terminal "${session.title}" in project "${project.name}" is now idle`, 'info', 5000)
-
-          // Trigger project flash
           triggerProjectFlash(session.projectId)
-
-          // Call the callback if provided
           if (onActivityChange) {
             onActivityChange(false, sessionId, session.projectId)
           }
@@ -105,7 +108,12 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
 
   if (!session) return null
 
-  // If session has exited, show gray
+  // Agent terminals get icon-based status indicators
+  if (isAgentTerminal) {
+    return <AgentStatusIcon status={agentStatus} className={className} />
+  }
+
+  // Non-agent terminals keep the original dot indicator
   if (session.status === 'exited') {
     return (
       <span
@@ -124,4 +132,51 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
       title={title}
     />
   )
+}
+
+function AgentStatusIcon({ status }: { status: AgentStatus; className?: string }) {
+  switch (status) {
+    case 'responding':
+      return (
+        <IconLoader2
+          size={18}
+          stroke={2.5}
+          className="animate-spin text-blue-400 shrink-0"
+          title="Agent is responding..."
+        />
+      )
+    case 'done':
+      return (
+        <IconCheck
+          size={18}
+          stroke={2.5}
+          className="text-emerald-400 shrink-0"
+          title="Agent completed"
+        />
+      )
+    case 'needs-attention':
+      return (
+        <IconQuestionMark
+          size={18}
+          stroke={2.5}
+          className="text-yellow-400 shrink-0"
+          title="Needs attention"
+        />
+      )
+    case 'exited':
+      return (
+        <span
+          className="w-2 h-2 rounded-full bg-zinc-500 shrink-0"
+          title="Exited"
+        />
+      )
+    case 'idle':
+    default:
+      return (
+        <span
+          className="w-2 h-2 rounded-full bg-zinc-400 shrink-0"
+          title="Idle"
+        />
+      )
+  }
 }

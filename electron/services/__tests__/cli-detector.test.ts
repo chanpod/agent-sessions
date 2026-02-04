@@ -7,13 +7,15 @@ import {
   detectCliTool,
   detectAllCliTools,
   createCliToolDefinition,
+  type CliToolDetectionResult,
+} from '../cli-detector.js'
+import {
   CLAUDE_CLI,
   GEMINI_CLI,
   CODEX_CLI,
   BUILTIN_CLI_TOOLS,
   type CliToolDefinition,
-  type CliToolDetectionResult,
-} from '../cli-detector.js'
+} from '../cli-config.js'
 
 // Mock child_process
 vi.mock('child_process', () => ({

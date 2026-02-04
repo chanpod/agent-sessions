@@ -7,6 +7,7 @@ import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck,
 import { cn } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
 import { useGlobalRulesStore } from '../stores/global-rules-store'
+import { usePermissionStore } from '@/stores/permission-store'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from './ui/card'
@@ -207,6 +208,7 @@ export function AgentLauncher({
   )
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false)
   const [skipPermissions, setSkipPermissions] = useState(false)
+  const hookInstalled = usePermissionStore((s) => s.isHookInstalled(projectPath ?? ''))
 
   // Get selected context object
   const selectedContext = useMemo(
@@ -380,48 +382,55 @@ export function AgentLauncher({
             </div>
           )}
 
-          {/* Skip Permissions Checkbox */}
+          {/* Skip Permissions / Hook Status */}
           {selectedAgentId && (
             <div className="px-1">
-              <label
-                className={cn(
-                  'flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors border',
-                  skipPermissions
-                    ? 'bg-amber-500/10 border-amber-500/50'
-                    : 'bg-card/40 border-border/60 hover:bg-card/60'
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={skipPermissions}
-                  onChange={(e) => setSkipPermissions(e.target.checked)}
-                  className="sr-only"
-                />
-                <div
+              {hookInstalled && selectedAgentId === 'claude' ? (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-500/10 border border-emerald-500/50">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="text-sm text-emerald-300">Permission hooks active</span>
+                </div>
+              ) : (
+                <label
                   className={cn(
-                    'w-4 h-4 rounded border-2 flex items-center justify-center transition-colors',
+                    'flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors border',
                     skipPermissions
-                      ? 'bg-amber-500 border-amber-500'
-                      : 'border-muted-foreground/50'
+                      ? 'bg-amber-500/10 border-amber-500/50'
+                      : 'bg-card/40 border-border/60 hover:bg-card/60'
                   )}
                 >
-                  {skipPermissions && (
-                    <svg className="w-2.5 h-2.5 text-black" fill="currentColor" viewBox="0 0 12 12">
-                      <path d="M10.28 2.28L3.989 8.575 1.695 6.28A1 1 0 00.28 7.695l3 3a1 1 0 001.414 0l7-7A1 1 0 0010.28 2.28z" />
-                    </svg>
-                  )}
-                </div>
-                <AlertTriangle className={cn(
-                  'w-4 h-4',
-                  skipPermissions ? 'text-amber-400' : 'text-amber-500/70'
-                )} />
-                <span className={cn(
-                  'text-sm',
-                  skipPermissions ? 'text-amber-300' : 'text-muted-foreground'
-                )}>
-                  {getSkipPermissionsLabel()}
-                </span>
-              </label>
+                  <input
+                    type="checkbox"
+                    checked={skipPermissions}
+                    onChange={(e) => setSkipPermissions(e.target.checked)}
+                    className="sr-only"
+                  />
+                  <div
+                    className={cn(
+                      'w-4 h-4 rounded border-2 flex items-center justify-center transition-colors',
+                      skipPermissions
+                        ? 'bg-amber-500 border-amber-500'
+                        : 'border-muted-foreground/50'
+                    )}
+                  >
+                    {skipPermissions && (
+                      <svg className="w-2.5 h-2.5 text-black" fill="currentColor" viewBox="0 0 12 12">
+                        <path d="M10.28 2.28L3.989 8.575 1.695 6.28A1 1 0 00.28 7.695l3 3a1 1 0 001.414 0l7-7A1 1 0 0010.28 2.28z" />
+                      </svg>
+                    )}
+                  </div>
+                  <AlertTriangle className={cn(
+                    'w-4 h-4',
+                    skipPermissions ? 'text-amber-400' : 'text-amber-500/70'
+                  )} />
+                  <span className={cn(
+                    'text-sm',
+                    skipPermissions ? 'text-amber-300' : 'text-muted-foreground'
+                  )}>
+                    {getSkipPermissionsLabel()}
+                  </span>
+                </label>
+              )}
             </div>
           )}
 
