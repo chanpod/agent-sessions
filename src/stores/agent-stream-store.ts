@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
+import { useTerminalStore } from './terminal-store'
 import type {
   AgentMessage,
   ContentBlock,
@@ -384,6 +385,11 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           terminals.set(terminalId, newState)
           return { terminals }
         })
+
+        // Persist session to DB after message completes so it survives app restart
+        if (event.type === 'agent-message-end') {
+          get().persistSession(terminalId)
+        }
       },
 
       getTerminalState: (terminalId: string) => {
@@ -539,6 +545,16 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           console.log('[AgentStreamStore] Subscribing to detector events')
           unsubscribe = window.electron.detector.onEvent((event) => {
             console.log('[AgentStreamStore] Received detector event:', event.type, event.terminalId)
+
+            // Handle session init event — capture and persist the session_id
+            if (event.type === 'agent-session-init' && event.data?.sessionId) {
+              const sessionId = event.data.sessionId as string
+              console.log('[AgentStreamStore] Captured session_id from detector:', sessionId, 'for terminal:', event.terminalId)
+              get().setTerminalSession(event.terminalId, sessionId)
+              useTerminalStore.getState().updateConfigSessionId(event.terminalId, sessionId)
+              return
+            }
+
             // Filter for agent-* events and convert to AgentStreamEvent
             if (event.type.startsWith('agent-')) {
               console.log('[AgentStreamStore] Processing agent event:', event.type)
@@ -602,6 +618,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               return { terminals }
             })
           }
+
+          // Persist session to DB on process exit so conversation history survives app restart
+          get().persistSession(id)
         })
 
         // Subscribe to errors from agent processes

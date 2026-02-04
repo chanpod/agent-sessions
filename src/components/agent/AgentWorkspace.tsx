@@ -140,29 +140,12 @@ export function AgentWorkspace({
   // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
   const [userMessages, setUserMessages] = useState<UIAgentMessage[]>([])
-  const [sessionId, setSessionId] = useState<string | null>(resumeSessionId ?? null)
-
-  // Subscribe to raw events to capture session_id for multi-turn
-  useEffect(() => {
-    if (!window.electron?.agent?.onStreamEvent) return
-
-    const unsubscribe = window.electron.agent.onStreamEvent((id, event) => {
-      if (activeProcessIds.has(id)) {
-        const rawEvent = event as { type?: string; session_id?: string; data?: { messageId?: string } }
-        // Capture session_id from system init event or agent-message-start
-        if (rawEvent.session_id && !sessionId) {
-          setSessionId(rawEvent.session_id)
-          console.log(`[AgentWorkspace] Captured session_id: ${rawEvent.session_id}`)
-        }
-        // Also check transformed events for session info
-        if (rawEvent.data?.messageId && !sessionId) {
-          setSessionId(rawEvent.data.messageId)
-          console.log(`[AgentWorkspace] Captured session_id from messageId: ${rawEvent.data.messageId}`)
-        }
-      }
-    })
-    return unsubscribe
-  }, [activeProcessIds, sessionId])
+  // Session ID is captured by the agent-stream-store from detector events (agent-session-init).
+  // Subscribe to the store's terminalToSession mapping to get it reactively.
+  const storeSessionId = useAgentStreamStore(
+    (store) => store.terminalToSession.get(initialProcessId) ?? null
+  )
+  const sessionId = resumeSessionId ?? storeSessionId
 
   // Handle sending messages
   const handleSend = useCallback(
@@ -311,24 +294,27 @@ export function AgentWorkspace({
   }, [activeProcessIds])
 
   return (
-    <div className={cn('flex flex-col h-full', className)}>
+    <div className={cn('flex flex-col h-full relative', className)}>
       {/* Message View - Flex grow, scrollable */}
       <div className="flex-1 overflow-hidden">
         <AgentMessageView
           conversation={conversation}
           autoScroll={true}
+          agentType={agentType}
         />
       </div>
 
-      {/* Input Area - Fixed at bottom */}
-      <div className="border-t border-border p-4">
-        <AgentInputArea
-          processId={initialProcessId}
-          onSend={handleSend}
-          onStop={handleStop}
-          isStreaming={isStreaming}
-          placeholder={placeholder}
-        />
+      {/* Input Area - Floating at bottom */}
+      <div className="px-4 pb-4 pt-2">
+        <div className="mx-auto max-w-3xl">
+          <AgentInputArea
+            processId={initialProcessId}
+            onSend={handleSend}
+            onStop={handleStop}
+            isStreaming={isStreaming}
+            placeholder={placeholder}
+          />
+        </div>
       </div>
     </div>
   )

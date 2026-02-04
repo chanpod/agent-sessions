@@ -242,7 +242,7 @@ export function AgentTerminalsSection({
   onReconnectTerminal,
   onLaunchAgent,
 }: AgentTerminalsSectionProps) {
-  const { sessions, activeSessionId, setActiveSession } = useTerminalStore()
+  const { sessions, activeAgentSessionId, setActiveSession, setActiveAgentSession } = useTerminalStore()
   const { activeView, setProjectGridActive } = useViewStore()
   const { projects } = useProjectStore()
   const { contexts, activeContextId, loadContexts } = useAgentContextStore()
@@ -440,8 +440,11 @@ export function AgentTerminalsSection({
                   >
                     <AgentSessionRow
                       session={session}
-                      isActive={activeSessionId === session.id}
-                      onSelect={() => setActiveSession(session.id)}
+                      isActive={activeAgentSessionId === session.id}
+                      onSelect={() => {
+                        setActiveSession(session.id)
+                        setActiveAgentSession(session.id)
+                      }}
                       onClose={() => onCloseTerminal(session.id)}
                       onReconnect={() => onReconnectTerminal(session.id)}
                       contextLabel={contextLabel}

@@ -29,7 +29,7 @@ export function GridTerminalCell({
   canRemove = true,
   onRemove,
 }: GridTerminalCellProps) {
-  const { updateSessionTitle, setActiveSession } = useTerminalStore()
+  const { updateSessionTitle, setActiveSession, setActiveAgentSession } = useTerminalStore()
   const { projects } = useProjectStore()
 
   const [isEditing, setIsEditing] = useState(false)
@@ -85,6 +85,9 @@ export function GridTerminalCell({
   const handleFocus = () => {
     onFocusChange(session.id)
     setActiveSession(session.id)
+    if (session.terminalType === 'agent') {
+      setActiveAgentSession(session.id)
+    }
   }
 
   const handleRemove = (e: React.MouseEvent) => {

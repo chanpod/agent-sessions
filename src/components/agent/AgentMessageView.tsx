@@ -1,5 +1,13 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
-import { IconLoader2, IconUser, IconRobot, IconSettings } from '@tabler/icons-react'
+import {
+  IconLoader2,
+  IconUser,
+  IconSettings,
+  IconActivity,
+  IconBolt,
+  IconTerminal2,
+  IconSparkles,
+} from '@tabler/icons-react'
 
 import type {
   AgentConversation,
@@ -18,8 +26,8 @@ import type {
 import type { TokenUsage } from '@/types/stream-json'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { MessageBlock } from '@/components/agent/MessageBlock'
-import { ThinkingBlock } from '@/components/agent/ThinkingBlock'
-import { ToolCallCard } from '@/components/agent/ToolCallCard'
+import { ThinkingInline } from '@/components/agent/ThinkingInline'
+import { ToolCallInline } from '@/components/agent/ToolCallInline'
 import { ContextUsageIndicator } from '@/components/agent/ContextUsageIndicator'
 import { cn } from '@/lib/utils'
 
@@ -32,13 +40,7 @@ interface AgentMessageViewProps {
   composer?: AgentUIComposer
   className?: string
   autoScroll?: boolean
-}
-
-interface MessageRendererProps {
-  message: AgentMessage
-  context: RenderContext
-  composer?: AgentUIComposer
-  cumulativeUsage?: TokenUsage
+  agentType?: string
 }
 
 interface DefaultBlockRendererProps {
@@ -54,38 +56,35 @@ interface ToolGroup {
   toolResult?: ToolResultBlock
 }
 
+// A "turn" groups consecutive assistant messages into one logical unit
+interface AssistantTurn {
+  kind: 'assistant-turn'
+  messages: AgentMessage[]
+  activityBlocks: (ContentBlock | ToolGroup)[]
+  responseBlocks: ContentBlock[]
+  toolResults: Map<string, ToolResultBlock>
+  cumulativeUsage: TokenUsage
+  isStreaming: boolean
+  latestModel?: string
+}
+
+interface StandaloneMessage {
+  kind: 'standalone'
+  message: AgentMessage
+  cumulativeUsage: TokenUsage
+}
+
+type DisplayItem = AssistantTurn | StandaloneMessage
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
 
-/**
- * Groups consecutive tool_use and tool_result blocks by toolId
- */
-function groupToolBlocks(blocks: ContentBlock[]): (ContentBlock | ToolGroup)[] {
-  const result: (ContentBlock | ToolGroup)[] = []
-  const toolResultMap = new Map<string, ToolResultBlock>()
+/** Block types that count as "activity" (tool chain) vs "response" (actual reply) */
+const ACTIVITY_TYPES = new Set(['tool_use', 'tool_result', 'thinking'])
 
-  // First pass: collect all tool results
-  for (const block of blocks) {
-    if (block.type === 'tool_result') {
-      toolResultMap.set(block.toolId, block)
-    }
-  }
-
-  // Second pass: group tool_use with their results, skip standalone tool_results
-  for (const block of blocks) {
-    if (block.type === 'tool_use') {
-      const toolResult = toolResultMap.get(block.toolId)
-      result.push({ toolUse: block, toolResult })
-    } else if (block.type === 'tool_result') {
-      // Skip - already grouped with tool_use
-      continue
-    } else {
-      result.push(block)
-    }
-  }
-
-  return result
+function isActivityBlock(block: ContentBlock): boolean {
+  return ACTIVITY_TYPES.has(block.type)
 }
 
 /**
@@ -93,6 +92,96 @@ function groupToolBlocks(blocks: ContentBlock[]): (ContentBlock | ToolGroup)[] {
  */
 function isToolGroup(item: ContentBlock | ToolGroup): item is ToolGroup {
   return 'toolUse' in item
+}
+
+/**
+ * Groups consecutive assistant messages into turns, leaves user/system as standalone.
+ * Also splits each turn's blocks into activity (tools, thinking) and response (text, code, etc.)
+ */
+function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
+  const items: DisplayItem[] = []
+  let cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
+  let currentTurnMessages: AgentMessage[] = []
+
+  function flushTurn() {
+    if (currentTurnMessages.length === 0) return
+
+    // Collect all blocks from all messages in this turn
+    const allBlocks: ContentBlock[] = []
+    const toolResultMap = new Map<string, ToolResultBlock>()
+    let latestModel: string | undefined
+    let isStreaming = false
+
+    for (const msg of currentTurnMessages) {
+      for (const block of msg.blocks) {
+        allBlocks.push(block)
+        if (block.type === 'tool_result') {
+          toolResultMap.set(block.toolId, block)
+        }
+      }
+      const model = msg.metadata?.model as string | undefined
+      if (model) latestModel = model
+      if (msg.status === 'streaming') isStreaming = true
+    }
+
+    // Split into activity blocks (with tool grouping) and response blocks
+    const activityBlocks: (ContentBlock | ToolGroup)[] = []
+    const responseBlocks: ContentBlock[] = []
+
+    for (const block of allBlocks) {
+      if (block.type === 'tool_use') {
+        const toolResult = toolResultMap.get(block.toolId)
+        activityBlocks.push({ toolUse: block, toolResult })
+      } else if (block.type === 'tool_result') {
+        // Skip - grouped with tool_use above
+        continue
+      } else if (isActivityBlock(block)) {
+        activityBlocks.push(block)
+      } else {
+        responseBlocks.push(block)
+      }
+    }
+
+    items.push({
+      kind: 'assistant-turn',
+      messages: currentTurnMessages,
+      activityBlocks,
+      responseBlocks,
+      toolResults: toolResultMap,
+      cumulativeUsage: { ...cumulativeUsage },
+      isStreaming,
+      latestModel,
+    })
+
+    currentTurnMessages = []
+  }
+
+  for (const msg of allMessages) {
+    const usage = msg.metadata?.usage as TokenUsage | undefined
+    if (usage) {
+      cumulativeUsage = {
+        inputTokens: cumulativeUsage.inputTokens + (usage.inputTokens || 0),
+        outputTokens: cumulativeUsage.outputTokens + (usage.outputTokens || 0),
+      }
+    }
+
+    if (msg.role === 'assistant') {
+      currentTurnMessages.push(msg)
+    } else {
+      // Flush any pending assistant turn before a user/system message
+      flushTurn()
+      items.push({
+        kind: 'standalone',
+        message: msg,
+        cumulativeUsage: { ...cumulativeUsage },
+      })
+    }
+  }
+
+  // Flush remaining assistant messages
+  flushTurn()
+
+  return items
 }
 
 // =============================================================================
@@ -104,22 +193,21 @@ function isToolGroup(item: ContentBlock | ToolGroup): item is ToolGroup {
  *
  * Features:
  * - Renders all messages in a conversation
+ * - Groups consecutive assistant messages into unified "turns"
+ * - Splits turns into activity box (tools) and response box (text)
  * - Supports composer pattern for custom rendering
  * - Auto-scrolls to bottom when streaming
- * - Groups tool_use and tool_result blocks together
  */
 export function AgentMessageView({
   conversation,
   composer,
   className,
   autoScroll = true,
+  agentType,
 }: AgentMessageViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isStreaming = conversation.status === 'streaming'
-  // Track if user is at the bottom (should auto-scroll)
-  // Start as true so initial load scrolls to bottom
   const [isAtBottom, setIsAtBottom] = useState(true)
-  // Track if we should skip the next scroll check (after programmatic scroll)
   const skipNextScrollCheck = useRef(false)
 
   // Build render context
@@ -142,6 +230,12 @@ export function AgentMessageView({
     return messages
   }, [conversation.messages, conversation.currentMessage])
 
+  // Group into display items (turns + standalone messages)
+  const displayItems = useMemo(
+    () => groupIntoDisplayItems(allMessages),
+    [allMessages]
+  )
+
   // Handle scroll events to detect if user scrolled away from bottom
   const handleScroll = useCallback(() => {
     if (skipNextScrollCheck.current) {
@@ -151,13 +245,12 @@ export function AgentMessageView({
     if (!scrollRef.current) return
 
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-    // Consider "at bottom" if within 50px of the bottom
     const threshold = 50
     const atBottom = scrollHeight - scrollTop - clientHeight < threshold
     setIsAtBottom(atBottom)
   }, [])
 
-  // Auto-scroll to bottom when new content arrives, but only if user is at bottom
+  // Auto-scroll to bottom when new content arrives
   useEffect(() => {
     if (autoScroll && isAtBottom && scrollRef.current) {
       skipNextScrollCheck.current = true
@@ -165,7 +258,7 @@ export function AgentMessageView({
     }
   }, [autoScroll, isAtBottom, allMessages, conversation.currentMessage?.blocks])
 
-  // Reset to bottom when streaming starts (new message)
+  // Reset to bottom when streaming starts
   useEffect(() => {
     if (isStreaming && scrollRef.current) {
       setIsAtBottom(true)
@@ -174,119 +267,286 @@ export function AgentMessageView({
     }
   }, [isStreaming])
 
+  const hasMessages = displayItems.length > 0
+
   return (
     <ScrollArea
       className={cn('h-full', className)}
+      viewportRef={scrollRef}
+      onScroll={handleScroll}
     >
-      <div
-        ref={scrollRef}
-        className="flex flex-col gap-4 p-4"
-        onScroll={handleScroll}
-      >
-        {allMessages.map((message, index) => {
-          // Compute cumulative usage up to and including this message
-          const cumulativeUsage = allMessages.slice(0, index + 1).reduce<TokenUsage>(
-            (acc, msg) => {
-              const usage = msg.metadata?.usage as TokenUsage | undefined
-              if (usage) {
-                acc.inputTokens += usage.inputTokens || 0
-                acc.outputTokens += usage.outputTokens || 0
+      {!hasMessages && !isStreaming ? (
+        <WelcomeScreen agentType={agentType} />
+      ) : (
+        <div className="mx-auto max-w-3xl px-4 py-6">
+          <div className="flex flex-col gap-5">
+            {displayItems.map((item) => {
+              if (item.kind === 'standalone') {
+                return (
+                  <StandaloneMessageRenderer
+                    key={item.message.id}
+                    message={item.message}
+                    context={context}
+                    composer={composer}
+                    cumulativeUsage={item.cumulativeUsage}
+                  />
+                )
               }
-              return acc
-            },
-            { inputTokens: 0, outputTokens: 0 }
-          )
 
-          return (
-            <MessageRenderer
-              key={message.id}
-              message={message}
-              context={context}
-              composer={composer}
-              cumulativeUsage={cumulativeUsage}
-            />
-          )
-        })}
+              return (
+                <AssistantTurnRenderer
+                  key={item.messages[0]?.id ?? 'turn'}
+                  turn={item}
+                  context={context}
+                  composer={composer}
+                />
+              )
+            })}
 
-        {/* Streaming indicator */}
-        {isStreaming && <StreamingIndicator />}
-      </div>
+            {isStreaming && <StreamingIndicator />}
+          </div>
+        </div>
+      )}
     </ScrollArea>
   )
 }
 
 // =============================================================================
-// Message Renderer
+// Assistant Turn Renderer (Activity Box + Response Box)
 // =============================================================================
 
-/**
- * Renders a single message with optional header/footer from composer
- */
-function MessageRenderer({ message, context, composer, cumulativeUsage }: MessageRendererProps) {
-  // Group tool blocks
-  const groupedBlocks = useMemo(
-    () => groupToolBlocks(message.blocks),
-    [message.blocks]
-  )
+function AssistantTurnRenderer({
+  turn,
+  context,
+  composer,
+}: {
+  turn: AssistantTurn
+  context: RenderContext
+  composer?: AgentUIComposer
+}) {
+  const hasActivity = turn.activityBlocks.length > 0
+  const hasResponse = turn.responseBlocks.length > 0
 
-  // Build tool result map for standalone block rendering
-  const toolResults = useMemo(() => {
-    const map = new Map<string, ToolResultBlock>()
-    for (const block of message.blocks) {
-      if (block.type === 'tool_result') {
-        map.set(block.toolId, block)
-      }
-    }
-    return map
-  }, [message.blocks])
+  const showContextUsage = turn.latestModel && turn.cumulativeUsage &&
+    (turn.cumulativeUsage.inputTokens > 0 || turn.cumulativeUsage.outputTokens > 0)
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Activity Box - tool calls, thinking */}
+      {hasActivity && (
+        <div
+          className={cn(
+            'flex flex-col gap-1',
+            'rounded-lg border border-border/30',
+            'bg-muted/10 px-3 py-2.5',
+          )}
+        >
+          {/* Activity header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <IconActivity className="size-3.5 text-muted-foreground/60" />
+              <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+                Activity
+              </span>
+              {turn.isStreaming && (
+                <IconLoader2 className="size-3 animate-spin text-primary/60" />
+              )}
+            </div>
+            {showContextUsage && !hasResponse && (
+              <ContextUsageIndicator
+                model={turn.latestModel!}
+                usage={turn.cumulativeUsage}
+                showTokens={true}
+              />
+            )}
+          </div>
+
+          {/* Activity items */}
+          <div className="flex flex-col gap-0.5 pl-5">
+            {turn.activityBlocks.map((item) => {
+              if (isToolGroup(item)) {
+                return (
+                  <ToolCallInline
+                    key={item.toolUse.id}
+                    toolUse={item.toolUse}
+                    toolResult={item.toolResult}
+                  />
+                )
+              }
+              // Thinking blocks
+              if (item.type === 'thinking') {
+                return (
+                  <ThinkingInline
+                    key={item.id}
+                    block={item as ThinkingBlockType}
+                  />
+                )
+              }
+              return null
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Response Box - text, code, images, errors */}
+      {hasResponse && (
+        <div className="flex flex-col gap-2">
+          {/* Response header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="flex size-6 items-center justify-center rounded-full bg-primary/15">
+                <IconSparkles className="size-3.5 text-primary" />
+              </div>
+              <span className="text-sm font-medium text-foreground">
+                Assistant
+              </span>
+              {turn.isStreaming && (
+                <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
+              )}
+            </div>
+            {showContextUsage && (
+              <ContextUsageIndicator
+                model={turn.latestModel!}
+                usage={turn.cumulativeUsage}
+                showTokens={true}
+              />
+            )}
+          </div>
+
+          {/* Response content */}
+          <div className="flex flex-col gap-3 pl-8">
+            {turn.responseBlocks.map((block) => (
+              <DefaultBlockRenderer
+                key={block.id}
+                block={block}
+                context={context}
+                composer={composer}
+                toolResults={turn.toolResults}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* If only activity and still streaming, show that we're waiting */}
+      {hasActivity && !hasResponse && turn.isStreaming && (
+        <div className="flex items-center gap-2 pl-1">
+          <div className="flex size-6 items-center justify-center rounded-full bg-primary/15">
+            <IconSparkles className="size-3.5 text-primary" />
+          </div>
+          <span className="text-sm font-medium text-foreground">
+            Assistant
+          </span>
+          <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
+// Standalone Message Renderer (user/system messages)
+// =============================================================================
+
+function StandaloneMessageRenderer({
+  message,
+  context,
+  composer,
+  cumulativeUsage,
+}: {
+  message: AgentMessage
+  context: RenderContext
+  composer?: AgentUIComposer
+  cumulativeUsage?: TokenUsage
+}) {
+  const isUser = message.role === 'user'
+  const isSystem = message.role === 'system'
 
   return (
     <div
       className={cn(
         'flex flex-col gap-2',
-        'rounded-lg border border-border/30',
-        'bg-card/30 p-3',
-        message.role === 'user' && 'bg-muted/20',
-        message.role === 'system' && 'bg-yellow-500/5 border-yellow-500/20'
+        isUser && 'items-end',
       )}
     >
-      {/* Message Header */}
-      {composer?.renderMessageHeader ? (
-        composer.renderMessageHeader(message, context)
+      {isUser ? (
+        // User message - bubble style, right-aligned
+        <div className="max-w-[85%]">
+          <div
+            className={cn(
+              'rounded-2xl rounded-br-md',
+              'bg-primary/15 px-4 py-2.5',
+            )}
+          >
+            <div className="flex flex-col gap-2">
+              {message.blocks.map((block) => (
+                <DefaultBlockRenderer
+                  key={block.id}
+                  block={block}
+                  context={context}
+                  composer={composer}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : isSystem ? (
+        // System message - subtle centered
+        <div className="w-full">
+          <div
+            className={cn(
+              'flex flex-col gap-1.5',
+              'rounded-lg border border-yellow-500/20',
+              'bg-yellow-500/5 px-3 py-2',
+            )}
+          >
+            {composer?.renderMessageHeader ? (
+              composer.renderMessageHeader(message, context)
+            ) : (
+              <DefaultMessageHeader message={message} cumulativeUsage={cumulativeUsage} />
+            )}
+            <div className="flex flex-col gap-2 pl-8">
+              {message.blocks.map((block) => (
+                <DefaultBlockRenderer
+                  key={block.id}
+                  block={block}
+                  context={context}
+                  composer={composer}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
       ) : (
-        <DefaultMessageHeader message={message} cumulativeUsage={cumulativeUsage} />
+        // Other messages - default card
+        <div className="w-full">
+          <div
+            className={cn(
+              'flex flex-col gap-1.5',
+              'rounded-lg border border-border/30',
+              'bg-card/10 px-3 py-2',
+            )}
+          >
+            {composer?.renderMessageHeader ? (
+              composer.renderMessageHeader(message, context)
+            ) : (
+              <DefaultMessageHeader message={message} cumulativeUsage={cumulativeUsage} />
+            )}
+            <div className="flex flex-col gap-2 pl-8">
+              {message.blocks.map((block) => (
+                <DefaultBlockRenderer
+                  key={block.id}
+                  block={block}
+                  context={context}
+                  composer={composer}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
-      {/* Message Content Blocks */}
-      <div className="flex flex-col gap-3 pl-7">
-        {groupedBlocks.map((item) => {
-          if (isToolGroup(item)) {
-            return (
-              <ToolCallCard
-                key={item.toolUse.id}
-                toolUse={item.toolUse}
-                toolResult={item.toolResult}
-              />
-            )
-          }
-
-          return (
-            <DefaultBlockRenderer
-              key={item.id}
-              block={item}
-              context={context}
-              composer={composer}
-              toolResults={toolResults}
-            />
-          )
-        })}
-      </div>
-
-      {/* Message Footer */}
       {composer?.renderMessageFooter?.(message, context)}
-
-      {/* Metadata */}
-      {message.metadata && composer?.renderMetadata?.(message.metadata, context)}
     </div>
   )
 }
@@ -295,32 +555,34 @@ function MessageRenderer({ message, context, composer, cumulativeUsage }: Messag
 // Default Renderers
 // =============================================================================
 
-/**
- * Default message header showing role indicator
- */
 function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMessage; cumulativeUsage?: TokenUsage }) {
   const roleConfig = {
     assistant: {
-      icon: IconRobot,
+      icon: IconSparkles,
       label: 'Assistant',
-      className: 'text-primary',
+      iconBg: 'bg-primary/15',
+      iconClass: 'text-primary',
+      labelClass: 'text-foreground',
     },
     user: {
       icon: IconUser,
-      label: 'User',
-      className: 'text-muted-foreground',
+      label: 'You',
+      iconBg: 'bg-muted/30',
+      iconClass: 'text-muted-foreground',
+      labelClass: 'text-muted-foreground',
     },
     system: {
       icon: IconSettings,
       label: 'System',
-      className: 'text-yellow-500',
+      iconBg: 'bg-yellow-500/15',
+      iconClass: 'text-yellow-500',
+      labelClass: 'text-yellow-500',
     },
   }
 
   const config = roleConfig[message.role]
   const Icon = config.icon
 
-  // Extract model from metadata for context usage indicator
   const model = message.metadata?.model as string | undefined
   const showContextUsage = message.role === 'assistant' && model && cumulativeUsage &&
     (cumulativeUsage.inputTokens > 0 || cumulativeUsage.outputTokens > 0)
@@ -328,8 +590,10 @@ function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMess
   return (
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-2">
-        <Icon className={cn('size-4', config.className)} />
-        <span className={cn('text-xs font-medium', config.className)}>
+        <div className={cn('flex size-6 items-center justify-center rounded-full', config.iconBg)}>
+          <Icon className={cn('size-3.5', config.iconClass)} />
+        </div>
+        <span className={cn('text-sm font-medium', config.labelClass)}>
           {config.label}
         </span>
         {message.status === 'streaming' && (
@@ -371,7 +635,7 @@ function DefaultBlockRenderer({
       if (composer?.renderThinkingBlock) {
         return <>{composer.renderThinkingBlock(block as ThinkingBlockType, context)}</>
       }
-      return <ThinkingBlock block={block as ThinkingBlockType} />
+      return <ThinkingInline block={block as ThinkingBlockType} />
     }
 
     case 'tool_use': {
@@ -382,7 +646,7 @@ function DefaultBlockRenderer({
       }
       const toolUse = block as ToolUseBlock
       const toolResult = toolResults?.get(toolUse.toolId)
-      return <ToolCallCard toolUse={toolUse} toolResult={toolResult} />
+      return <ToolCallInline toolUse={toolUse} toolResult={toolResult} />
     }
 
     case 'tool_result': {
@@ -472,11 +736,72 @@ function DefaultImageBlock({ image }: { image: ImageBlock }) {
  */
 function StreamingIndicator() {
   return (
-    <div className="flex items-center gap-2 py-2 text-muted-foreground">
-      <IconLoader2 className="size-4 animate-spin" />
-      <span className="text-xs">Agent is responding...</span>
+    <div className="flex items-center gap-2 py-3">
+      <div className="flex gap-1">
+        <span className="size-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:0ms]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:150ms]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:300ms]" />
+      </div>
+      <span className="text-xs text-muted-foreground">Thinking...</span>
     </div>
   )
 }
 
-export { MessageRenderer, DefaultBlockRenderer }
+/**
+ * Welcome screen shown when conversation is empty
+ */
+function WelcomeScreen({ agentType }: { agentType?: string }) {
+  const agentName = agentType
+    ? agentType.charAt(0).toUpperCase() + agentType.slice(1)
+    : 'Agent'
+
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="flex max-w-md flex-col items-center gap-6 text-center">
+        {/* Icon */}
+        <div className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+          <IconTerminal2 className="size-8 text-primary" />
+        </div>
+
+        {/* Greeting */}
+        <div className="flex flex-col gap-2">
+          <h2 className="text-xl font-semibold text-foreground">
+            {agentName} is ready
+          </h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            Send a message to start a conversation. The agent can help you with coding tasks, file operations, and more.
+          </p>
+        </div>
+
+        {/* Suggestion chips */}
+        <div className="flex flex-wrap justify-center gap-2">
+          {[
+            { icon: IconBolt, label: 'Quick task' },
+            { icon: IconTerminal2, label: 'Run command' },
+            { icon: IconSparkles, label: 'Generate code' },
+          ].map((chip) => (
+            <div
+              key={chip.label}
+              className={cn(
+                'flex items-center gap-1.5',
+                'rounded-full border border-border/40',
+                'bg-muted/10 px-3 py-1.5',
+                'text-xs text-muted-foreground',
+              )}
+            >
+              <chip.icon className="size-3" />
+              {chip.label}
+            </div>
+          ))}
+        </div>
+
+        {/* Keyboard hint */}
+        <p className="text-[11px] text-muted-foreground/50">
+          Press <kbd className="rounded border border-border/40 bg-muted/20 px-1 py-0.5 font-mono text-[10px]">Ctrl</kbd> + <kbd className="rounded border border-border/40 bg-muted/20 px-1 py-0.5 font-mono text-[10px]">Enter</kbd> to send
+        </p>
+      </div>
+    </div>
+  )
+}
+
+export { DefaultBlockRenderer }

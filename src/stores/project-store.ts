@@ -32,6 +32,8 @@ export interface Project {
   lastFocusedTerminalId: string | null
   // View state memory - remembers if user was viewing grid or single terminal
   lastViewState?: ProjectViewState
+  // Remembers which agent session was active for this project
+  lastActiveAgentSessionId?: string
 }
 
 interface ProjectStore {
@@ -62,6 +64,7 @@ interface ProjectStore {
   reorderProjectTerminals: (projectId: string, fromIndex: number, toIndex: number) => void
   // View state memory
   updateProjectLastViewState: (projectId: string, viewState: ProjectViewState) => void
+  updateProjectLastActiveAgentSession: (projectId: string, agentSessionId: string | null) => void
 }
 
 function generateId(): string {
@@ -131,6 +134,22 @@ export const useProjectStore = create<ProjectStore>()(
 
       setActiveProject: (id) => {
         const state = get()
+        const terminalStore = useTerminalStore.getState()
+
+        // Save current project's active agent session before switching
+        if (state.activeProjectId) {
+          const currentAgentSessionId = terminalStore.activeAgentSessionId
+          if (currentAgentSessionId) {
+            // Save the active agent session to the current project
+            set((s) => ({
+              projects: s.projects.map((p) =>
+                p.id === state.activeProjectId
+                  ? { ...p, lastActiveAgentSessionId: currentAgentSessionId }
+                  : p
+              ),
+            }))
+          }
+        }
 
         // If switching to a project, restore its view state
         if (id) {
@@ -139,7 +158,7 @@ export const useProjectStore = create<ProjectStore>()(
             // Restore the saved view state
             if (project.lastViewState.type === 'terminal') {
               useViewStore.getState().setProjectTerminalActive(id, project.lastViewState.terminalId)
-              useTerminalStore.getState().setActiveSession(project.lastViewState.terminalId)
+              terminalStore.setActiveSession(project.lastViewState.terminalId)
             } else {
               useViewStore.getState().setProjectGridActive(id)
             }
@@ -147,6 +166,20 @@ export const useProjectStore = create<ProjectStore>()(
             // Default to grid view
             useViewStore.getState().setProjectGridActive(id)
           }
+
+          // Restore the project's active agent session
+          if (project?.lastActiveAgentSessionId) {
+            terminalStore.setActiveAgentSession(project.lastActiveAgentSessionId)
+          } else {
+            // No saved agent session - find the most recent agent session for this project
+            const projectAgentSessions = terminalStore.sessions.filter(
+              (s) => s.projectId === id && s.terminalType === 'agent'
+            )
+            const lastAgent = projectAgentSessions[projectAgentSessions.length - 1]
+            terminalStore.setActiveAgentSession(lastAgent?.id ?? null)
+          }
+        } else {
+          terminalStore.setActiveAgentSession(null)
         }
 
         set((state) => {
@@ -310,6 +343,13 @@ export const useProjectStore = create<ProjectStore>()(
         set((state) => ({
           projects: state.projects.map((p) =>
             p.id === projectId ? { ...p, lastViewState: viewState } : p
+          ),
+        })),
+
+      updateProjectLastActiveAgentSession: (projectId, agentSessionId) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId ? { ...p, lastActiveAgentSessionId: agentSessionId ?? undefined } : p
           ),
         })),
     }),

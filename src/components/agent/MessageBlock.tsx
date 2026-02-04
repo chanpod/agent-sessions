@@ -37,12 +37,13 @@ function TextContent({ block, className }: TextContentProps) {
     <div
       className={cn(
         'prose prose-sm dark:prose-invert max-w-none',
-        'text-foreground leading-relaxed',
+        'text-foreground/90 leading-relaxed',
+        '[&_p]:mb-2 [&_p:last-child]:mb-0',
         className
       )}
     >
       {/* Simple text rendering - can be enhanced with markdown later */}
-      <div className="whitespace-pre-wrap">
+      <div className="whitespace-pre-wrap text-[13.5px] leading-[1.7]">
         {block.content}
         {block.isStreaming && <StreamingCursor />}
       </div>
@@ -76,16 +77,16 @@ function CodeContent({ block, className }: CodeContentProps) {
     <div
       className={cn(
         'group relative overflow-hidden rounded-lg',
-        'bg-zinc-900 dark:bg-zinc-950',
-        'border border-zinc-700/50 dark:border-zinc-800',
+        'bg-[#0d1117] dark:bg-[#0d1117]',
+        'ring-1 ring-white/[0.06]',
         className
       )}
     >
       {/* Header with language badge and copy button */}
-      <div className="flex items-center justify-between border-b border-zinc-700/50 px-3 py-1.5">
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-1.5 bg-white/[0.02]">
         <div className="flex items-center gap-2">
           {block.language && (
-            <span className="text-xs font-medium text-zinc-400">
+            <span className="text-[11px] font-medium text-zinc-500">
               {block.language}
             </span>
           )}
@@ -98,8 +99,8 @@ function CodeContent({ block, className }: CodeContentProps) {
         <pre className="m-0">
           <code
             className={cn(
-              'font-mono text-sm leading-relaxed',
-              'text-zinc-100 dark:text-zinc-200'
+              'font-mono text-[13px] leading-relaxed',
+              'text-zinc-200'
             )}
           >
             {block.content}
@@ -121,9 +122,10 @@ function StreamingCursor() {
   return (
     <span
       className={cn(
-        'ml-0.5 inline-block h-4 w-1.5',
-        'bg-primary',
-        'animate-pulse'
+        'ml-0.5 inline-block h-[18px] w-[2px]',
+        'bg-primary/70',
+        'animate-pulse',
+        'align-text-bottom'
       )}
       aria-hidden="true"
     />

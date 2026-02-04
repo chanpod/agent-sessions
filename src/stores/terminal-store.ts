@@ -44,6 +44,7 @@ interface TerminalStore {
   // Runtime sessions (cleared on restart)
   sessions: TerminalSession[]
   activeSessionId: string | null
+  activeAgentSessionId: string | null // Separate from activeSessionId - only tracks agent terminals
 
   // Flag to track if we've restored sessions
   hasRestored: boolean
@@ -53,6 +54,7 @@ interface TerminalStore {
 
   // Actions for saved configs
   saveConfig: (config: SavedTerminalConfig) => void
+  updateConfigSessionId: (id: string, sessionId: string) => void
   removeSavedConfig: (id: string) => void
   getSavedConfigs: () => SavedTerminalConfig[]
   markRestored: () => void
@@ -63,6 +65,7 @@ interface TerminalStore {
   removeSession: (id: string) => void
   removeSessionsByProject: (projectId: string) => void
   setActiveSession: (id: string | null) => void
+  setActiveAgentSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
   updateSessionPid: (id: string, pid: number) => void
   markSessionExited: (id: string, exitCode: number) => void
@@ -84,6 +87,7 @@ export const useTerminalStore = create<TerminalStore>()(
       savedConfigs: [],
       sessions: [],
       activeSessionId: null,
+      activeAgentSessionId: null,
       hasRestored: false,
       terminalDisplayModes: new Map(),
 
@@ -91,6 +95,13 @@ export const useTerminalStore = create<TerminalStore>()(
       saveConfig: (config) =>
         set((state) => ({
           savedConfigs: [...state.savedConfigs.filter(c => c.id !== config.id), config],
+        })),
+
+      updateConfigSessionId: (id, sessionId) =>
+        set((state) => ({
+          savedConfigs: state.savedConfigs.map(c =>
+            c.id === id ? { ...c, sessionId } : c
+          ),
         })),
 
       removeSavedConfig: (id) =>
@@ -145,9 +156,15 @@ export const useTerminalStore = create<TerminalStore>()(
             state.activeSessionId === id
               ? filtered[filtered.length - 1]?.id ?? null
               : state.activeSessionId
+          // If removing the active agent session, find the next agent session
+          const newActiveAgentId =
+            state.activeAgentSessionId === id
+              ? filtered.filter((s) => s.terminalType === 'agent').pop()?.id ?? null
+              : state.activeAgentSessionId
           return {
             sessions: filtered,
             activeSessionId: newActiveId,
+            activeAgentSessionId: newActiveAgentId,
             savedConfigs: state.savedConfigs.filter((c) => c.id !== id),
           }
         })
@@ -170,9 +187,15 @@ export const useTerminalStore = create<TerminalStore>()(
             currentActive?.projectId === projectId
               ? filtered[filtered.length - 1]?.id ?? null
               : state.activeSessionId
+          const currentActiveAgent = state.sessions.find((s) => s.id === state.activeAgentSessionId)
+          const newActiveAgentId =
+            currentActiveAgent?.projectId === projectId
+              ? filtered.filter((s) => s.terminalType === 'agent').pop()?.id ?? null
+              : state.activeAgentSessionId
           return {
             sessions: filtered,
             activeSessionId: newActiveId,
+            activeAgentSessionId: newActiveAgentId,
             savedConfigs: state.savedConfigs.filter((c) => c.projectId !== projectId),
           }
         })
@@ -180,6 +203,9 @@ export const useTerminalStore = create<TerminalStore>()(
 
       setActiveSession: (id) =>
         set({ activeSessionId: id }),
+
+      setActiveAgentSession: (id) =>
+        set({ activeAgentSessionId: id }),
 
       updateSessionTitle: (id, title) =>
         set((state) => ({

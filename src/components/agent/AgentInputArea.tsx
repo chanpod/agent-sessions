@@ -87,11 +87,12 @@ export function AgentInputArea({
     <div
       className={cn(
         'relative flex items-end gap-2',
-        'rounded-lg border border-border',
-        'bg-background/50 backdrop-blur-sm',
-        'p-2',
-        'focus-within:border-ring focus-within:ring-1 focus-within:ring-ring',
-        'transition-colors duration-200',
+        'rounded-xl border border-border/40',
+        'bg-card/50 backdrop-blur-md',
+        'shadow-lg shadow-black/10',
+        'p-2 pl-3',
+        'focus-within:border-primary/30 focus-within:ring-1 focus-within:ring-primary/20',
+        'transition-all duration-200',
         className
       )}
     >
@@ -105,10 +106,10 @@ export function AgentInputArea({
         className={cn(
           'flex-1 resize-none',
           'bg-transparent',
-          'text-sm text-foreground placeholder:text-muted-foreground',
+          'text-sm text-foreground placeholder:text-muted-foreground/60',
           'border-0 outline-none focus:ring-0',
           'min-h-[36px] max-h-[200px]',
-          'py-2 px-2',
+          'py-2 px-1',
           'scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent',
         )}
         aria-label={`Message input for process ${processId}`}
@@ -121,9 +122,9 @@ export function AgentInputArea({
           onClick={onStop}
           className={cn(
             'h-8 w-8 shrink-0',
-            'rounded-md',
+            'rounded-lg',
             'transition-all duration-200',
-            'text-destructive hover:bg-destructive/10 hover:text-destructive'
+            'bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive'
           )}
           title="Stop agent"
           aria-label="Stop agent"
@@ -133,17 +134,17 @@ export function AgentInputArea({
       ) : (
         <Button
           type="button"
-          variant="ghost"
+          variant={canSubmit ? 'default' : 'ghost'}
           size="icon"
           onClick={handleSubmit}
           disabled={!canSubmit}
           className={cn(
             'h-8 w-8 shrink-0',
-            'rounded-md',
+            'rounded-lg',
             'transition-all duration-200',
             canSubmit
-              ? 'text-primary hover:bg-primary/10 hover:text-primary'
-              : 'text-muted-foreground'
+              ? 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90'
+              : 'text-muted-foreground/40'
           )}
           title="Send message (Ctrl+Enter)"
           aria-label="Send message"

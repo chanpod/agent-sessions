@@ -201,6 +201,8 @@ function App() {
     sessions,
     setActiveSession,
     activeSessionId,
+    activeAgentSessionId,
+    setActiveAgentSession,
   } = useTerminalStore()
   const restoringRef = useRef(false)
   const { projects, activeProjectId } = useProjectStore()
@@ -236,22 +238,27 @@ function App() {
     return activeSession?.title || visibleTerminalSessions[visibleTerminalSessions.length - 1]?.title || 'No terminal'
   }, [visibleTerminalSessions, activeSessionId])
 
-  // Find active session and check if it's an agent
-  const activeSession = sessions.find(s => s.id === activeSessionId)
-  const isAgentTerminal = activeSession?.terminalType === 'agent'
-  const agentType = activeSession?.agentId || 'claude'
+  // Find active agent session (separate from terminal dock's activeSessionId)
+  const activeAgentSession = sessions.find(s => s.id === activeAgentSessionId)
+  const isAgentTerminal = activeAgentSession?.terminalType === 'agent'
+  const agentType = activeAgentSession?.agentId || 'claude'
 
-  // Get agent stream data for active session
-  const agentStream = useAgentStream(activeSessionId || '')
+  // Get agent stream data for active agent session
+  const agentStream = useAgentStream(activeAgentSessionId || '')
 
   // Map stream data to AgentConversation format for the UI
   const agentConversation: AgentConversation | null = useMemo(() => {
-    if (!isAgentTerminal || !activeSessionId || !agentStream.state) return null
-    return mapToConversation(activeSessionId, agentType, agentStream.state)
-  }, [isAgentTerminal, activeSessionId, agentStream.state, agentType])
+    if (!isAgentTerminal || !activeAgentSessionId || !agentStream.state) return null
+    return mapToConversation(activeAgentSessionId, agentType, agentStream.state)
+  }, [isAgentTerminal, activeAgentSessionId, agentStream.state, agentType])
 
-  // Check if active session is an agent process (not PTY)
-  const activeAgentProcess = agentProcesses.get(activeSessionId || '')
+  // Check if active agent session is an agent process (not PTY)
+  const activeAgentProcess = agentProcesses.get(activeAgentSessionId || '')
+
+  // Look up sessionId from stream store if not on the process entry (survives remounts)
+  const activeAgentResumeSessionId = activeAgentProcess?.sessionId
+    || useAgentStreamStore.getState().getSessionId(activeAgentSessionId || '')
+    || undefined
 
   // Configure drag sensors with a distance threshold
   // This prevents clicks from being interpreted as drags
@@ -732,8 +739,9 @@ function App() {
           agentId: agentType,
         })
 
-        // Set as active session
+        // Set as active session (both terminal and agent)
         setActiveSession(result.process.id)
+        setActiveAgentSession(result.process.id)
 
         // Add to project if applicable
         if (projectId) {
@@ -893,6 +901,7 @@ function App() {
 
       // Set as the active session so the Agent Workspace shows it
       setActiveSession(info.id)
+      setActiveAgentSession(info.id)
 
       // Add terminal to project grid and focus it
       addTerminalToProject(projectId, info.id)
@@ -1526,16 +1535,20 @@ function App() {
             <div className="flex-1 min-h-0">
               {activeAgentProcess ? (
                 // New process-based agent (JSON streaming via child_process)
+                // key forces clean remount when switching agent sessions (e.g. project switch)
+                // while remaining stable during multi-turn within the same session
                 <AgentWorkspace
+                  key={activeAgentSessionId}
                   processId={activeAgentProcess.id}
                   agentType={activeAgentProcess.agentType as 'claude' | 'codex' | 'gemini'}
                   cwd={activeAgentProcess.cwd}
-                  resumeSessionId={activeAgentProcess.sessionId}
+                  resumeSessionId={activeAgentResumeSessionId}
                   className="h-full"
                 />
               ) : isAgentTerminal && agentConversation ? (
                 // Backwards compatible: PTY-based agent terminal
                 <AgentMessageView
+                  key={activeAgentSessionId}
                   conversation={agentConversation}
                   className="h-full"
                 />

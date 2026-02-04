@@ -383,11 +383,21 @@ export class StreamJsonDetector implements OutputDetector {
       // ========================================
 
       case 'system': {
-        // System init event - extract session info
+        // System init event - extract session info and emit to renderer
         const sysEvent = event as unknown as { subtype?: string; session_id?: string; model?: string }
         if (sysEvent.subtype === 'init' && sysEvent.session_id) {
           state.messageId = sysEvent.session_id
           state.model = sysEvent.model || null
+          // Emit session init event so the renderer can capture the session_id
+          events.push({
+            terminalId,
+            type: 'agent-session-init',
+            timestamp,
+            data: {
+              sessionId: sysEvent.session_id,
+              model: sysEvent.model || '',
+            },
+          })
         }
         break
       }
