@@ -25,6 +25,7 @@ interface AgentWorkspaceProps {
   agentType: 'claude' | 'codex' | 'gemini'
   cwd: string
   className?: string
+  resumeSessionId?: string
 }
 
 // =============================================================================
@@ -131,6 +132,7 @@ export function AgentWorkspace({
   agentType,
   cwd,
   className,
+  resumeSessionId,
 }: AgentWorkspaceProps) {
   // Track all process IDs that belong to this conversation (for multi-turn)
   const [activeProcessIds, setActiveProcessIds] = useState<Set<string>>(new Set([initialProcessId]))
@@ -138,7 +140,7 @@ export function AgentWorkspace({
   // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
   const [userMessages, setUserMessages] = useState<UIAgentMessage[]>([])
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(resumeSessionId ?? null)
 
   // Subscribe to raw events to capture session_id for multi-turn
   useEffect(() => {
@@ -293,13 +295,20 @@ export function AgentWorkspace({
   }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive])
 
   // Determine placeholder text
-  const placeholder = conversation.status === 'streaming'
+  const isStreaming = conversation.status === 'streaming'
+  const placeholder = isStreaming
     ? 'Agent is responding...'
     : `Send a message to ${agentType}...`
 
-  // Disable input while processing, but NOT based on process alive state
-  // (since processes exit normally after each message in our architecture)
-  const inputDisabled = conversation.status === 'streaming'
+  // Stop handler - kill all active processes and reset UI state
+  const handleStop = useCallback(async () => {
+    if (!window.electron?.agent) return
+    for (const pid of activeProcessIds) {
+      await window.electron.agent.kill(pid)
+      useAgentStreamStore.getState().resetTerminalActivity(pid)
+    }
+    setIsProcessing(false)
+  }, [activeProcessIds])
 
   return (
     <div className={cn('flex flex-col h-full', className)}>
@@ -316,7 +325,8 @@ export function AgentWorkspace({
         <AgentInputArea
           processId={initialProcessId}
           onSend={handleSend}
-          disabled={inputDisabled}
+          onStop={handleStop}
+          isStreaming={isStreaming}
           placeholder={placeholder}
         />
       </div>

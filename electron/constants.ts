@@ -22,6 +22,5 @@ export const CONSTANTS = {
 }
 
 // Permission system
-export const PERMISSION_SERVER_PORT = 18923
 export const PERMISSION_REQUEST_TIMEOUT_MS = 300_000 // 5 minutes
 export const PERMISSION_HOOK_FILENAME = 'permission-handler.js'

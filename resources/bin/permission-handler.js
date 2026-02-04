@@ -1,7 +1,22 @@
 #!/usr/bin/env node
 'use strict'
 
-const http = require('http')
+const fs = require('fs')
+const path = require('path')
+const crypto = require('crypto')
+
+const POLL_INTERVAL_MS = 100
+const TIMEOUT_MS = 300000 // 5 minutes
+
+function toCliResponse(decision, reason) {
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: decision,
+      ...(reason ? { permissionDecisionReason: reason } : {}),
+    },
+  })
+}
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -12,37 +27,82 @@ function readStdin() {
   })
 }
 
-function postPermissionRequest(body) {
+function waitForResponse(responsePath) {
   return new Promise((resolve) => {
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: 18923,
-      path: '/permission-request',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 300000,
-    }, (res) => {
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        try {
+    const deadline = Date.now() + TIMEOUT_MS
+    const check = () => {
+      try {
+        if (fs.existsSync(responsePath)) {
+          const data = fs.readFileSync(responsePath, 'utf8')
+          try { fs.unlinkSync(responsePath) } catch {}
+          try {
+            const requestPath = responsePath.replace('.response', '.request')
+            fs.unlinkSync(requestPath)
+          } catch {}
           resolve(JSON.parse(data))
-        } catch {
-          resolve({ decision: 'allow' })
+          return
         }
-      })
-    })
-    req.on('error', () => resolve({ decision: 'allow' }))
-    req.on('timeout', () => { req.destroy(); resolve({ decision: 'allow' }) })
-    req.write(body)
-    req.end()
+      } catch {}
+      if (Date.now() > deadline) {
+        resolve({ decision: 'allow' })
+        return
+      }
+      setTimeout(check, POLL_INTERVAL_MS)
+    }
+    check()
   })
 }
 
+const DEBUG_LOG = path.join(require('os').tmpdir(), 'permission-handler-debug.log')
+
+function debug(msg) {
+  try {
+    fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
+  } catch {}
+}
+
 async function main() {
+  debug(`Hook started. argv: ${JSON.stringify(process.argv)}`)
+
+  const ipcDir = process.argv[2]
+  if (!ipcDir) {
+    debug('No IPC dir, returning allow')
+    process.stdout.write(toCliResponse('allow'))
+    return
+  }
+
+  debug(`IPC dir: ${ipcDir}`)
   const input = await readStdin()
-  const response = await postPermissionRequest(input)
-  process.stdout.write(JSON.stringify(response))
+  debug(`Stdin received (${input.length} bytes)`)
+
+  const id = crypto.randomUUID()
+  const requestPath = path.join(ipcDir, `${id}.request`)
+  const responsePath = path.join(ipcDir, `${id}.response`)
+  debug(`Request: ${requestPath}`)
+
+  try {
+    if (!fs.existsSync(ipcDir)) {
+      fs.mkdirSync(ipcDir, { recursive: true })
+    }
+  } catch (err) {
+    debug(`Failed to create IPC dir: ${err.message}`)
+    process.stdout.write(toCliResponse('allow'))
+    return
+  }
+
+  try {
+    fs.writeFileSync(requestPath, input, 'utf8')
+    debug('Request file written')
+  } catch (err) {
+    debug(`Failed to write request: ${err.message}`)
+    process.stdout.write(toCliResponse('allow'))
+    return
+  }
+
+  debug('Polling for response...')
+  const response = await waitForResponse(responsePath)
+  debug(`Got response: ${JSON.stringify(response)}`)
+  process.stdout.write(toCliResponse(response.decision, response.reason))
 }
 
 main()

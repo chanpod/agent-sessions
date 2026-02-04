@@ -169,14 +169,6 @@ export class StreamJsonDetector implements OutputDetector {
     const { jsonObjects, remaining } = extractCompleteJsonObjects(state.buffer)
     state.buffer = remaining
 
-    // Debug: log extraction results
-    if (remaining.length > 0) {
-      console.log(`[StreamJsonDetector] Buffer holding ${remaining.length} bytes (incomplete JSON)`)
-    }
-    if (jsonObjects.length > 0) {
-      console.log(`[StreamJsonDetector] Extracted ${jsonObjects.length} complete JSON objects`)
-    }
-
     // Process each extracted JSON object
     for (const jsonStr of jsonObjects) {
       try {
@@ -187,20 +179,14 @@ export class StreamJsonDetector implements OutputDetector {
         let event: ClaudeStreamEvent
         if (parsed.type === 'stream_event' && parsed.event) {
           event = parsed.event as ClaudeStreamEvent
-          console.log(`[StreamJsonDetector] Unwrapped stream_event: ${event.type}`)
         } else {
           event = parsed as ClaudeStreamEvent
-          console.log(`[StreamJsonDetector] Direct event: ${event.type}`)
         }
 
         const detectedEvents = this.processStreamEvent(terminalId, state, event)
-        if (detectedEvents.length > 0) {
-          console.log(`[StreamJsonDetector] Emitting ${detectedEvents.length} events:`, detectedEvents.map(e => e.type))
-        }
         events.push(...detectedEvents)
       } catch (e) {
-        // Failed to parse JSON - log for debugging
-        console.log(`[StreamJsonDetector] Failed to parse extracted JSON (${jsonStr.length} chars):`, jsonStr.substring(0, 100))
+        // Failed to parse JSON - skip silently
       }
     }
 
@@ -210,11 +196,6 @@ export class StreamJsonDetector implements OutputDetector {
   onTerminalExit(terminalId: string, exitCode: number): DetectedEvent[] {
     const events: DetectedEvent[] = []
     const state = this.terminalStates.get(terminalId)
-
-    console.log(
-      `[StreamJsonDetector] onTerminalExit called for terminal ${terminalId}, ` +
-        `has state: ${!!state}, messageId: ${state?.messageId || 'none'}`
-    )
 
     // If a message was in progress, emit synthetic message_end
     if (state && state.messageId) {
@@ -230,10 +211,6 @@ export class StreamJsonDetector implements OutputDetector {
           usage: state.usage,
         },
       })
-      console.log(
-        `[StreamJsonDetector] Emitting synthetic agent-message-end for terminal ${terminalId} ` +
-          `(terminal exited with code ${exitCode})`
-      )
     }
 
     return events
@@ -241,7 +218,6 @@ export class StreamJsonDetector implements OutputDetector {
 
   cleanup(terminalId: string): void {
     this.terminalStates.delete(terminalId)
-    console.log(`[StreamJsonDetector] Cleaned up state for terminal ${terminalId}`)
   }
 
   private getOrCreateState(terminalId: string): TerminalStreamState {
@@ -270,8 +246,6 @@ export class StreamJsonDetector implements OutputDetector {
     const events: DetectedEvent[] = []
     const timestamp = Date.now()
     state.lastEventTime = timestamp
-
-    console.log(`[StreamJsonDetector] Parsed event: ${event.type}`)
 
     switch (event.type) {
       case 'message_start':
@@ -414,7 +388,6 @@ export class StreamJsonDetector implements OutputDetector {
         if (sysEvent.subtype === 'init' && sysEvent.session_id) {
           state.messageId = sysEvent.session_id
           state.model = sysEvent.model || null
-          console.log(`[StreamJsonDetector] System init: session=${sysEvent.session_id}, model=${sysEvent.model}`)
         }
         break
       }
@@ -525,7 +498,6 @@ export class StreamJsonDetector implements OutputDetector {
             },
           })
 
-          console.log(`[StreamJsonDetector] Processed assistant message with ${content.length} blocks`)
         }
         break
       }
@@ -537,7 +509,6 @@ export class StreamJsonDetector implements OutputDetector {
           result?: string
           usage?: { input_tokens?: number; output_tokens?: number }
         }
-        console.log(`[StreamJsonDetector] Result: ${resultEvent.subtype}, usage: ${JSON.stringify(resultEvent.usage)}`)
         break
       }
     }

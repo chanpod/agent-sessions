@@ -38,6 +38,7 @@ interface MessageRendererProps {
   message: AgentMessage
   context: RenderContext
   composer?: AgentUIComposer
+  cumulativeUsage?: TokenUsage
 }
 
 interface DefaultBlockRendererProps {
@@ -182,14 +183,30 @@ export function AgentMessageView({
         className="flex flex-col gap-4 p-4"
         onScroll={handleScroll}
       >
-        {allMessages.map((message) => (
-          <MessageRenderer
-            key={message.id}
-            message={message}
-            context={context}
-            composer={composer}
-          />
-        ))}
+        {allMessages.map((message, index) => {
+          // Compute cumulative usage up to and including this message
+          const cumulativeUsage = allMessages.slice(0, index + 1).reduce<TokenUsage>(
+            (acc, msg) => {
+              const usage = msg.metadata?.usage as TokenUsage | undefined
+              if (usage) {
+                acc.inputTokens += usage.inputTokens || 0
+                acc.outputTokens += usage.outputTokens || 0
+              }
+              return acc
+            },
+            { inputTokens: 0, outputTokens: 0 }
+          )
+
+          return (
+            <MessageRenderer
+              key={message.id}
+              message={message}
+              context={context}
+              composer={composer}
+              cumulativeUsage={cumulativeUsage}
+            />
+          )
+        })}
 
         {/* Streaming indicator */}
         {isStreaming && <StreamingIndicator />}
@@ -205,7 +222,7 @@ export function AgentMessageView({
 /**
  * Renders a single message with optional header/footer from composer
  */
-function MessageRenderer({ message, context, composer }: MessageRendererProps) {
+function MessageRenderer({ message, context, composer, cumulativeUsage }: MessageRendererProps) {
   // Group tool blocks
   const groupedBlocks = useMemo(
     () => groupToolBlocks(message.blocks),
@@ -237,7 +254,7 @@ function MessageRenderer({ message, context, composer }: MessageRendererProps) {
       {composer?.renderMessageHeader ? (
         composer.renderMessageHeader(message, context)
       ) : (
-        <DefaultMessageHeader message={message} />
+        <DefaultMessageHeader message={message} cumulativeUsage={cumulativeUsage} />
       )}
 
       {/* Message Content Blocks */}
@@ -281,7 +298,7 @@ function MessageRenderer({ message, context, composer }: MessageRendererProps) {
 /**
  * Default message header showing role indicator
  */
-function DefaultMessageHeader({ message }: { message: AgentMessage }) {
+function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMessage; cumulativeUsage?: TokenUsage }) {
   const roleConfig = {
     assistant: {
       icon: IconRobot,
@@ -303,10 +320,10 @@ function DefaultMessageHeader({ message }: { message: AgentMessage }) {
   const config = roleConfig[message.role]
   const Icon = config.icon
 
-  // Extract model and usage from metadata for context usage indicator
+  // Extract model from metadata for context usage indicator
   const model = message.metadata?.model as string | undefined
-  const usage = message.metadata?.usage as TokenUsage | undefined
-  const showContextUsage = message.role === 'assistant' && model && usage
+  const showContextUsage = message.role === 'assistant' && model && cumulativeUsage &&
+    (cumulativeUsage.inputTokens > 0 || cumulativeUsage.outputTokens > 0)
 
   return (
     <div className="flex items-center justify-between">
@@ -320,7 +337,7 @@ function DefaultMessageHeader({ message }: { message: AgentMessage }) {
         )}
       </div>
       {showContextUsage && (
-        <ContextUsageIndicator model={model} usage={usage} showTokens={true} />
+        <ContextUsageIndicator model={model} usage={cumulativeUsage} showTokens={true} />
       )}
     </div>
   )

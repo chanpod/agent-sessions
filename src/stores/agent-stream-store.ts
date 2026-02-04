@@ -51,6 +51,7 @@ interface AgentStreamStore {
   isMessageComplete(terminalId: string): boolean
   clearTerminal(terminalId: string): void
   markWaitingForResponse(terminalId: string): void
+  resetTerminalActivity(terminalId: string): void
 
   // Session management actions
   setTerminalSession(terminalId: string, sessionId: string): void
@@ -413,6 +414,26 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           terminals.set(terminalId, {
             ...terminalState,
             isWaitingForResponse: true,
+          })
+          return { terminals }
+        })
+      },
+
+      resetTerminalActivity: (terminalId: string) => {
+        set((state) => {
+          const terminals = new Map(state.terminals)
+          const terminalState = terminals.get(terminalId)
+          if (!terminalState) return state
+          // If there's a current streaming message, finalize it into messages
+          const messages = terminalState.currentMessage
+            ? [...terminalState.messages, { ...terminalState.currentMessage, status: 'completed' as const }]
+            : terminalState.messages
+          terminals.set(terminalId, {
+            ...terminalState,
+            currentMessage: null,
+            messages,
+            isActive: false,
+            isWaitingForResponse: false,
           })
           return { terminals }
         })

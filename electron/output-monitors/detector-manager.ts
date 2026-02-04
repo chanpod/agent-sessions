@@ -82,9 +82,6 @@ export class DetectorManager {
    * Emit events to all subscribers
    */
   private emitEvents(events: DetectedEvent[]): void {
-    if (events.length > 0) {
-      console.log(`[DetectorManager] Emitting ${events.length} events:`, events.map(e => e.type))
-    }
     for (const event of events) {
       for (const callback of this.eventCallbacks) {
         try {

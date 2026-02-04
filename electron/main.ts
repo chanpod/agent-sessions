@@ -18,7 +18,7 @@ import {
   type PackageScripts,
   type ScriptInfo,
 } from './services/package-scripts.js'
-import { CONSTANTS, PERMISSION_SERVER_PORT } from './constants.js'
+import { CONSTANTS } from './constants.js'
 import {
   type ExecError,
   getErrorMessage,
@@ -512,11 +512,9 @@ async function createWindow() {
   agentProcessManager = new AgentProcessManager(mainWindow)
   console.log('[Main] AgentProcessManager initialized')
 
-  // Initialize Permission Server
+  // Initialize Permission Server (starts polling; projects are watched on demand)
   permissionServer = new PermissionServer(mainWindow)
-  permissionServer.start().catch(err => {
-    console.error('[Main] Failed to start permission server:', err)
-  })
+  permissionServer.start()
   console.log('[Main] PermissionServer initialized')
 
 
@@ -1235,11 +1233,21 @@ ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow
 })
 
 ipcMain.handle('permission:check-hook', async (_event, projectPath: string) => {
-  return PermissionServer.isHookInstalled(projectPath)
+  const installed = PermissionServer.isHookInstalled(projectPath)
+  if (installed) {
+    // Re-install to ensure hook command stays current across code changes
+    PermissionServer.installHook(projectPath)
+    permissionServer?.watchProject(projectPath)
+  }
+  return installed
 })
 
 ipcMain.handle('permission:install-hook', async (_event, projectPath: string) => {
-  return PermissionServer.installHook(projectPath)
+  const result = PermissionServer.installHook(projectPath)
+  if (result.success) {
+    permissionServer?.watchProject(projectPath)
+  }
+  return result
 })
 
 // App version IPC handler

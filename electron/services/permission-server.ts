@@ -1,10 +1,8 @@
-import http from 'http'
 import fs from 'fs'
 import path from 'path'
-import crypto from 'crypto'
+import { execSync } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import {
-  PERMISSION_SERVER_PORT,
   PERMISSION_REQUEST_TIMEOUT_MS,
   PERMISSION_HOOK_FILENAME,
 } from '../constants.js'
@@ -15,45 +13,55 @@ import type {
   PermissionRequestForUI,
 } from '../types/permission-types.js'
 
+const IPC_DIR_NAME = '.permission-ipc'
+
 export class PermissionServer {
-  private server: http.Server | null = null
   private pending = new Map<string, PendingPermission>()
   private window: BrowserWindow
+  private watchedDirs = new Set<string>()
+  private pollInterval: ReturnType<typeof setInterval> | null = null
 
   constructor(window: BrowserWindow) {
     this.window = window
   }
 
-  start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => this.handleRequest(req, res))
+  start(): void {
+    this.pollInterval = setInterval(() => this.scanForRequests(), 200)
+    console.log('[PermissionServer] Started polling')
+  }
 
-      this.server.on('error', (err: NodeJS.ErrnoException) => {
-        if (err.code === 'EADDRINUSE') {
-          console.error(`[PermissionServer] Port ${PERMISSION_SERVER_PORT} in use`)
-        } else {
-          console.error('[PermissionServer] Server error:', err)
-        }
-        reject(err)
-      })
+  watchProject(projectPath: string): void {
+    const ipcDir = path.join(projectPath, '.claude', IPC_DIR_NAME)
 
-      this.server.listen(PERMISSION_SERVER_PORT, '127.0.0.1', () => {
-        console.log(`[PermissionServer] Listening on 127.0.0.1:${PERMISSION_SERVER_PORT}`)
-        resolve()
-      })
-    })
+    if (this.watchedDirs.has(ipcDir)) return
+
+    if (!fs.existsSync(ipcDir)) {
+      fs.mkdirSync(ipcDir, { recursive: true })
+    }
+
+    this.cleanIpcDir(ipcDir)
+    this.watchedDirs.add(ipcDir)
+
+    console.log(`[PermissionServer] Watching ${ipcDir}`)
   }
 
   stop(): void {
-    // Deny all pending requests before shutting down
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeoutHandle)
       pending.resolveHttp({ decision: 'deny', reason: 'Server shutting down' })
       this.pending.delete(id)
     }
 
-    this.server?.close()
-    this.server = null
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval)
+      this.pollInterval = null
+    }
+
+    for (const ipcDir of this.watchedDirs) {
+      this.cleanIpcDir(ipcDir)
+    }
+    this.watchedDirs.clear()
+
     console.log('[PermissionServer] Stopped')
   }
 
@@ -68,60 +76,88 @@ export class PermissionServer {
     return true
   }
 
-  private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (req.method !== 'POST' || req.url !== '/permission-request') {
-      res.writeHead(404)
-      res.end()
+  private scanForRequests(): void {
+    for (const ipcDir of this.watchedDirs) {
+      this.scanDirectory(ipcDir)
+    }
+  }
+
+  private scanDirectory(ipcDir: string): void {
+    let files: string[]
+    try {
+      files = fs.readdirSync(ipcDir)
+    } catch {
       return
     }
 
-    let body = ''
-    req.on('data', (chunk: string) => { body += chunk })
-    req.on('end', () => {
-      let request: PermissionRequest
+    for (const file of files) {
+      if (!file.endsWith('.request')) continue
+
+      const id = file.replace('.request', '')
+      if (this.pending.has(id)) continue
+
+      const requestPath = path.join(ipcDir, file)
       try {
-        request = JSON.parse(body)
-      } catch {
-        res.writeHead(400)
-        res.end(JSON.stringify({ decision: 'allow' }))
-        return
+        const raw = fs.readFileSync(requestPath, 'utf8')
+        const request: PermissionRequest = JSON.parse(raw)
+        this.handleRequest(id, request, ipcDir)
+      } catch (err) {
+        console.error(`[PermissionServer] Failed to read request ${file}:`, err)
       }
+    }
+  }
 
-      const id = crypto.randomUUID()
-      const now = Date.now()
+  private handleRequest(id: string, request: PermissionRequest, ipcDir: string): void {
+    const now = Date.now()
 
-      const timeoutHandle = setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.get(id)!.resolveHttp({ decision: 'deny', reason: 'Timed out' })
-          this.pending.delete(id)
-          this.sendToRenderer('permission:expired', id)
-        }
-      }, PERMISSION_REQUEST_TIMEOUT_MS)
-
-      const pending: PendingPermission = {
-        id,
-        request,
-        receivedAt: now,
-        resolveHttp: (response: PermissionResponse) => {
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify(response))
-        },
-        timeoutHandle,
+    const timeoutHandle = setTimeout(() => {
+      if (this.pending.has(id)) {
+        this.writeResponse(ipcDir, id, { decision: 'deny', reason: 'Timed out' })
+        this.pending.delete(id)
+        this.sendToRenderer('permission:expired', id)
       }
+    }, PERMISSION_REQUEST_TIMEOUT_MS)
 
-      this.pending.set(id, pending)
+    const pending: PendingPermission = {
+      id,
+      request,
+      receivedAt: now,
+      resolveHttp: (response: PermissionResponse) => {
+        this.writeResponse(ipcDir, id, response)
+      },
+      timeoutHandle,
+    }
 
-      const uiRequest: PermissionRequestForUI = {
-        id,
-        sessionId: request.session_id,
-        toolName: request.tool_name,
-        toolInput: request.tool_input,
-        receivedAt: now,
+    this.pending.set(id, pending)
+
+    const uiRequest: PermissionRequestForUI = {
+      id,
+      sessionId: request.session_id,
+      toolName: request.tool_name,
+      toolInput: request.tool_input,
+      receivedAt: now,
+    }
+
+    this.sendToRenderer('permission:request', uiRequest)
+    console.log(`[PermissionServer] Queued ${id}: ${request.tool_name}`)
+  }
+
+  private writeResponse(ipcDir: string, id: string, response: PermissionResponse): void {
+    const responsePath = path.join(ipcDir, `${id}.response`)
+    try {
+      fs.writeFileSync(responsePath, JSON.stringify(response), 'utf8')
+    } catch (err) {
+      console.error(`[PermissionServer] Failed to write response ${id}:`, err)
+    }
+  }
+
+  private cleanIpcDir(ipcDir: string): void {
+    if (!fs.existsSync(ipcDir)) return
+    try {
+      for (const file of fs.readdirSync(ipcDir)) {
+        fs.unlinkSync(path.join(ipcDir, file))
       }
-
-      this.sendToRenderer('permission:request', uiRequest)
-      console.log(`[PermissionServer] Queued ${id}: ${request.tool_name}`)
-    })
+    } catch {}
   }
 
   private sendToRenderer(channel: string, ...args: unknown[]): void {
@@ -139,16 +175,20 @@ export class PermissionServer {
     return path.join(app.getAppPath(), 'resources', 'bin', PERMISSION_HOOK_FILENAME)
   }
 
+  static getIpcDirPath(projectPath: string): string {
+    return path.join(projectPath, '.claude', IPC_DIR_NAME)
+  }
+
   static isHookInstalled(projectPath: string): boolean {
     const settingsPath = path.join(projectPath, '.claude', 'settings.json')
     if (!fs.existsSync(settingsPath)) return false
 
     try {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-      const hooks = settings.hooks?.PreToolUse
-      if (!Array.isArray(hooks)) return false
-      return hooks.some((h: { type?: string; command?: string }) =>
-        h.command?.includes(PERMISSION_HOOK_FILENAME)
+      const matcherGroups = settings.hooks?.PreToolUse
+      if (!Array.isArray(matcherGroups)) return false
+      return matcherGroups.some((group: { hooks?: Array<{ command?: string }> }) =>
+        group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))
       )
     } catch {
       return false
@@ -156,18 +196,32 @@ export class PermissionServer {
   }
 
   static installHook(projectPath: string): { success: boolean; error?: string } {
-    const hookScriptPath = PermissionServer.getHookScriptPath()
-    if (!fs.existsSync(hookScriptPath)) {
-      return { success: false, error: `Hook script not found: ${hookScriptPath}` }
+    const bundledScriptPath = PermissionServer.getHookScriptPath()
+    if (!fs.existsSync(bundledScriptPath)) {
+      return { success: false, error: `Hook script not found: ${bundledScriptPath}` }
     }
 
     const claudeDir = path.join(projectPath, '.claude')
+    const hooksDir = path.join(claudeDir, 'hooks')
     const settingsPath = path.join(claudeDir, 'settings.json')
+    const ipcDir = path.join(claudeDir, IPC_DIR_NAME)
+    const installedScriptPath = path.join(hooksDir, PERMISSION_HOOK_FILENAME)
 
-    // Ensure .claude directory exists
-    if (!fs.existsSync(claudeDir)) {
-      fs.mkdirSync(claudeDir, { recursive: true })
+    // Ensure directories exist
+    for (const dir of [claudeDir, hooksDir, ipcDir]) {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
+      }
     }
+
+    // Copy hook script into the project's .claude/hooks/ directory
+    const scriptContent = fs.readFileSync(bundledScriptPath, 'utf8')
+    writeFileForWsl(installedScriptPath, scriptContent)
+
+    // Use relative paths so the command works in both Git Bash and WSL
+    const relativeScript = `.claude/hooks/${PERMISSION_HOOK_FILENAME}`
+    const relativeIpcDir = `.claude/${IPC_DIR_NAME}`
+    const expectedCommand = `node "${relativeScript}" "${relativeIpcDir}"`
 
     // Read existing settings or start fresh
     let settings: Record<string, unknown> = {}
@@ -179,14 +233,22 @@ export class PermissionServer {
       }
     }
 
-    // Build hook entry
-    const quotedPath = JSON.stringify(hookScriptPath)
-    const hookEntry = {
-      type: 'command',
-      command: `node ${quotedPath}`,
+    // Check if the hook is already up-to-date (avoid unnecessary writes that trigger file watchers)
+    const existingGroups = (settings.hooks as Record<string, unknown>)?.PreToolUse
+    if (Array.isArray(existingGroups)) {
+      for (const group of existingGroups as Array<{ hooks?: Array<{ command?: string }> }>) {
+        const match = group.hooks?.find(h => h.command?.includes(PERMISSION_HOOK_FILENAME))
+        if (match?.command === expectedCommand) {
+          return { success: true }
+        }
+      }
     }
 
-    // Merge into existing hooks without overwriting
+    // Build the correctly nested structure: PreToolUse -> [matcher group] -> hooks -> [handler]
+    const matcherGroup = {
+      hooks: [{ type: 'command' as const, command: expectedCommand }],
+    }
+
     if (!settings.hooks || typeof settings.hooks !== 'object') {
       settings.hooks = {}
     }
@@ -196,16 +258,46 @@ export class PermissionServer {
       hooks.PreToolUse = []
     }
 
-    // Check if already installed (idempotent)
-    const existing = hooks.PreToolUse as Array<{ type?: string; command?: string }>
-    if (existing.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))) {
-      return { success: true }
-    }
+    // Remove any existing entries (old absolute-path format or stale)
+    const filtered = (hooks.PreToolUse as Array<{ hooks?: Array<{ command?: string }>; command?: string }>)
+      .filter(group => {
+        if (group.command?.includes(PERMISSION_HOOK_FILENAME)) return false
+        if (group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))) return false
+        return true
+      })
+    filtered.push(matcherGroup)
+    hooks.PreToolUse = filtered
 
-    existing.push(hookEntry)
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8')
+    writeFileForWsl(settingsPath, JSON.stringify(settings, null, 2))
 
     console.log(`[PermissionServer] Hook installed at ${settingsPath}`)
     return { success: true }
   }
+}
+
+/**
+ * On Windows, files written by Electron's fs.writeFileSync get NTFS metadata
+ * that WSL2 cannot read (shows as ??????? permissions). Since the Claude CLI
+ * runs inside WSL, it must be able to read settings.json.
+ * Write via bash.exe so the file is created from the WSL context with proper permissions.
+ */
+function writeFileForWsl(windowsPath: string, content: string): void {
+  if (process.platform === 'win32') {
+    const wslPath = winToWsl(windowsPath)
+    try {
+      execSync(`bash.exe -c 'cat > "${wslPath}"'`, {
+        input: content,
+        timeout: 10000,
+      })
+      return
+    } catch (err) {
+      console.warn('[PermissionServer] WSL write failed, falling back to fs:', err)
+    }
+  }
+  fs.writeFileSync(windowsPath, content, 'utf8')
+}
+
+function winToWsl(winPath: string): string {
+  const drive = winPath[0].toLowerCase()
+  return `/mnt/${drive}/${winPath.slice(3).replace(/\\/g, '/')}`
 }

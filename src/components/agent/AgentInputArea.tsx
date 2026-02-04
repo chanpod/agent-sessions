@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, KeyboardEvent } from 'react'
-import { IconSend } from '@tabler/icons-react'
+import { IconSend, IconPlayerStopFilled } from '@tabler/icons-react'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button'
 interface AgentInputAreaProps {
   processId: string
   onSend: (message: string) => void
+  onStop?: () => void
+  isStreaming?: boolean
   disabled?: boolean
   placeholder?: string
   className?: string
@@ -33,6 +35,8 @@ interface AgentInputAreaProps {
 export function AgentInputArea({
   processId,
   onSend,
+  onStop,
+  isStreaming = false,
   disabled = false,
   placeholder = 'Send a message...',
   className,
@@ -52,7 +56,7 @@ export function AgentInputArea({
   }, [input])
 
   const handleSubmit = useCallback(() => {
-    if (!input.trim() || disabled) return
+    if (!input.trim() || disabled || isStreaming) return
     onSend(input.trim())
     setInput('')
     // Reset textarea height after clearing
@@ -63,7 +67,7 @@ export function AgentInputArea({
     setTimeout(() => {
       textareaRef.current?.focus()
     }, 0)
-  }, [input, disabled, onSend])
+  }, [input, disabled, isStreaming, onSend])
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Submit on Ctrl+Enter or Cmd+Enter
@@ -77,7 +81,7 @@ export function AgentInputArea({
     setInput(e.target.value)
   }
 
-  const canSubmit = input.trim().length > 0 && !disabled
+  const canSubmit = input.trim().length > 0 && !disabled && !isStreaming
 
   return (
     <div
@@ -88,7 +92,6 @@ export function AgentInputArea({
         'p-2',
         'focus-within:border-ring focus-within:ring-1 focus-within:ring-ring',
         'transition-colors duration-200',
-        disabled && 'opacity-50 cursor-not-allowed',
         className
       )}
     >
@@ -98,7 +101,6 @@ export function AgentInputArea({
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
-        disabled={disabled}
         rows={1}
         className={cn(
           'flex-1 resize-none',
@@ -108,29 +110,47 @@ export function AgentInputArea({
           'min-h-[36px] max-h-[200px]',
           'py-2 px-2',
           'scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent',
-          disabled && 'cursor-not-allowed'
         )}
         aria-label={`Message input for process ${processId}`}
       />
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        onClick={handleSubmit}
-        disabled={!canSubmit}
-        className={cn(
-          'h-8 w-8 shrink-0',
-          'rounded-md',
-          'transition-all duration-200',
-          canSubmit
-            ? 'text-primary hover:bg-primary/10 hover:text-primary'
-            : 'text-muted-foreground'
-        )}
-        title="Send message (Ctrl+Enter)"
-        aria-label="Send message"
-      >
-        <IconSend className="h-4 w-4" />
-      </Button>
+      {isStreaming ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onStop}
+          className={cn(
+            'h-8 w-8 shrink-0',
+            'rounded-md',
+            'transition-all duration-200',
+            'text-destructive hover:bg-destructive/10 hover:text-destructive'
+          )}
+          title="Stop agent"
+          aria-label="Stop agent"
+        >
+          <IconPlayerStopFilled className="h-4 w-4" />
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          className={cn(
+            'h-8 w-8 shrink-0',
+            'rounded-md',
+            'transition-all duration-200',
+            canSubmit
+              ? 'text-primary hover:bg-primary/10 hover:text-primary'
+              : 'text-muted-foreground'
+          )}
+          title="Send message (Ctrl+Enter)"
+          aria-label="Send message"
+        >
+          <IconSend className="h-4 w-4" />
+        </Button>
+      )}
     </div>
   )
 }

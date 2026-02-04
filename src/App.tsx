@@ -171,9 +171,9 @@ function App() {
   const [showNewProjectModal, setShowNewProjectModal] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [isGitDrawerOpen, setIsGitDrawerOpen] = useState(false)
-  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(true)
+  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false)
   // State for agent processes (these use child_process, not PTY)
-  const [agentProcesses, setAgentProcesses] = useState<Map<string, { id: string; agentType: string; cwd: string }>>(new Map())
+  const [agentProcesses, setAgentProcesses] = useState<Map<string, { id: string; agentType: string; cwd: string; sessionId?: string }>>(new Map())
   const [hookPromptState, setHookPromptState] = useState<{
     projectId: string
     projectName: string
@@ -409,7 +409,7 @@ function App() {
       const configUpdates: { oldId: string; newConfig: Parameters<typeof saveConfig>[0] }[] = []
       const terminalsToAddToProjects: { projectId: string; terminalId: string }[] = []
       // Collect agent processes to add to the agentProcesses Map (needed for AgentWorkspace rendering)
-      const agentProcessesToAdd: { id: string; agentType: string; cwd: string }[] = []
+      const agentProcessesToAdd: { id: string; agentType: string; cwd: string; sessionId?: string }[] = []
 
       for (const config of configs) {
         try {
@@ -448,6 +448,7 @@ function App() {
               id: newTerminalId,
               agentType: config.agentId || 'claude',
               cwd: config.cwd,
+              sessionId: config.sessionId,
             })
 
             // Add terminal to its project grid
@@ -1488,6 +1489,7 @@ function App() {
                   processId={activeAgentProcess.id}
                   agentType={activeAgentProcess.agentType as 'claude' | 'codex' | 'gemini'}
                   cwd={activeAgentProcess.cwd}
+                  resumeSessionId={activeAgentProcess.sessionId}
                   className="h-full"
                 />
               ) : isAgentTerminal && agentConversation ? (

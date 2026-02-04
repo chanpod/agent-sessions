@@ -1,21 +1,13 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(git tag *)",
-      "Bash(git push *)",
-      "Bash(git status*)",
-      "Bash(git diff*)",
-      "Bash(git log*)",
-      "Bash(git show*)"
-    ]
-  },
   "hooks": {
     "PreToolUse": [
       {
-        "type": "command",
-        "command": "node \"C:\\\\git\\\\agent-sessions\\\\resources\\\\bin\\\\permission-handler.js\""
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \".claude/hooks/permission-handler.js\" \".claude/.permission-ipc\""
+          }
+        ]
       }
     ]
   }

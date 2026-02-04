@@ -31,3 +31,7 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+# Permission system (runtime files)
+.permission-ipc/
+.claude/hooks/
