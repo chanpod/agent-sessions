@@ -33,9 +33,21 @@ export interface PersistedSessionData {
  */
 const MAX_PERSISTED_MESSAGES = 50
 
+/**
+ * Per-conversation state that survives component unmount/remount (e.g. session switching).
+ * Keyed by the initial process ID (the first processId assigned to a conversation).
+ */
+export interface ConversationState {
+  processIds: string[]
+  userMessages: Array<{ id: string; content: string; timestamp: number; agentType: string }>
+}
+
 interface AgentStreamStore {
   // State: Map of terminalId -> agent state (runtime)
   terminals: Map<string, TerminalAgentState>
+
+  // Per-conversation state: initialProcessId -> ConversationState (runtime, survives session switching)
+  conversations: Map<string, ConversationState>
 
   // Persisted sessions: Record of sessionId -> session data
   sessions: Record<string, PersistedSessionData>
@@ -53,6 +65,11 @@ interface AgentStreamStore {
   clearTerminal(terminalId: string): void
   markWaitingForResponse(terminalId: string): void
   resetTerminalActivity(terminalId: string): void
+
+  // Conversation state actions (survive component unmount/remount)
+  addConversationProcessId(initialProcessId: string, newProcessId: string): void
+  addConversationUserMessage(initialProcessId: string, message: { id: string; content: string; timestamp: number; agentType: string }): void
+  getConversation(initialProcessId: string): ConversationState
 
   // Session management actions
   setTerminalSession(terminalId: string, sessionId: string): void
@@ -118,6 +135,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
   persist(
     (set, get) => ({
       terminals: new Map(),
+      conversations: new Map(),
       sessions: {},
       terminalToSession: new Map(),
       hasRehydrated: false,
@@ -314,15 +332,17 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
             case 'agent-message-end': {
               const data = event.data as AgentMessageEndData
-              console.log('[AgentStreamStore] agent-message-end received, currentMessage:', !!terminalState.currentMessage)
+              console.log('[AgentStreamStore] agent-message-end received, currentMessage:', !!terminalState.currentMessage, 'stopReason:', data.stopReason)
+
+              // isActive stays true during tool_use (agent will continue after tool execution).
+              // On end_turn the agent is done responding for this turn.
+              const stillActive = data.stopReason === 'tool_use'
+
               if (!terminalState.currentMessage) {
-                // No message to complete - this can happen with duplicate events from
-                // Claude CLI emitting both print mode (assistant) and streaming mode (message_stop) events.
-                // Still ensure isActive is false to handle any edge cases.
-                console.log('[AgentStreamStore] No currentMessage to complete (duplicate event?), ensuring isActive=false')
+                // No message to complete - duplicate event. Respect stopReason for isActive.
                 newState = {
                   ...terminalState,
-                  isActive: false,
+                  isActive: stillActive,
                 }
                 break
               }
@@ -346,7 +366,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 ...terminalState,
                 currentMessage: null,
                 messages: [...terminalState.messages, completedMessage],
-                isActive: false,
+                isActive: stillActive,
               }
               break
             }
@@ -443,6 +463,37 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           })
           return { terminals }
         })
+      },
+
+      // Conversation state actions (survive component unmount/remount)
+      addConversationProcessId: (initialProcessId: string, newProcessId: string) => {
+        set((state) => {
+          const conversations = new Map(state.conversations)
+          const existing = conversations.get(initialProcessId) ?? { processIds: [initialProcessId], userMessages: [] }
+          if (!existing.processIds.includes(newProcessId)) {
+            conversations.set(initialProcessId, {
+              ...existing,
+              processIds: [...existing.processIds, newProcessId],
+            })
+          }
+          return { conversations }
+        })
+      },
+
+      addConversationUserMessage: (initialProcessId: string, message: { id: string; content: string; timestamp: number; agentType: string }) => {
+        set((state) => {
+          const conversations = new Map(state.conversations)
+          const existing = conversations.get(initialProcessId) ?? { processIds: [initialProcessId], userMessages: [] }
+          conversations.set(initialProcessId, {
+            ...existing,
+            userMessages: [...existing.userMessages, message],
+          })
+          return { conversations }
+        })
+      },
+
+      getConversation: (initialProcessId: string) => {
+        return get().conversations.get(initialProcessId) ?? { processIds: [initialProcessId], userMessages: [] }
       },
 
       // Session management actions
@@ -555,6 +606,37 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               return
             }
 
+            // Handle process exit — clear activity flags and persist session.
+            // This is the authoritative "done" signal for PTY-based agents.
+            if (event.type === 'agent-process-exit') {
+              console.log('[AgentStreamStore] Process exit for terminal:', event.terminalId)
+              set((state) => {
+                const termState = state.terminals.get(event.terminalId)
+                if (!termState) return state
+
+                const terminals = new Map(state.terminals)
+                if (termState.currentMessage) {
+                  // Finalize any in-progress message
+                  terminals.set(event.terminalId, {
+                    ...termState,
+                    messages: [...termState.messages, { ...termState.currentMessage, status: 'completed' as const, completedAt: Date.now() }],
+                    currentMessage: null,
+                    isActive: false,
+                    isWaitingForResponse: false,
+                  })
+                } else {
+                  terminals.set(event.terminalId, {
+                    ...termState,
+                    isActive: false,
+                    isWaitingForResponse: false,
+                  })
+                }
+                return { terminals }
+              })
+              get().persistSession(event.terminalId)
+              return
+            }
+
             // Filter for agent-* events and convert to AgentStreamEvent
             if (event.type.startsWith('agent-')) {
               console.log('[AgentStreamStore] Processing agent event:', event.type)
@@ -591,33 +673,40 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           get().processEvent(id, event as AgentStreamEvent)
         })
 
-        // Subscribe to process exit - finalize current message if process exits during streaming
+        // Subscribe to process exit - finalize current message and clear isActive
         const unsubExit = window.electron.agent.onProcessExit((id, code) => {
-          const terminalState = get().terminals.get(id)
-          if (terminalState?.currentMessage) {
-            // Finalize the current message if process exits during streaming
-            set((state) => {
-              const termState = state.terminals.get(id)
-              if (!termState?.currentMessage) return state
+          set((state) => {
+            const termState = state.terminals.get(id)
+            if (!termState) return state
 
+            const terminals = new Map(state.terminals)
+
+            if (termState.currentMessage) {
+              // Finalize the current message if process exits during streaming
               const finalMessage: AgentMessage = {
                 ...termState.currentMessage,
                 status: 'completed',
                 completedAt: Date.now(),
                 stopReason: code === 0 ? 'end_turn' : undefined,
               }
-
-              const terminals = new Map(state.terminals)
               terminals.set(id, {
                 ...termState,
                 messages: [...termState.messages, finalMessage],
                 currentMessage: null,
                 isActive: false,
+                isWaitingForResponse: false,
               })
+            } else {
+              // No streaming message, but still clear activity flags
+              terminals.set(id, {
+                ...termState,
+                isActive: false,
+                isWaitingForResponse: false,
+              })
+            }
 
-              return { terminals }
-            })
-          }
+            return { terminals }
+          })
 
           // Persist session to DB on process exit so conversation history survives app restart
           get().persistSession(id)

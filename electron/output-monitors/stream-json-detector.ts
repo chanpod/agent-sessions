@@ -213,6 +213,17 @@ export class StreamJsonDetector implements OutputDetector {
       })
     }
 
+    // Always emit process exit event so the renderer can clear activity state.
+    // This fires regardless of whether a message was in progress.
+    events.push({
+      terminalId,
+      type: 'agent-process-exit',
+      timestamp: Date.now(),
+      data: {
+        exitCode,
+      },
+    })
+
     return events
   }
 

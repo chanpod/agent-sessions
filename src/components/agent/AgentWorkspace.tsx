@@ -134,12 +134,42 @@ export function AgentWorkspace({
   className,
   resumeSessionId,
 }: AgentWorkspaceProps) {
-  // Track all process IDs that belong to this conversation (for multi-turn)
-  const [activeProcessIds, setActiveProcessIds] = useState<Set<string>>(new Set([initialProcessId]))
   // isProcessing: true between user sending message and agent starting to respond
   // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
-  const [userMessages, setUserMessages] = useState<UIAgentMessage[]>([])
+
+  // Conversation state lives in the store so it survives unmount/remount (session switching).
+  // Use separate selectors to avoid creating new objects on every render.
+  const storeProcessIds = useAgentStreamStore(
+    useShallow((store) => store.conversations.get(initialProcessId)?.processIds ?? null)
+  )
+  const storeUserMessages = useAgentStreamStore(
+    useShallow((store) => store.conversations.get(initialProcessId)?.userMessages ?? null)
+  )
+
+  const activeProcessIds = useMemo(
+    () => new Set(storeProcessIds ?? [initialProcessId]),
+    [storeProcessIds, initialProcessId]
+  )
+
+  // Map stored user messages to UI format
+  const userMessages = useMemo<UIAgentMessage[]>(() =>
+    (storeUserMessages ?? []).map((msg) => ({
+      id: msg.id,
+      agentType: msg.agentType,
+      role: 'user' as const,
+      blocks: [{
+        id: `${msg.id}_block_0`,
+        type: 'text' as const,
+        content: msg.content,
+        timestamp: msg.timestamp,
+      }],
+      status: 'completed' as const,
+      timestamp: msg.timestamp,
+    })),
+    [storeUserMessages]
+  )
+
   // Session ID is captured by the agent-stream-store from detector events (agent-session-init).
   // Subscribe to the store's terminalToSession mapping to get it reactively.
   const storeSessionId = useAgentStreamStore(
@@ -152,23 +182,15 @@ export function AgentWorkspace({
     async (message: string) => {
       if (!window.electron?.agent) return
 
-      // Optimistically add user message to UI
-      const userMessage: UIAgentMessage = {
+      const store = useAgentStreamStore.getState()
+
+      // Add user message to the store (persists across session switching)
+      store.addConversationUserMessage(initialProcessId, {
         id: `user_${Date.now()}`,
-        agentType,
-        role: 'user',
-        blocks: [
-          {
-            id: `user_${Date.now()}_block_0`,
-            type: 'text',
-            content: message,
-            timestamp: Date.now(),
-          },
-        ],
-        status: 'completed',
+        content: message,
         timestamp: Date.now(),
-      }
-      setUserMessages((prev) => [...prev, userMessage])
+        agentType,
+      })
       setIsProcessing(true)
 
       // For multi-turn: spawn new process with --resume if we have a session
@@ -181,10 +203,10 @@ export function AgentWorkspace({
           resumeSessionId: sessionId,
         })
         if (result.success && result.process) {
-          // Track the new process ID
-          setActiveProcessIds((prev) => new Set([...prev, result.process!.id]))
+          // Track the new process ID in the store
+          store.addConversationProcessId(initialProcessId, result.process.id)
           // Mark waiting immediately so sidebar spinner starts
-          useAgentStreamStore.getState().markWaitingForResponse(result.process.id)
+          store.markWaitingForResponse(result.process.id)
           // Send message to the new process
           await window.electron.agent.sendMessage(result.process.id, {
             type: 'user',
@@ -196,7 +218,7 @@ export function AgentWorkspace({
         }
       } else {
         // First message - mark waiting immediately so sidebar spinner starts
-        useAgentStreamStore.getState().markWaitingForResponse(initialProcessId)
+        store.markWaitingForResponse(initialProcessId)
         // Send to existing process
         await window.electron.agent.sendMessage(initialProcessId, {
           type: 'user',
@@ -223,9 +245,10 @@ export function AgentWorkspace({
     })
   )
 
-  // Check if any process is actively streaming (from store state)
+  // Check if any process is actively streaming or waiting to respond (from store state).
+  // This survives component unmount/remount, unlike the local isProcessing state.
   const anyActive = useMemo(() => {
-    return allProcessStates.some((state) => state.isActive)
+    return allProcessStates.some((state) => state.isActive || state.isWaitingForResponse)
   }, [allProcessStates])
 
   // Clear isProcessing when agent starts responding (anyActive becomes true)

@@ -9,7 +9,7 @@ const IDLE_THRESHOLD_MS = 5000
 const MINOR_ACTIVITY_THRESHOLD_MS = 5000 // Yellow goes to grey after 5s
 const NEW_TERMINAL_GRACE_PERIOD_MS = 10000 // Don't notify for 10s after terminal creation
 
-type AgentStatus = 'responding' | 'done' | 'needs-attention' | 'idle' | 'exited'
+type AgentStatus = 'responding' | 'thinking' | 'done' | 'needs-attention' | 'idle' | 'exited'
 
 interface ActivityIndicatorProps {
   sessionId: string
@@ -37,8 +37,32 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
     state.sessions.find((s) => s.id === sessionId)
   )
 
-  // Get agent stream state for this terminal (if it's an agent terminal)
-  const agentState = useAgentStreamStore((state) => state.terminals.get(sessionId))
+  // Get agent stream state for this terminal (if it's an agent terminal).
+  // For multi-turn conversations, new process IDs are created per turn.
+  // We check ALL process IDs in the conversation so the sidebar spinner
+  // reflects activity from any turn, not just the initial process.
+  const agentState = useAgentStreamStore((state) => {
+    // Check if this session has a conversation with multiple process IDs
+    const conv = state.conversations.get(sessionId)
+    const pids = conv?.processIds ?? [sessionId]
+
+    // First pass: find any actively responding process
+    for (const pid of pids) {
+      const ts = state.terminals.get(pid)
+      if (ts && (ts.isActive || ts.isWaitingForResponse)) return ts
+    }
+
+    // Second pass: return the most recent terminal state that has messages
+    for (let i = pids.length - 1; i >= 0; i--) {
+      const pid = pids[i]
+      if (!pid) continue
+      const ts = state.terminals.get(pid)
+      if (ts && (ts.messages.length > 0 || ts.currentMessage)) return ts
+    }
+
+    // Fallback: return the initial terminal state
+    return state.terminals.get(sessionId)
+  })
 
   const addToast = useToastStore((state) => state.addToast)
   const projects = useProjectStore((state) => state.projects)
@@ -70,11 +94,15 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
   if (session?.status === 'exited') {
     agentStatus = 'exited'
   } else if (isAgentTerminal && agentState) {
-    if (agentState.isActive || agentState.isWaitingForResponse) {
+    if (agentState.currentMessage || agentState.isWaitingForResponse) {
+      // Actively streaming content or waiting for first response
       agentStatus = 'responding'
+    } else if (agentState.isActive) {
+      // isActive but no currentMessage = between tool calls (executing tools)
+      agentStatus = 'thinking'
     } else if (agentState.error) {
       agentStatus = 'needs-attention'
-    } else if (agentState.messages.length > 0 || agentState.currentMessage) {
+    } else if (agentState.messages.length > 0) {
       agentStatus = 'done'
     } else {
       agentStatus = 'idle'
@@ -143,6 +171,15 @@ function AgentStatusIcon({ status }: { status: AgentStatus; className?: string }
           stroke={2.5}
           className="animate-spin text-blue-400 shrink-0"
           title="Agent is responding..."
+        />
+      )
+    case 'thinking':
+      return (
+        <IconLoader2
+          size={18}
+          stroke={2.5}
+          className="animate-spin text-amber-400 shrink-0"
+          title="Agent is thinking..."
         />
       )
     case 'done':
