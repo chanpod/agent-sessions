@@ -10,6 +10,7 @@ import {
   PointerSensor,
 } from '@dnd-kit/core'
 import { Terminal as TerminalIcon, ChevronUp } from 'lucide-react'
+import { cn } from './lib/utils'
 import { TitleBar } from './components/TitleBar'
 import { ProjectHeader } from './components/ProjectHeader'
 import { Sidebar } from './components/Sidebar'
@@ -172,6 +173,11 @@ function App() {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [isGitDrawerOpen, setIsGitDrawerOpen] = useState(false)
   const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false)
+  const [terminalDockHeight, setTerminalDockHeight] = useState(() => {
+    const saved = localStorage.getItem('terminal-dock-height')
+    return saved ? parseInt(saved, 10) : Math.round(window.innerHeight * 0.3)
+  })
+  const [isTerminalResizing, setIsTerminalResizing] = useState(false)
   // State for agent processes (these use child_process, not PTY)
   const [agentProcesses, setAgentProcesses] = useState<Map<string, { id: string; agentType: string; cwd: string; sessionId?: string }>>(new Map())
   const [hookPromptState, setHookPromptState] = useState<{
@@ -256,6 +262,41 @@ function App() {
       },
     })
   )
+
+  const TERMINAL_MIN_HEIGHT = 150
+  const TERMINAL_MAX_HEIGHT_RATIO = 0.6
+
+  const startTerminalResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsTerminalResizing(true)
+  }, [])
+
+  const stopTerminalResize = useCallback(() => {
+    setIsTerminalResizing(false)
+  }, [])
+
+  const resizeTerminalDock = useCallback((e: MouseEvent) => {
+    if (!isTerminalResizing) return
+    const maxHeight = Math.round(window.innerHeight * TERMINAL_MAX_HEIGHT_RATIO)
+    const newHeight = window.innerHeight - e.clientY
+    const clamped = Math.max(TERMINAL_MIN_HEIGHT, Math.min(newHeight, maxHeight))
+    setTerminalDockHeight(clamped)
+    localStorage.setItem('terminal-dock-height', String(clamped))
+  }, [isTerminalResizing])
+
+  useEffect(() => {
+    if (!isTerminalResizing) return
+    document.addEventListener('mousemove', resizeTerminalDock)
+    document.addEventListener('mouseup', stopTerminalResize)
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+    return () => {
+      document.removeEventListener('mousemove', resizeTerminalDock)
+      document.removeEventListener('mouseup', stopTerminalResize)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [isTerminalResizing, resizeTerminalDock, stopTerminalResize])
 
   useEffect(() => {
     // Check if running in Electron
@@ -1513,16 +1554,36 @@ function App() {
               )}
             </div>
             {isTerminalDockOpen ? (
-              <div className="h-[30vh] min-h-[220px] max-h-[420px] border-t border-zinc-800 bg-zinc-950">
-                <TerminalArea
-                  onCreateTerminal={handleCreateTerminal}
-                  onCreateQuickTerminal={handleCreateQuickTerminal}
-                  onCloseTerminal={handleCloseTerminal}
-                  onStopServer={handleStopServer}
-                  onRestartServer={handleRestartServer}
-                  onDeleteServer={handleDeleteServer}
-                  onToggleCollapse={() => setIsTerminalDockOpen(false)}
-                />
+              <div
+                style={{ height: terminalDockHeight }}
+                className={cn(
+                  'border-t border-zinc-800 bg-zinc-950 flex flex-col',
+                  isTerminalResizing && 'select-none'
+                )}
+              >
+                <div
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize terminal dock"
+                  onMouseDown={startTerminalResize}
+                  className={cn(
+                    'h-1 flex-shrink-0 cursor-row-resize flex items-center justify-center transition-colors',
+                    isTerminalResizing ? 'bg-zinc-600' : 'hover:bg-zinc-700'
+                  )}
+                >
+                  <div className="w-8 h-0.5 rounded-full bg-zinc-600" />
+                </div>
+                <div className="flex-1 min-h-0">
+                  <TerminalArea
+                    onCreateTerminal={handleCreateTerminal}
+                    onCreateQuickTerminal={handleCreateQuickTerminal}
+                    onCloseTerminal={handleCloseTerminal}
+                    onStopServer={handleStopServer}
+                    onRestartServer={handleRestartServer}
+                    onDeleteServer={handleDeleteServer}
+                    onToggleCollapse={() => setIsTerminalDockOpen(false)}
+                  />
+                </div>
               </div>
             ) : (
               <button

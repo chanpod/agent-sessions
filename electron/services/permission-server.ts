@@ -14,12 +14,15 @@ import type {
 } from '../types/permission-types.js'
 
 const IPC_DIR_NAME = '.permission-ipc'
+const HEARTBEAT_FILENAME = '.active'
+const HEARTBEAT_INTERVAL_MS = 3000
 
 export class PermissionServer {
   private pending = new Map<string, PendingPermission>()
   private window: BrowserWindow
   private watchedDirs = new Set<string>()
   private pollInterval: ReturnType<typeof setInterval> | null = null
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null
 
   constructor(window: BrowserWindow) {
     this.window = window
@@ -27,6 +30,8 @@ export class PermissionServer {
 
   start(): void {
     this.pollInterval = setInterval(() => this.scanForRequests(), 200)
+    this.heartbeatInterval = setInterval(() => this.writeHeartbeats(), HEARTBEAT_INTERVAL_MS)
+    this.writeHeartbeats() // Write immediately on start
     console.log('[PermissionServer] Started polling')
   }
 
@@ -57,7 +62,13 @@ export class PermissionServer {
       this.pollInterval = null
     }
 
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+      this.heartbeatInterval = null
+    }
+
     for (const ipcDir of this.watchedDirs) {
+      this.removeHeartbeat(ipcDir)
       this.cleanIpcDir(ipcDir)
     }
     this.watchedDirs.clear()
@@ -149,6 +160,26 @@ export class PermissionServer {
     } catch (err) {
       console.error(`[PermissionServer] Failed to write response ${id}:`, err)
     }
+  }
+
+  private writeHeartbeats(): void {
+    for (const ipcDir of this.watchedDirs) {
+      const heartbeatPath = path.join(ipcDir, HEARTBEAT_FILENAME)
+      try {
+        writeFileForWsl(heartbeatPath, String(Date.now()))
+      } catch (err) {
+        console.error(`[PermissionServer] Failed to write heartbeat to ${ipcDir}:`, err)
+      }
+    }
+  }
+
+  private removeHeartbeat(ipcDir: string): void {
+    const heartbeatPath = path.join(ipcDir, HEARTBEAT_FILENAME)
+    try {
+      if (fs.existsSync(heartbeatPath)) {
+        fs.unlinkSync(heartbeatPath)
+      }
+    } catch {}
   }
 
   private cleanIpcDir(ipcDir: string): void {
