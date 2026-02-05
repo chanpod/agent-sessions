@@ -144,7 +144,7 @@ export function AgentWorkspace({
   const [editsEnabled, setEditsEnabled] = useState(true)
 
   // Read-only tools for when edits are disabled
-  const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Task', 'TodoRead', 'TodoWrite']
+  const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Task', 'TodoRead', 'TodoWrite', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Skill']
   const allowedTools = editsEnabled ? undefined : READ_ONLY_TOOLS
 
   // Conversation state lives in the store so it survives unmount/remount (session switching).
