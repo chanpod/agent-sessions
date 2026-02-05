@@ -1219,11 +1219,12 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
 })
 
 ipcMain.handle('agent:send-message', async (_event, id: string, message: Record<string, unknown>) => {
-  if (!ptyManager) throw new Error('PTY manager not initialized')
+  if (!ptyManager) return { success: false, error: 'PTY manager not initialized' }
 
   const agentInfo = agentTerminals.get(id)
   if (!agentInfo) {
-    throw new Error(`Agent terminal ${id} not found`)
+    console.warn(`[Agent] send-message: terminal ${id} not found (may have been killed)`)
+    return { success: false, error: `Agent terminal ${id} not found` }
   }
 
   // Codex uses one-shot `exec` mode — the prompt is part of the spawn command,
@@ -1246,11 +1247,15 @@ ipcMain.handle('agent:send-message', async (_event, id: string, message: Record<
 })
 
 ipcMain.handle('agent:kill', async (_event, id: string) => {
-  if (!ptyManager) throw new Error('PTY manager not initialized')
+  if (!ptyManager) return { success: false, error: 'PTY manager not initialized' }
 
-  console.log(`[Agent] Killing agent terminal ${id}`)
-  ptyManager.kill(id)
-  agentTerminals.delete(id)
+  if (agentTerminals.has(id)) {
+    console.log(`[Agent] Killing agent terminal ${id}`)
+    ptyManager.kill(id)
+    agentTerminals.delete(id)
+  } else {
+    console.log(`[Agent] Kill: terminal ${id} already gone, skipping`)
+  }
 
   return { success: true }
 })

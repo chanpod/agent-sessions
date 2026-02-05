@@ -202,63 +202,82 @@ export function AgentWorkspace({
       })
       setIsProcessing(true)
 
-      // Auto-generate title after 2+ user messages once sessionId is available.
-      // Uses >= 2 so that if the sessionId wasn't captured yet on the 2nd message
-      // (race condition with agent-session-init event), it retries on later messages.
-      const conversation = store.getConversation(initialProcessId)
-      const currentSessionId = sessionId || store.getSessionId(initialProcessId)
-      if (
-        conversation.userMessages.length >= 2 &&
-        currentSessionId &&
-        !store.hasTitleBeenGenerated(currentSessionId)
-      ) {
-        store.markTitleGenerated(currentSessionId)
-        const msgs = conversation.userMessages.slice(0, 2).map((m) => m.content)
-        window.electron.agent.generateTitle({ userMessages: msgs }).then((result) => {
-          if (result.success && result.title) {
-            useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
-          }
-        }).catch((err) => {
-          console.warn('[AgentWorkspace] Title generation failed:', err)
-        })
-      }
-
-      // Codex uses one-shot `exec` mode — every message (including the first)
-      // spawns a new process with the prompt as a CLI argument.
-      // Multi-turn uses `codex exec resume SESSION_ID`.
-      if (agentType === 'codex') {
-        console.log(`[AgentWorkspace] Codex: spawning process with prompt`, sessionId ? `(resuming ${sessionId})` : '(first message)')
-        const result = await window.electron.agent.spawn({
-          agentType,
-          cwd,
-          resumeSessionId: sessionId || undefined,
-          prompt: message,
-          ...(allowedTools ? { allowedTools } : {}),
-        })
-        if (result.success && result.process) {
-          store.addConversationProcessId(initialProcessId, result.process.id)
-          store.markWaitingForResponse(result.process.id)
+      try {
+        // Auto-generate title after 2+ user messages once sessionId is available.
+        // Uses >= 2 so that if the sessionId wasn't captured yet on the 2nd message
+        // (race condition with agent-session-init event), it retries on later messages.
+        const conversation = store.getConversation(initialProcessId)
+        const currentSessionId = sessionId || store.getSessionId(initialProcessId)
+        if (
+          conversation.userMessages.length >= 2 &&
+          currentSessionId &&
+          !store.hasTitleBeenGenerated(currentSessionId)
+        ) {
+          store.markTitleGenerated(currentSessionId)
+          const msgs = conversation.userMessages.slice(0, 2).map((m) => m.content)
+          window.electron.agent.generateTitle({ userMessages: msgs }).then((result) => {
+            if (result.success && result.title) {
+              useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
+            }
+          }).catch((err) => {
+            console.warn('[AgentWorkspace] Title generation failed:', err)
+          })
         }
-        return
-      }
 
-      // For multi-turn: spawn new process with --resume if we have a session
-      // The first message uses the existing process, follow-ups spawn new ones
-      if (sessionId) {
-        console.log(`[AgentWorkspace] Multi-turn: spawning new process with --resume ${sessionId}`)
-        const result = await window.electron.agent.spawn({
-          agentType,
-          cwd,
-          resumeSessionId: sessionId,
-          ...(allowedTools ? { allowedTools } : {}),
-        })
-        if (result.success && result.process) {
-          // Track the new process ID in the store
-          store.addConversationProcessId(initialProcessId, result.process.id)
-          // Mark waiting immediately so sidebar spinner starts
-          store.markWaitingForResponse(result.process.id)
-          // Send message to the new process
-          await window.electron.agent.sendMessage(result.process.id, {
+        // Codex uses one-shot `exec` mode — every message (including the first)
+        // spawns a new process with the prompt as a CLI argument.
+        // Multi-turn uses `codex exec resume SESSION_ID`.
+        if (agentType === 'codex') {
+          console.log(`[AgentWorkspace] Codex: spawning process with prompt`, sessionId ? `(resuming ${sessionId})` : '(first message)')
+          const result = await window.electron.agent.spawn({
+            agentType,
+            cwd,
+            resumeSessionId: sessionId || undefined,
+            prompt: message,
+            ...(allowedTools ? { allowedTools } : {}),
+          })
+          if (result.success && result.process) {
+            store.addConversationProcessId(initialProcessId, result.process.id)
+            store.markWaitingForResponse(result.process.id)
+          } else {
+            console.error('[AgentWorkspace] Codex spawn failed:', result)
+            setIsProcessing(false)
+          }
+          return
+        }
+
+        // For multi-turn: spawn new process with --resume if we have a session
+        // The first message uses the existing process, follow-ups spawn new ones
+        if (sessionId) {
+          console.log(`[AgentWorkspace] Multi-turn: spawning new process with --resume ${sessionId}`)
+          const result = await window.electron.agent.spawn({
+            agentType,
+            cwd,
+            resumeSessionId: sessionId,
+            ...(allowedTools ? { allowedTools } : {}),
+          })
+          if (result.success && result.process) {
+            // Track the new process ID in the store
+            store.addConversationProcessId(initialProcessId, result.process.id)
+            // Mark waiting immediately so sidebar spinner starts
+            store.markWaitingForResponse(result.process.id)
+            // Send message to the new process
+            await window.electron.agent.sendMessage(result.process.id, {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: message,
+              },
+            })
+          } else {
+            console.error('[AgentWorkspace] Resume spawn failed:', result)
+            setIsProcessing(false)
+          }
+        } else {
+          // First message - mark waiting immediately so sidebar spinner starts
+          store.markWaitingForResponse(initialProcessId)
+          // Send to existing process
+          await window.electron.agent.sendMessage(initialProcessId, {
             type: 'user',
             message: {
               role: 'user',
@@ -266,17 +285,9 @@ export function AgentWorkspace({
             },
           })
         }
-      } else {
-        // First message - mark waiting immediately so sidebar spinner starts
-        store.markWaitingForResponse(initialProcessId)
-        // Send to existing process
-        await window.electron.agent.sendMessage(initialProcessId, {
-          type: 'user',
-          message: {
-            role: 'user',
-            content: message,
-          },
-        })
+      } catch (err) {
+        console.error('[AgentWorkspace] handleSend failed:', err)
+        setIsProcessing(false)
       }
     },
     [initialProcessId, agentType, cwd, sessionId, allowedTools]
@@ -360,6 +371,16 @@ export function AgentWorkspace({
       setIsProcessing(false)
     }
   }, [anyActive, isProcessing])
+
+  // Safety net: clear isProcessing after timeout to prevent permanent hangs
+  useEffect(() => {
+    if (!isProcessing) return
+    const timeout = setTimeout(() => {
+      console.warn('[AgentWorkspace] isProcessing timeout - clearing stale processing state')
+      setIsProcessing(false)
+    }, 30_000)
+    return () => clearTimeout(timeout)
+  }, [isProcessing])
 
   // Convert stream state to AgentConversation format, merging user messages
   const conversation = useMemo(() => {

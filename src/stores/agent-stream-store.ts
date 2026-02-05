@@ -217,8 +217,16 @@ export function waitForRehydration(): Promise<void> {
  * Uses getState() pattern to avoid circular dependencies.
  */
 function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attention') {
-  // Dynamic imports to avoid circular deps — use getState() pattern
-  const session = useTerminalStore.getState().sessions.find((s) => s.id === terminalId)
+  // Resolve terminalId to the original session's terminal ID.
+  // Multi-turn conversations spawn new PTY processes with new IDs,
+  // but only the initial process ID exists in terminal-store.sessions.
+  const agentStore = useAgentStreamStore.getState()
+  const sessionId = agentStore.terminalToSession.get(terminalId)
+  const originalTerminalId = sessionId
+    ? agentStore.sessionToInitialProcess.get(sessionId) ?? terminalId
+    : terminalId
+
+  const session = useTerminalStore.getState().sessions.find((s) => s.id === originalTerminalId)
   if (!session?.projectId) return
 
   const activeProjectId = useProjectStore.getState().activeProjectId
@@ -232,7 +240,7 @@ function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attenti
   useNotificationStore.getState().addNotification({
     projectId: project.id,
     projectName: project.name,
-    terminalId,
+    terminalId: originalTerminalId,
     sessionTitle,
     type,
     message: type === 'done'
@@ -246,7 +254,7 @@ function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attenti
     8000,
     () => {
       useProjectStore.getState().setActiveProject(project.id)
-      useTerminalStore.getState().setActiveAgentSession(terminalId)
+      useTerminalStore.getState().setActiveAgentSession(originalTerminalId)
     }
   )
 }

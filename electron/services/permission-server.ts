@@ -426,10 +426,12 @@ export class PermissionServer {
 function writeFileForWsl(windowsPath: string, content: string): void {
   if (process.platform === 'win32') {
     const wslPath = winToWsl(windowsPath)
+    // Use full path to wsl.exe - GUI apps don't inherit terminal PATH
+    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
     try {
       // Remove existing file first to clear any broken NTFS metadata
       // that prevents WSL from reading files written by Windows APIs
-      execSync(`bash.exe -c 'rm -f "${wslPath}" && cat > "${wslPath}"'`, {
+      execSync(`"${wslExe}" bash -c 'rm -f "${wslPath}" && cat > "${wslPath}"'`, {
         input: content,
         timeout: 10000,
       })
