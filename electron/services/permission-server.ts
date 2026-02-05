@@ -42,7 +42,7 @@ export class PermissionServer {
     if (this.watchedDirs.has(ipcDir)) return
 
     if (!fs.existsSync(ipcDir)) {
-      fs.mkdirSync(ipcDir, { recursive: true })
+      mkdirForWsl(ipcDir)
     }
 
     this.cleanIpcDir(ipcDir)
@@ -121,13 +121,15 @@ export class PermissionServer {
         const stat = fs.statSync(requestPath)
         const ageMs = Date.now() - stat.mtimeMs
         if (ageMs > PERMISSION_REQUEST_TIMEOUT_MS + 5000) {
-          try { fs.unlinkSync(requestPath) } catch {}
-          try { fs.unlinkSync(path.join(ipcDir, `${id}.response`)) } catch {}
+          try { unlinkForWsl(requestPath) } catch {}
+          try { unlinkForWsl(path.join(ipcDir, `${id}.response`)) } catch {}
           console.log(`[PermissionServer] Cleaned up stale request ${id} (age: ${Math.round(ageMs / 1000)}s)`)
           continue
         }
 
-        const raw = fs.readFileSync(requestPath, 'utf8')
+        // Request files are written by the hook running in WSL/Git Bash.
+        // Read via WSL to avoid NTFS/ext4 metadata cross-boundary issues.
+        const raw = readFileFromWsl(requestPath)
         const request: PermissionRequest = JSON.parse(raw)
         this.handleRequest(id, request, ipcDir)
       } catch (err) {
@@ -184,7 +186,10 @@ export class PermissionServer {
     const responsePath = path.join(ipcDir, `${id}.response`)
     const requestPath = path.join(ipcDir, `${id}.request`)
     try {
-      fs.writeFileSync(responsePath, JSON.stringify(response), 'utf8')
+      // Must use writeFileForWsl so the hook script (running in WSL/Git Bash)
+      // can read the response. fs.writeFileSync creates NTFS metadata that WSL
+      // cannot read, causing permission requests to time out.
+      writeFileForWsl(responsePath, JSON.stringify(response))
     } catch (err) {
       console.error(`[PermissionServer] Failed to write response ${id}:`, err)
     }
@@ -193,7 +198,7 @@ export class PermissionServer {
     // fails to clean up, this prevents an infinite permission loop.
     try {
       if (fs.existsSync(requestPath)) {
-        fs.unlinkSync(requestPath)
+        unlinkForWsl(requestPath)
       }
     } catch {
       // Best-effort; hook cleanup is the secondary safeguard
@@ -215,7 +220,7 @@ export class PermissionServer {
     const heartbeatPath = path.join(ipcDir, HEARTBEAT_FILENAME)
     try {
       if (fs.existsSync(heartbeatPath)) {
-        fs.unlinkSync(heartbeatPath)
+        unlinkForWsl(heartbeatPath)
       }
     } catch {}
   }
@@ -223,8 +228,21 @@ export class PermissionServer {
   private cleanIpcDir(ipcDir: string): void {
     if (!fs.existsSync(ipcDir)) return
     try {
-      for (const file of fs.readdirSync(ipcDir)) {
-        fs.unlinkSync(path.join(ipcDir, file))
+      const files = fs.readdirSync(ipcDir)
+      if (files.length === 0) return
+      // Batch-delete all files in one WSL call to avoid N subprocess spawns
+      if (process.platform === 'win32') {
+        const wslDir = winToWsl(ipcDir)
+        const wslExe = 'C:\\Windows\\System32\\wsl.exe'
+        try {
+          execSync(`"${wslExe}" bash -c 'rm -f "${wslDir}"/*'`, { timeout: 5000 })
+          return
+        } catch {
+          // Fall through to per-file cleanup
+        }
+      }
+      for (const file of files) {
+        try { fs.unlinkSync(path.join(ipcDir, file)) } catch {}
       }
     } catch {}
   }
@@ -307,10 +325,10 @@ export class PermissionServer {
     const ipcDir = path.join(claudeDir, IPC_DIR_NAME)
     const installedScriptPath = path.join(hooksDir, PERMISSION_HOOK_FILENAME)
 
-    // Ensure directories exist
+    // Ensure directories exist (use WSL-aware creation so permissions are correct)
     for (const dir of [claudeDir, hooksDir, ipcDir]) {
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true })
+        mkdirForWsl(dir)
       }
     }
 
@@ -441,6 +459,63 @@ function writeFileForWsl(windowsPath: string, content: string): void {
     }
   }
   fs.writeFileSync(windowsPath, content, 'utf8')
+}
+
+/**
+ * Create a directory via WSL so it has proper Linux permissions.
+ * Directories created by Windows fs.mkdirSync get NTFS metadata
+ * that can cause WSL permission issues.
+ */
+function mkdirForWsl(windowsPath: string): void {
+  if (process.platform === 'win32') {
+    const wslPath = winToWsl(windowsPath)
+    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
+    try {
+      execSync(`"${wslExe}" bash -c 'mkdir -p "${wslPath}"'`, { timeout: 10000 })
+      return
+    } catch {
+      // Fall back to native fs
+    }
+  }
+  fs.mkdirSync(windowsPath, { recursive: true })
+}
+
+/**
+ * Delete a file via WSL. Files created by WSL may have metadata
+ * that Windows fs.unlinkSync can't handle cleanly.
+ */
+function unlinkForWsl(windowsPath: string): void {
+  if (process.platform === 'win32') {
+    const wslPath = winToWsl(windowsPath)
+    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
+    try {
+      execSync(`"${wslExe}" bash -c 'rm -f "${wslPath}"'`, { timeout: 5000 })
+      return
+    } catch {
+      // Fall back to native fs
+    }
+  }
+  try { fs.unlinkSync(windowsPath) } catch {}
+}
+
+/**
+ * Read a file via WSL. Files written by WSL processes may have ext4 metadata
+ * that Windows fs.readFileSync can't read cleanly across the boundary.
+ */
+function readFileFromWsl(windowsPath: string): string {
+  if (process.platform === 'win32') {
+    const wslPath = winToWsl(windowsPath)
+    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
+    try {
+      return execSync(`"${wslExe}" bash -c 'cat "${wslPath}"'`, {
+        timeout: 5000,
+        encoding: 'utf8',
+      })
+    } catch {
+      // Fall back to native fs
+    }
+  }
+  return fs.readFileSync(windowsPath, 'utf8')
 }
 
 function winToWsl(winPath: string): string {
