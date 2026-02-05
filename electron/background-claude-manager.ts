@@ -17,6 +17,9 @@ interface ClaudeTaskOptions {
   taskId?: string
   timeout?: number // milliseconds, default 120000 (2 minutes)
   skipPermissions?: boolean
+  model?: string        // e.g., 'haiku', 'sonnet'
+  outputFormat?: string // e.g., 'text', 'json', 'stream-json'
+  maxTokens?: number    // max output tokens
 }
 
 interface ClaudeTaskResult {
@@ -89,7 +92,11 @@ export class BackgroundClaudeManager {
         })
 
         // Build command based on shell type
-        const command = this.buildCommand(terminalInfo.shell, promptFile, outputFile, options.skipPermissions)
+        const command = this.buildCommand(terminalInfo.shell, promptFile, outputFile, options.skipPermissions, {
+          model: options.model,
+          outputFormat: options.outputFormat,
+          maxTokens: options.maxTokens,
+        })
         console.log(`[BackgroundClaude] Running command: ${command.trim()}`)
 
         // Execute command
@@ -317,14 +324,23 @@ export class BackgroundClaudeManager {
    * Build shell-specific command
    * Captures stderr to a separate file for debugging
    */
-  private buildCommand(shell: string, promptFile: string, outputFile: string, skipPermissions: boolean = true): string {
+  private buildCommand(
+    shell: string,
+    promptFile: string,
+    outputFile: string,
+    skipPermissions: boolean = true,
+    extraOptions?: { model?: string; outputFormat?: string; maxTokens?: number }
+  ): string {
     const shellLower = shell.toLowerCase()
     const isCmd = shellLower.includes('cmd.exe')
     const isPowerShell = shellLower.includes('powershell') || shellLower.includes('pwsh')
     const isWsl = shellLower.includes('wsl')
 
     const stderrFile = outputFile.replace('-output.json', '-stderr.txt')
-    const claudeArgs = skipPermissions ? '-p --dangerously-skip-permissions' : ''
+    let claudeArgs = skipPermissions ? '-p --dangerously-skip-permissions' : ''
+    if (extraOptions?.model) claudeArgs += ` --model ${extraOptions.model}`
+    if (extraOptions?.outputFormat) claudeArgs += ` --output-format ${extraOptions.outputFormat}`
+    if (extraOptions?.maxTokens) claudeArgs += ` --max-tokens ${extraOptions.maxTokens}`
 
     if (isCmd) {
       // cmd.exe: redirect stderr to file

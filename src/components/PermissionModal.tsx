@@ -39,12 +39,14 @@ function getToolSummary(toolName: string, toolInput: Record<string, unknown>): s
 export function PermissionModal() {
   const { pendingRequests, removeRequest, getNextRequestForSession } = usePermissionStore()
   const activeAgentSessionId = useTerminalStore((s) => s.activeAgentSessionId)
-  const terminalToSession = useAgentStreamStore((s) => s.terminalToSession)
 
-  // Get the CLI sessionId for the active agent terminal
-  const activeCliSessionId = activeAgentSessionId
-    ? terminalToSession.get(activeAgentSessionId) ?? null
-    : null
+  // Derive the CLI sessionId directly in the selector to avoid subscribing to the
+  // entire terminalToSession Map reference (which changes on every store update and
+  // causes infinite re-renders). This selector returns a primitive string|undefined,
+  // so Zustand's default Object.is equality check prevents unnecessary re-renders.
+  const activeCliSessionId = useAgentStreamStore(
+    (s) => (activeAgentSessionId ? s.terminalToSession.get(activeAgentSessionId) : undefined)
+  ) ?? null
 
   // Only show requests belonging to the active session
   const request = activeCliSessionId

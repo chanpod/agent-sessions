@@ -18,6 +18,13 @@ export interface SavedTerminalConfig {
   sessionId?: string                   // Claude CLI session ID for multi-turn resume
 }
 
+export interface ArchivedSessionConfig {
+  config: SavedTerminalConfig
+  archivedAt: number
+  title: string
+  agentType: string
+}
+
 export type ActivityLevel = 'substantial' | 'minor' | 'idle'
 export type TerminalDisplayMode = 'raw' | 'pretty'
 
@@ -40,6 +47,7 @@ export interface TerminalSession extends SavedTerminalConfig {
 interface TerminalStore {
   // Persisted configs (survive restart)
   savedConfigs: SavedTerminalConfig[]
+  archivedConfigs: ArchivedSessionConfig[]
 
   // Runtime sessions (cleared on restart)
   sessions: TerminalSession[]
@@ -64,6 +72,9 @@ interface TerminalStore {
   addSessionsBatch: (sessions: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime' | 'lastActivityLevel' | 'lastSubstantialActivityTime'>[]) => void
   removeSession: (id: string) => void
   removeSessionsByProject: (projectId: string) => void
+  archiveSession: (config: SavedTerminalConfig, title: string, agentType: string) => void
+  restoreArchivedSession: (sessionId: string) => ArchivedSessionConfig | undefined
+  permanentlyDeleteArchivedSession: (sessionId: string) => void
   setActiveSession: (id: string | null) => void
   setActiveAgentSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
@@ -85,6 +96,7 @@ export const useTerminalStore = create<TerminalStore>()(
   persist(
     (set, get) => ({
       savedConfigs: [],
+      archivedConfigs: [],
       sessions: [],
       activeSessionId: null,
       activeAgentSessionId: null,
@@ -168,6 +180,37 @@ export const useTerminalStore = create<TerminalStore>()(
             savedConfigs: state.savedConfigs.filter((c) => c.id !== id),
           }
         })
+      },
+
+      archiveSession: (config, title, agentType) => {
+        set((state) => ({
+          archivedConfigs: [
+            ...state.archivedConfigs,
+            { config, title, agentType, archivedAt: Date.now() },
+          ],
+        }))
+      },
+
+      restoreArchivedSession: (sessionId) => {
+        const state = get()
+        const archived = state.archivedConfigs.find(
+          (a) => a.config.sessionId === sessionId
+        )
+        if (!archived) return undefined
+        set((state) => ({
+          archivedConfigs: state.archivedConfigs.filter(
+            (a) => a.config.sessionId !== sessionId
+          ),
+        }))
+        return archived
+      },
+
+      permanentlyDeleteArchivedSession: (sessionId) => {
+        set((state) => ({
+          archivedConfigs: state.archivedConfigs.filter(
+            (a) => a.config.sessionId !== sessionId
+          ),
+        }))
       },
 
       removeSessionsByProject: (projectId) => {
@@ -290,6 +333,7 @@ export const useTerminalStore = create<TerminalStore>()(
       // Only persist savedConfigs, not runtime sessions
       partialize: (state) => ({
         savedConfigs: state.savedConfigs,
+        archivedConfigs: state.archivedConfigs,
       }),
     }
   )

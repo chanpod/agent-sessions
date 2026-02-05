@@ -76,12 +76,19 @@ export function TerminalArea({
   }, [sessions, activeProjectId])
 
   const activeSession = useMemo(() => {
-    if (!visibleSessions.length) return null
     if (activeSessionId) {
-      return visibleSessions.find((s) => s.id === activeSessionId) || visibleSessions[visibleSessions.length - 1]
+      // First check visible terminal tabs
+      const visible = visibleSessions.find((s) => s.id === activeSessionId)
+      if (visible) return visible
+
+      // Then check all non-agent terminals (e.g. service terminals with shell === '')
+      const fromAll = sessions.find((s) => s.id === activeSessionId && s.terminalType !== 'agent')
+      if (fromAll) return fromAll
     }
+
+    if (!visibleSessions.length) return null
     return visibleSessions[visibleSessions.length - 1]
-  }, [visibleSessions, activeSessionId])
+  }, [visibleSessions, sessions, activeSessionId])
 
   const projectServers = useMemo(() => {
     if (!activeProjectId) return []

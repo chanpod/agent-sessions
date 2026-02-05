@@ -1,7 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Archive } from 'lucide-react'
 import { AgentTerminalsSection } from './AgentTerminalsSection'
+import { ArchivedSessionsSheet } from './ArchivedSessionsSheet'
+import { ServicesSection } from '@/components/ServicesSection'
 import { useProjectStore } from '../stores/project-store'
+import { useTerminalStore } from '../stores/terminal-store'
 import { cn } from '../lib/utils'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
 import { ScrollArea } from './ui/scroll-area'
 import { Separator } from './ui/separator'
 
@@ -9,6 +15,11 @@ interface SidebarProps {
   onCloseTerminal: (id: string) => void
   onReconnectTerminal: (id: string) => void
   onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
+  onRestoreArchivedSession: (sessionId: string) => void
+  onPermanentDeleteArchivedSession: (sessionId: string) => void
+  onStartServer: (projectId: string, name: string, command: string) => void
+  onStopServer: (serverId: string) => void
+  onDeleteServer: (serverId: string) => void
 }
 
 const MIN_WIDTH = 220
@@ -16,9 +27,14 @@ const MAX_WIDTH = 420
 const DEFAULT_WIDTH = 280
 
 export function Sidebar(props: SidebarProps) {
-  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal } = props
+  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal, onRestoreArchivedSession, onPermanentDeleteArchivedSession, onStartServer, onStopServer, onDeleteServer } = props
   const { projects, activeProjectId } = useProjectStore()
   const activeProject = projects.find(p => p.id === activeProjectId)
+  const archivedConfigs = useTerminalStore((s) => s.archivedConfigs)
+  const projectArchivedConfigs = archivedConfigs.filter(
+    (a) => a.config.projectId === activeProjectId
+  )
+  const [showArchived, setShowArchived] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
@@ -81,12 +97,7 @@ export function Sidebar(props: SidebarProps) {
           isResizing && 'select-none'
         )}
       >
-        <div className="relative px-4 pt-4 pb-3 overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(120%_100%_at_0%_0%,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.02)_35%,transparent_60%)]" />
-          <div className="relative flex items-center justify-between gap-2">
-            <div className="text-[11px] uppercase tracking-[0.35em] text-muted-foreground">Agents</div>
-          </div>
-        </div>
+        <div className="pt-2" />
 
         <ScrollArea className="flex-1 px-4 pb-4">
           <div className="space-y-4 pt-2">
@@ -103,10 +114,44 @@ export function Sidebar(props: SidebarProps) {
                 onReconnectTerminal={onReconnectTerminal}
                 onLaunchAgent={onCreateAgentTerminal}
               />
+
+              <Separator className="my-2 bg-border/60" />
+              <ServicesSection
+                projectId={activeProject.id}
+                projectPath={activeProject.path}
+                onStartServer={onStartServer}
+                onStopServer={onStopServer}
+                onDeleteServer={onDeleteServer}
+              />
             </>
           )}
           </div>
         </ScrollArea>
+
+        {projectArchivedConfigs.length > 0 && (
+          <div className="px-4 py-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+              onClick={() => setShowArchived(true)}
+            >
+              <Archive className="w-4 h-4" />
+              Archived Sessions
+              <Badge variant="outline" className="ml-auto text-[10px] px-1.5 py-0">
+                {projectArchivedConfigs.length}
+              </Badge>
+            </Button>
+          </div>
+        )}
+
+        <ArchivedSessionsSheet
+          open={showArchived}
+          onOpenChange={setShowArchived}
+          archivedConfigs={projectArchivedConfigs}
+          onRestore={onRestoreArchivedSession}
+          onDelete={onPermanentDeleteArchivedSession}
+        />
 
         <Separator />
         <div className="px-4 py-3">

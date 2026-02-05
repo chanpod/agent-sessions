@@ -399,6 +399,8 @@ const electronAPI = {
       ipcRenderer.invoke('agent:kill', id),
     list: () =>
       ipcRenderer.invoke('agent:list'),
+    generateTitle: (options: { userMessages: string[] }): Promise<{ success: boolean; title?: string; error?: string }> =>
+      ipcRenderer.invoke('agent:generate-title', options),
     onStreamEvent: (callback: (id: string, event: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, id: string, data: unknown) => callback(id, data)
       ipcRenderer.on('agent:stream-event', handler)

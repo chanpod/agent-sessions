@@ -312,6 +312,9 @@ export interface ElectronAPI {
     kill: (id: string) => Promise<{ success: boolean; error?: string }>
     list: () => Promise<{ success: boolean; processes?: AgentProcessInfo[]; error?: string }>
 
+    // Title generation
+    generateTitle: (options: { userMessages: string[] }) => Promise<{ success: boolean; title?: string; error?: string }>
+
     // Event subscriptions
     onStreamEvent: (callback: (id: string, event: unknown) => void) => () => void
     onProcessExit: (callback: (id: string, code: number | null) => void) => () => void

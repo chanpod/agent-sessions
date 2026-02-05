@@ -1,30 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Plus, X, FolderGit2, GitBranch, RefreshCw, Check, Settings, Trash2, Eye, EyeOff, LayoutDashboard, ExternalLink, GitCompare } from 'lucide-react'
+import { Plus, X, FolderGit2, GitBranch, RefreshCw, Check, Settings, Trash2, Eye, EyeOff, LayoutDashboard } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore } from '../stores/git-store'
 import { useToastStore } from '../stores/toast-store'
 import { useViewStore } from '../stores/view-store'
 import { useGridStore } from '../stores/grid-store'
 import { cn } from '../lib/utils'
-import { Button } from './ui/button'
-import { Badge } from './ui/badge'
 
 interface ProjectHeaderProps {
   onCreateProject: () => void
   onEditProject: (projectId: string) => void
   onDeleteProject: (projectId: string) => void
-  onToggleGitDrawer?: () => void
-  gitDrawerOpen?: boolean
 }
 
 export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   onCreateProject,
   onEditProject,
   onDeleteProject,
-  onToggleGitDrawer,
-  gitDrawerOpen = false,
 }) => {
-  const { projects, activeProjectId, setActiveProject, flashingProjects, clearProjectFlash, hideProject, showProject } = useProjectStore()
+  const { projects, setActiveProject, flashingProjects, clearProjectFlash, hideProject, showProject } = useProjectStore()
   const { activeView, setDashboardActive } = useViewStore()
   const dashboardTerminalCount = useGridStore((s) => s.dashboard.terminalRefs.length)
   const watchProject = useGitStore((state) => state.watchProject)
@@ -45,9 +39,6 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
   const hiddenProjectsMenuRef = useRef<HTMLDivElement>(null)
   const branchButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const prevProjectIdsRef = useRef<string>('')
-  const activeProject = activeProjectId ? projects.find((p) => p.id === activeProjectId) : null
-  const activeGitInfo = activeProjectId ? gitInfo[activeProjectId] : undefined
-  const changedFileCount = activeGitInfo?.changedFiles.length || 0
 
   // Watch git changes for all projects
   useEffect(() => {
@@ -166,10 +157,6 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
     onDeleteProject(projectId)
   }
 
-  const handleOpenInEditor = async () => {
-    if (!window.electron?.system || !activeProject?.path) return
-    await window.electron.system.openInEditor(activeProject.path)
-  }
 
   return (
     <div className="h-10 bg-[#1e1e1e] border-b border-gray-800 flex items-stretch app-drag-region">
@@ -284,35 +271,6 @@ export const ProjectHeader: React.FC<ProjectHeaderProps> = ({
             <EyeOff className="w-4 h-4 text-gray-500" />
           </button>
         )}
-      </div>
-
-      <div className="ml-auto flex items-center gap-2 px-2 no-drag">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleOpenInEditor}
-          disabled={!activeProject?.path}
-          className="h-7 gap-1.5 text-xs"
-          title={activeProject?.path ? 'Open project in editor' : 'Select a project to open'}
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-          Open
-        </Button>
-        <Button
-          variant={gitDrawerOpen ? 'secondary' : 'outline'}
-          size="sm"
-          onClick={() => onToggleGitDrawer?.()}
-          className={cn('h-7 gap-1.5 text-xs', gitDrawerOpen && 'text-blue-100')}
-          title="Toggle git drawer"
-        >
-          <GitCompare className="h-3.5 w-3.5" />
-          Git
-          {changedFileCount > 0 && (
-            <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px]">
-              {changedFileCount}
-            </Badge>
-          )}
-        </Button>
       </div>
 
       {/* Branch Menu Dropdown - positioned with fixed positioning */}

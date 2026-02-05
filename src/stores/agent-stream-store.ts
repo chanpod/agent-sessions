@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
 import { useTerminalStore } from './terminal-store'
+import { usePermissionStore } from './permission-store'
 import type {
   AgentMessage,
   ContentBlock,
@@ -24,14 +25,11 @@ export interface PersistedSessionData {
   sessionId: string
   agentType: string
   messages: AgentMessage[]  // completed messages only
+  userMessages: Array<{ id: string; content: string; timestamp: number; agentType: string }>
   lastActiveAt: number
   cwd: string
 }
 
-/**
- * Maximum number of messages to persist per session
- */
-const MAX_PERSISTED_MESSAGES = 50
 
 /**
  * Per-conversation state that survives component unmount/remount (e.g. session switching).
@@ -55,8 +53,14 @@ interface AgentStreamStore {
   // Runtime mapping: terminalId -> sessionId
   terminalToSession: Map<string, string>
 
+  // Runtime mapping: sessionId -> initialProcessId (first process wins)
+  sessionToInitialProcess: Map<string, string>
+
   // Rehydration state - tracks whether async storage rehydration has completed
   hasRehydrated: boolean
+
+  // Runtime-only: tracks sessions that already had title generation triggered
+  titleGeneratedSessions: Set<string>
 
   // Actions
   processEvent(terminalId: string, event: AgentStreamEvent): void
@@ -76,6 +80,11 @@ interface AgentStreamStore {
   getSessionId(terminalId: string): string | undefined
   restoreSessionToTerminal(terminalId: string, sessionId: string): void
   persistSession(terminalId: string, agentType?: string, cwd?: string): void
+  deletePersistedSession: (sessionId: string) => void
+
+  // Title generation tracking (runtime only)
+  markTitleGenerated(sessionId: string): void
+  hasTitleBeenGenerated(sessionId: string): boolean
 
   // IPC subscription
   subscribeToEvents(): () => void // returns unsubscribe function (for PTY-based detector events)
@@ -138,7 +147,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       conversations: new Map(),
       sessions: {},
       terminalToSession: new Map(),
+      sessionToInitialProcess: new Map(),
       hasRehydrated: false,
+      titleGeneratedSessions: new Set(),
 
       processEvent: (terminalId: string, event: AgentStreamEvent) => {
         set((state) => {
@@ -501,7 +512,14 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         set((state) => {
           const terminalToSession = new Map(state.terminalToSession)
           terminalToSession.set(terminalId, sessionId)
-          return { terminalToSession }
+
+          // Track which initialProcessId is associated with this session (first process wins)
+          const sessionToInitialProcess = new Map(state.sessionToInitialProcess)
+          if (!sessionToInitialProcess.has(sessionId)) {
+            sessionToInitialProcess.set(sessionId, terminalId)
+          }
+
+          return { terminalToSession, sessionToInitialProcess }
         })
       },
 
@@ -517,10 +535,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           return
         }
 
+        // Backward compat: default userMessages for older sessions
+        const userMessages = sessionData.userMessages ?? []
+
         set((state) => {
           // Link terminal to session
           const terminalToSession = new Map(state.terminalToSession)
           terminalToSession.set(terminalId, sessionId)
+
+          // Track session -> initialProcess mapping
+          const sessionToInitialProcess = new Map(state.sessionToInitialProcess)
+          if (!sessionToInitialProcess.has(sessionId)) {
+            sessionToInitialProcess.set(sessionId, terminalId)
+          }
 
           // Hydrate runtime state from persisted data
           const terminals = new Map(state.terminals)
@@ -531,13 +558,25 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             isWaitingForResponse: false,
           })
 
-          return { terminals, terminalToSession }
+          // Restore user messages into conversations Map
+          const conversations = new Map(state.conversations)
+          if (userMessages.length > 0) {
+            const initialProcessId = sessionToInitialProcess.get(sessionId) ?? terminalId
+            const existing = conversations.get(initialProcessId)
+            conversations.set(initialProcessId, {
+              processIds: existing?.processIds ?? [initialProcessId],
+              userMessages: [...(existing?.userMessages ?? []), ...userMessages],
+            })
+          }
+
+          return { terminals, terminalToSession, sessionToInitialProcess, conversations }
         })
 
         console.log('[AgentStreamStore] Restored session to terminal:', {
           terminalId,
           sessionId,
           messageCount: sessionData.messages.length,
+          userMessageCount: userMessages.length,
         })
       },
 
@@ -560,15 +599,18 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           (msg) => msg.status === 'completed'
         )
 
-        // Limit to MAX_PERSISTED_MESSAGES (keep most recent)
-        const messagesToPersist = completedMessages.slice(-MAX_PERSISTED_MESSAGES)
+        // Look up user messages from conversations via sessionToInitialProcess
+        const initialProcessId = state.sessionToInitialProcess.get(sessionId)
+        const conversation = initialProcessId ? state.conversations.get(initialProcessId) : undefined
+        const userMessages = conversation?.userMessages ?? []
 
         // Get existing session data or create new
         const existingSession = state.sessions[sessionId]
         const sessionData: PersistedSessionData = {
           sessionId,
           agentType: agentType || existingSession?.agentType || 'unknown',
-          messages: messagesToPersist,
+          messages: completedMessages,
+          userMessages,
           lastActiveAt: Date.now(),
           cwd: cwd || existingSession?.cwd || '',
         }
@@ -582,9 +624,30 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
         console.log('[AgentStreamStore] Persisted session:', {
           sessionId,
-          messageCount: messagesToPersist.length,
+          messageCount: completedMessages.length,
+          userMessageCount: userMessages.length,
           agentType: sessionData.agentType,
         })
+      },
+
+      deletePersistedSession: (sessionId: string) => {
+        set((state) => {
+          const { [sessionId]: _, ...remaining } = state.sessions
+          return { sessions: remaining }
+        })
+        console.log('[AgentStreamStore] Permanently deleted persisted session:', sessionId)
+      },
+
+      markTitleGenerated: (sessionId: string) => {
+        set((state) => {
+          const titleGeneratedSessions = new Set(state.titleGeneratedSessions)
+          titleGeneratedSessions.add(sessionId)
+          return { titleGeneratedSessions }
+        })
+      },
+
+      hasTitleBeenGenerated: (sessionId: string) => {
+        return get().titleGeneratedSessions.has(sessionId)
       },
 
       subscribeToEvents: () => {
@@ -603,6 +666,30 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               console.log('[AgentStreamStore] Captured session_id from detector:', sessionId, 'for terminal:', event.terminalId)
               get().setTerminalSession(event.terminalId, sessionId)
               useTerminalStore.getState().updateConfigSessionId(event.terminalId, sessionId)
+              return
+            }
+
+            // Handle Codex approval requests — route to the permission store
+            // so PermissionModal can show the approval dialog.
+            if (event.type === 'codex-approval-request' && event.data) {
+              const sessionId = get().terminalToSession.get(event.terminalId) ?? event.terminalId
+              const data = event.data as {
+                jsonRpcId: number
+                method: string
+                toolName: string
+                toolInput: Record<string, unknown>
+              }
+              // Use a composite ID that encodes terminalId + jsonRpcId so the
+              // response handler can route the reply back to the right PTY.
+              const permissionId = `codex:${event.terminalId}:${data.jsonRpcId}`
+              usePermissionStore.getState().addRequest({
+                id: permissionId,
+                sessionId,
+                toolName: data.toolName,
+                toolInput: data.toolInput,
+                receivedAt: event.timestamp,
+              })
+              console.log('[AgentStreamStore] Codex approval request queued:', permissionId, data.toolName)
               return
             }
 
@@ -745,6 +832,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           // Ensure runtime Maps are initialized (they won't be persisted)
           state.terminals = new Map()
           state.terminalToSession = new Map()
+          state.sessionToInitialProcess = new Map()
+          state.titleGeneratedSessions = new Set()
           state.hasRehydrated = true
           console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
           // Resolve the rehydration promise so waitForRehydration() callers can proceed

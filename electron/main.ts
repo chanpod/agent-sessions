@@ -1149,6 +1149,11 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       // Codex CLI uses one-shot `exec` mode with --json for NDJSON streaming.
       // Unlike Claude, the prompt is passed as a CLI argument, not piped via stdin.
       // Each turn spawns a new process; multi-turn uses `exec resume SESSION_ID`.
+      //
+      // --full-auto: grants workspace-write sandbox + on-request approval.
+      //   Without this, Codex defaults to read-only sandbox and can't write
+      //   files or execute commands. Interactive approval (JSON-RPC) is only
+      //   available in app-server mode, not exec mode.
       if (!prompt && !resumeSessionId) {
         // Initial spawn without prompt — create an idle placeholder process.
         // It will be replaced when the user sends their first message, which
@@ -1161,10 +1166,10 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       if (resumeSessionId) {
         // Resume a previous session with an optional follow-up prompt
         command = escapedPrompt
-          ? `codex exec --json resume ${resumeSessionId} '${escapedPrompt}'`
-          : `codex exec --json resume ${resumeSessionId}`
+          ? `codex exec --json --full-auto resume ${resumeSessionId} '${escapedPrompt}'`
+          : `codex exec --json --full-auto resume ${resumeSessionId}`
       } else {
-        command = `codex exec --json '${escapedPrompt}'`
+        command = `codex exec --json --full-auto '${escapedPrompt}'`
       }
       break
     }
@@ -1251,10 +1256,70 @@ ipcMain.handle('agent:list', async () => {
 })
 
 // ============================================================================
+// Agent Title Generation
+// ============================================================================
+
+ipcMain.handle('agent:generate-title', async (_event, options: { userMessages: string[] }) => {
+  if (!backgroundClaude) {
+    return { success: false, error: 'BackgroundClaudeManager not initialized' }
+  }
+  try {
+    const messagesText = options.userMessages
+      .map((msg, i) => `Message ${i + 1}: ${msg}`)
+      .join('\n')
+
+    const prompt = `Given these user messages from a coding assistant session, generate a concise 3-5 word title that summarizes the session topic. Reply with ONLY the title, nothing else.\n\n${messagesText}`
+
+    const result = await backgroundClaude.runTask({
+      prompt,
+      projectPath: process.cwd(),
+      model: 'haiku',
+      outputFormat: 'text',
+      maxTokens: 30,
+      timeout: 30000,
+      skipPermissions: true,
+    })
+
+    if (result.success && result.output) {
+      const title = result.output.trim().replace(/^["']|["']$/g, '')
+      return { success: true, title }
+    }
+    return { success: false, error: result.error || 'No output' }
+  } catch (error: any) {
+    console.warn('[Main] Title generation failed:', error.message)
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================================================
 // Permission Hook IPC Handlers
 // ============================================================================
 
 ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean) => {
+  // Codex approval requests use a composite ID: "codex:<terminalId>:<jsonRpcId>"
+  // Route these to the PTY stdin instead of the file-based permission server.
+  if (id.startsWith('codex:')) {
+    const parts = id.split(':')
+    const terminalId = parts[1]
+    const jsonRpcId = parseInt(parts[2], 10)
+
+    if (!ptyManager || isNaN(jsonRpcId)) {
+      return { success: false, error: 'Invalid Codex approval ID or PTY manager unavailable' }
+    }
+
+    // Build JSON-RPC response that Codex expects on stdin
+    const codexDecision = decision === 'allow' ? 'accept' : 'decline'
+    const jsonRpcResponse = JSON.stringify({
+      id: jsonRpcId,
+      result: { decision: codexDecision },
+    })
+
+    console.log(`[Permission] Codex approval response for terminal ${terminalId}: ${codexDecision}`)
+    ptyManager.write(terminalId, jsonRpcResponse + '\n')
+    return { success: true }
+  }
+
+  // Claude file-based permission flow
   if (!permissionServer) return { success: false, error: 'Permission server not running' }
   const resolved = permissionServer.resolvePermission(id, { decision, reason }, alwaysAllow)
   return { success: resolved }

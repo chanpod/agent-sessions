@@ -174,7 +174,6 @@ function App() {
   const [showNewProjectModal, setShowNewProjectModal] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [isGitDrawerOpen, setIsGitDrawerOpen] = useState(false)
-  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false)
   const [terminalDockHeight, setTerminalDockHeight] = useState(() => {
     const saved = localStorage.getItem('terminal-dock-height')
     return saved ? parseInt(saved, 10) : Math.round(window.innerHeight * 0.3)
@@ -226,7 +225,7 @@ function App() {
     cleanupTerminalReferences,
     validateDashboardState,
   } = useGridStore()
-  const { activeView } = useViewStore()
+  const { activeView, isTerminalDockOpen, setTerminalDockOpen } = useViewStore()
   const { setActiveProject, removeProject, disconnectProject, addTerminalToProject, setProjectFocusedTerminal, removeTerminalFromProject } = useProjectStore()
   const { getEnabledRulesText, loadRules: loadGlobalRules } = useGlobalRulesStore()
 
@@ -1203,6 +1202,25 @@ function App() {
     // Get session to find its project
     const session = sessions.find((s) => s.id === id)
 
+    // Archive agent sessions that have a sessionId (for future restoration)
+    if (session?.terminalType === 'agent') {
+      const savedConfig = useTerminalStore.getState().savedConfigs.find((c) => c.id === id)
+      // Try savedConfig first, fall back to runtime mapping in agent-stream-store
+      const sessionId = savedConfig?.sessionId || useAgentStreamStore.getState().getSessionId(id)
+      console.log('[App] Archiving check — terminalType:', session.terminalType, 'savedConfig:', !!savedConfig, 'sessionId:', sessionId)
+      if (savedConfig && sessionId) {
+        const configToArchive = { ...savedConfig, sessionId }
+        useTerminalStore.getState().archiveSession(
+          configToArchive,
+          session.title || session.shellName || 'Agent Session',
+          savedConfig.agentId || 'unknown'
+        )
+        console.log('[App] Session archived:', sessionId, 'title:', session.title)
+      } else {
+        console.warn('[App] Session NOT archived — missing savedConfig or sessionId. id:', id, 'sessionId:', sessionId)
+      }
+    }
+
     // Remove from project grid if it belongs to one
     if (session?.projectId) {
       removeTerminalFromProject(session.projectId, id)
@@ -1223,7 +1241,7 @@ function App() {
         next.delete(id)
         return next
       })
-      // Clear from agent stream store
+      // Clear from agent stream store (but don't delete persisted session data - it's archived)
       useAgentStreamStore.getState().clearTerminal(id)
     } else {
       // Dispose the xterm instance from registry (for PTY-based terminals)
@@ -1232,6 +1250,72 @@ function App() {
     }
 
     removeSession(id)
+  }
+
+  const handleRestoreArchivedSession = (sessionId: string) => {
+    const archived = useTerminalStore.getState().restoreArchivedSession(sessionId)
+    if (!archived) return
+
+    const config = archived.config
+    const newTerminalId = `agent-restored-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    // Hydrate messages from persisted session data
+    const { restoreSessionToTerminal } = useAgentStreamStore.getState()
+    restoreSessionToTerminal(newTerminalId, sessionId)
+
+    // Create session entry
+    addSession({
+      id: newTerminalId,
+      projectId: config.projectId,
+      pid: 0,
+      shell: config.shell,
+      shellName: config.shellName,
+      cwd: config.cwd,
+      title: archived.title,
+      createdAt: Date.now(),
+      terminalType: 'agent',
+      agentId: config.agentId,
+      contextId: config.contextId,
+      isAgentProcess: true,
+    })
+
+    // Track in agent processes
+    setAgentProcesses(prev => {
+      const next = new Map(prev)
+      next.set(newTerminalId, {
+        id: newTerminalId,
+        agentType: config.agentId || 'claude',
+        cwd: config.cwd,
+        sessionId,
+      })
+      return next
+    })
+
+    // Save config for persistence
+    saveConfig({
+      id: newTerminalId,
+      projectId: config.projectId,
+      shell: config.shell,
+      shellName: config.shellName,
+      cwd: config.cwd,
+      terminalType: 'agent',
+      agentId: config.agentId,
+      contextId: config.contextId,
+      sessionId,
+    })
+
+    // Set as active and add to project grid
+    setActiveSession(newTerminalId)
+    setActiveAgentSession(newTerminalId)
+    if (config.projectId) {
+      addTerminalToProject(config.projectId, newTerminalId)
+      setProjectFocusedTerminal(config.projectId, newTerminalId)
+    }
+  }
+
+  const handlePermanentDeleteArchivedSession = (sessionId: string) => {
+    useTerminalStore.getState().permanentlyDeleteArchivedSession(sessionId)
+    useAgentStreamStore.getState().deletePersistedSession(sessionId)
   }
 
   const handleReconnectTerminal = async (id: string) => {
@@ -1571,6 +1655,11 @@ function App() {
             onCloseTerminal={handleCloseTerminal}
             onReconnectTerminal={handleReconnectTerminal}
             onCreateAgentTerminal={handleCreateAgentTerminal}
+            onRestoreArchivedSession={handleRestoreArchivedSession}
+            onPermanentDeleteArchivedSession={handlePermanentDeleteArchivedSession}
+            onStartServer={handleStartServer}
+            onStopServer={handleStopServer}
+            onDeleteServer={handleDeleteServer}
           />
           <div className="flex flex-1 min-w-0 flex-col bg-zinc-950 relative">
             {/* Floating project action buttons */}
@@ -1670,14 +1759,14 @@ function App() {
                     onStopServer={handleStopServer}
                     onRestartServer={handleRestartServer}
                     onDeleteServer={handleDeleteServer}
-                    onToggleCollapse={() => setIsTerminalDockOpen(false)}
+                    onToggleCollapse={() => setTerminalDockOpen(false)}
                   />
                 </div>
               </div>
             ) : (
               <button
                 className="h-10 border-t border-zinc-800 bg-zinc-950/90 px-4 text-left text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-3"
-                onClick={() => setIsTerminalDockOpen(true)}
+                onClick={() => setTerminalDockOpen(true)}
               >
                 <ChevronUp className="h-4 w-4 text-zinc-500" />
                 <span className="uppercase tracking-[0.2em] text-zinc-500">Terminal Dock</span>

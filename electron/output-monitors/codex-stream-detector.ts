@@ -67,6 +67,27 @@ type CodexEvent =
   | CodexErrorEvent
 
 // ============================================================
+// Codex JSON-RPC Approval Requests
+// These arrive as server-initiated JSON-RPC messages (have `method`
+// instead of `type`) when Codex needs permission to execute a tool.
+// ============================================================
+
+interface CodexApprovalRequest {
+  method: string // e.g. 'item/commandExecution/requestApproval', 'item/fileChange/requestApproval'
+  id: number
+  params: {
+    itemId?: string
+    threadId?: string
+    turnId?: string
+    reason?: string
+    risk?: string
+    parsedCmd?: string
+    command?: string
+    [key: string]: unknown
+  }
+}
+
+// ============================================================
 // Codex Item Types
 // ============================================================
 
@@ -146,8 +167,17 @@ export class CodexStreamDetector implements OutputDetector {
 
     for (const jsonStr of jsonObjects) {
       try {
-        const parsed = JSON.parse(jsonStr) as CodexEvent
-        const detectedEvents = this.processCodexEvent(terminalId, state, parsed)
+        const parsed = JSON.parse(jsonStr)
+
+        // JSON-RPC approval requests have `method` instead of `type`.
+        // Detect and emit them separately from regular Codex events.
+        if (parsed.method && typeof parsed.id === 'number') {
+          const approvalEvents = this.processApprovalRequest(terminalId, parsed as CodexApprovalRequest)
+          events.push(...approvalEvents)
+          continue
+        }
+
+        const detectedEvents = this.processCodexEvent(terminalId, state, parsed as CodexEvent)
         events.push(...detectedEvents)
       } catch {
         // Failed to parse JSON - skip silently
@@ -190,6 +220,63 @@ export class CodexStreamDetector implements OutputDetector {
 
   cleanup(terminalId: string): void {
     this.terminalStates.delete(terminalId)
+  }
+
+  // ----------------------------------------------------------
+  // JSON-RPC approval handling
+  // ----------------------------------------------------------
+
+  /**
+   * Process a JSON-RPC approval request from Codex.
+   * These arrive when Codex needs permission to execute a command or modify a file.
+   * Emits a `codex-approval-request` event so the renderer can show a permission dialog.
+   */
+  private processApprovalRequest(
+    terminalId: string,
+    request: CodexApprovalRequest
+  ): DetectedEvent[] {
+    const timestamp = Date.now()
+
+    // Determine tool name from the JSON-RPC method
+    let toolName = 'unknown'
+    if (request.method.includes('commandExecution')) {
+      toolName = 'command_execution'
+    } else if (request.method.includes('fileChange')) {
+      toolName = 'file_change'
+    } else {
+      // Use the method name as fallback
+      toolName = request.method.split('/').pop() || 'unknown'
+    }
+
+    // Build a human-readable tool input object for the permission modal
+    const toolInput: Record<string, unknown> = {}
+    if (request.params.command) {
+      toolInput.command = request.params.command
+    }
+    if (request.params.parsedCmd) {
+      toolInput.command = request.params.parsedCmd
+    }
+    if (request.params.reason) {
+      toolInput.reason = request.params.reason
+    }
+    if (request.params.risk) {
+      toolInput.risk = request.params.risk
+    }
+    // Include all params for completeness
+    Object.assign(toolInput, request.params)
+
+    return [{
+      terminalId,
+      type: 'codex-approval-request',
+      timestamp,
+      data: {
+        jsonRpcId: request.id,
+        method: request.method,
+        toolName,
+        toolInput,
+        params: request.params,
+      },
+    }]
   }
 
   // ----------------------------------------------------------

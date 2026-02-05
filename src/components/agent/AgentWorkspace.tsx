@@ -2,6 +2,7 @@ import { useEffect, useCallback, useState, useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { AgentMessageView } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
 import { cn } from '@/lib/utils'
@@ -193,6 +194,25 @@ export function AgentWorkspace({
       })
       setIsProcessing(true)
 
+      // Auto-generate title on 2nd user message
+      const conversation = store.getConversation(initialProcessId)
+      const currentSessionId = sessionId || store.getSessionId(initialProcessId)
+      if (
+        conversation.userMessages.length === 2 &&
+        currentSessionId &&
+        !store.hasTitleBeenGenerated(currentSessionId)
+      ) {
+        store.markTitleGenerated(currentSessionId)
+        const msgs = conversation.userMessages.map((m) => m.content)
+        window.electron.agent.generateTitle({ userMessages: msgs }).then((result) => {
+          if (result.success && result.title) {
+            useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
+          }
+        }).catch((err) => {
+          console.warn('[AgentWorkspace] Title generation failed:', err)
+        })
+      }
+
       // Codex uses one-shot `exec` mode — every message (including the first)
       // spawns a new process with the prompt as a CLI argument.
       // Multi-turn uses `codex exec resume SESSION_ID`.
@@ -250,6 +270,26 @@ export function AgentWorkspace({
     [initialProcessId, agentType, cwd, sessionId]
   )
 
+  const handleAnswerQuestion = useCallback(
+    (answers: Record<string, string>) => {
+      // Get the latest active process ID to send the answer to
+      const processIds = Array.from(activeProcessIds)
+      const latestProcessId = processIds[processIds.length - 1] ?? initialProcessId
+
+      // Format the answer as a JSON string with the selected answers
+      const answerContent = JSON.stringify({ answers })
+
+      window.electron?.agent.sendMessage(latestProcessId, {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: answerContent,
+        },
+      })
+    },
+    [activeProcessIds, initialProcessId]
+  )
+
   // Get state from all active processes in this conversation
   // Use useShallow to prevent infinite re-renders from array creation
   const allProcessStates = useAgentStreamStore(
@@ -294,8 +334,16 @@ export function AgentWorkspace({
       }
     }
 
+    // Deduplicate by message ID (same message can appear across multiple process states)
+    const seenIds = new Set<string>()
+    const dedupedMessages = assistantMessages.filter((msg) => {
+      if (seenIds.has(msg.id)) return false
+      seenIds.add(msg.id)
+      return true
+    })
+
     // Merge user messages with assistant messages, sorted by timestamp
-    const allMessages = [...userMessages, ...assistantMessages].sort(
+    const allMessages = [...userMessages, ...dedupedMessages].sort(
       (a, b) => a.timestamp - b.timestamp
     )
 
@@ -342,6 +390,7 @@ export function AgentWorkspace({
           conversation={conversation}
           autoScroll={true}
           agentType={agentType}
+          onAnswerQuestion={handleAnswerQuestion}
         />
       </div>
 

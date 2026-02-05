@@ -10,11 +10,13 @@ export type ActiveView =
 
 interface ViewStore {
   activeView: ActiveView
+  isTerminalDockOpen: boolean
 
   // Actions
   setDashboardActive: () => void
   setProjectGridActive: (projectId: string) => void
   setProjectTerminalActive: (projectId: string, terminalId: string) => void
+  setTerminalDockOpen: (open: boolean) => void
 
   // Selectors
   isDashboardActive: () => boolean
@@ -25,6 +27,7 @@ export const useViewStore = create<ViewStore>()(
   persist(
     (set, get) => ({
       activeView: { type: 'dashboard' } as ActiveView,
+      isTerminalDockOpen: false,
 
       setDashboardActive: () =>
         set({ activeView: { type: 'dashboard' } }),
@@ -40,6 +43,9 @@ export const useViewStore = create<ViewStore>()(
         // Save view state to project
         useProjectStore.getState().updateProjectLastViewState(projectId, { type: 'terminal', terminalId })
       },
+
+      setTerminalDockOpen: (open: boolean) =>
+        set({ isTerminalDockOpen: open }),
 
       isDashboardActive: () =>
         get().activeView.type === 'dashboard',

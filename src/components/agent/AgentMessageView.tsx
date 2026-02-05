@@ -1,4 +1,5 @@
-import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
+import { useRef, useMemo, useCallback, useState } from 'react'
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import {
   IconLoader2,
   IconUser,
@@ -7,6 +8,7 @@ import {
   IconBolt,
   IconTerminal2,
   IconSparkles,
+  IconChevronDown,
 } from '@tabler/icons-react'
 
 import type {
@@ -24,11 +26,19 @@ import type {
   ImageBlock,
 } from '@/types/agent-ui'
 import type { TokenUsage } from '@/types/stream-json'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { MessageBlock } from '@/components/agent/MessageBlock'
 import { ThinkingInline } from '@/components/agent/ThinkingInline'
 import { ToolCallInline } from '@/components/agent/ToolCallInline'
+import { SpecialToolCard } from '@/components/agent/cards/SpecialToolCard'
+import { CardNavIndex } from '@/components/agent/CardNavIndex'
+import { CARD_NAV_CONFIG, CARD_NAV_TOOL_NAMES } from '@/components/agent/cards/card-nav-config'
+import type { CardNavEntry } from '@/components/agent/cards/card-nav-config'
 import { ContextUsageIndicator } from '@/components/agent/ContextUsageIndicator'
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 
 // =============================================================================
@@ -51,9 +61,62 @@ interface DefaultBlockRendererProps {
 }
 
 // Group of tool blocks (tool_use + optional tool_result)
-interface ToolGroup {
+export interface ToolGroup {
   toolUse: ToolUseBlock
   toolResult?: ToolResultBlock
+}
+
+/** Tool names that get promoted to special cards outside the Activity box */
+const SPECIAL_TOOL_NAMES = new Set(['ExitPlanMode', 'AskUserQuestion', 'TodoWrite'])
+
+function isSpecialToolGroup(item: ContentBlock | ToolGroup): boolean {
+  return isToolGroup(item) && SPECIAL_TOOL_NAMES.has(item.toolUse.toolName)
+}
+
+/**
+ * Deduplicate special tools for card rendering.
+ * TodoWrite is a full-snapshot tool - only the LAST call in a turn
+ * becomes a promoted card; earlier ones stay in the Activity section.
+ */
+function partitionSpecialTools(
+  activityBlocks: (ContentBlock | ToolGroup)[]
+): {
+  regularActivity: (ContentBlock | ToolGroup)[]
+  promotedTools: ToolGroup[]
+} {
+  const regularActivity: (ContentBlock | ToolGroup)[] = []
+  const specialCandidates: { group: ToolGroup }[] = []
+
+  for (const item of activityBlocks) {
+    if (isSpecialToolGroup(item)) {
+      specialCandidates.push({ group: item as ToolGroup })
+    } else {
+      regularActivity.push(item)
+    }
+  }
+
+  // TodoWrite dedup: only keep the LAST TodoWrite as promoted
+  const promotedTools: ToolGroup[] = []
+  let lastTodoWriteIdx = -1
+
+  for (let i = specialCandidates.length - 1; i >= 0; i--) {
+    if (specialCandidates[i]!.group.toolUse.toolName === 'TodoWrite') {
+      lastTodoWriteIdx = i
+      break
+    }
+  }
+
+  for (let i = 0; i < specialCandidates.length; i++) {
+    const { group } = specialCandidates[i]!
+    if (group.toolUse.toolName === 'TodoWrite' && i !== lastTodoWriteIdx) {
+      // Earlier TodoWrite snapshots fall back to regular activity
+      regularActivity.push(group)
+    } else {
+      promotedTools.push(group)
+    }
+  }
+
+  return { regularActivity, promotedTools }
 }
 
 // A "turn" groups consecutive assistant messages into one logical unit
@@ -202,13 +265,12 @@ export function AgentMessageView({
   conversation,
   composer,
   className,
-  autoScroll = true,
+  autoScroll: _autoScroll = true,
   agentType,
 }: AgentMessageViewProps) {
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
   const isStreaming = conversation.status === 'streaming'
-  const [isAtBottom, setIsAtBottom] = useState(true)
-  const skipNextScrollCheck = useRef(false)
+  const [_isAtBottom, setIsAtBottom] = useState(true)
 
   // Build render context
   const context: RenderContext = useMemo(
@@ -236,78 +298,183 @@ export function AgentMessageView({
     [allMessages]
   )
 
-  // Handle scroll events to detect if user scrolled away from bottom
-  const handleScroll = useCallback(() => {
-    if (skipNextScrollCheck.current) {
-      skipNextScrollCheck.current = false
-      return
-    }
-    if (!scrollRef.current) return
+  // Build card navigation entries — find the LAST display item index
+  // for each special tool type
+  const cardNavEntries = useMemo<CardNavEntry[]>(() => {
+    const lastIndexByTool = new Map<string, number>()
 
-    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-    const threshold = 50
-    const atBottom = scrollHeight - scrollTop - clientHeight < threshold
-    setIsAtBottom(atBottom)
-  }, [])
+    for (let i = 0; i < displayItems.length; i++) {
+      const item = displayItems[i]!
+      if (item.kind !== 'assistant-turn') continue
 
-  // Auto-scroll to bottom when new content arrives
-  useEffect(() => {
-    if (autoScroll && isAtBottom && scrollRef.current) {
-      skipNextScrollCheck.current = true
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      for (const block of item.activityBlocks) {
+        if (isToolGroup(block) && CARD_NAV_TOOL_NAMES.has(block.toolUse.toolName)) {
+          lastIndexByTool.set(block.toolUse.toolName, i)
+        }
+      }
     }
-  }, [autoScroll, isAtBottom, allMessages, conversation.currentMessage?.blocks])
 
-  // Reset to bottom when streaming starts
-  useEffect(() => {
-    if (isStreaming && scrollRef.current) {
-      setIsAtBottom(true)
-      skipNextScrollCheck.current = true
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    // Build entries in the stable config order
+    const entries: CardNavEntry[] = []
+    for (const config of CARD_NAV_CONFIG) {
+      const idx = lastIndexByTool.get(config.toolName)
+      if (idx !== undefined) {
+        entries.push({ ...config, displayItemIndex: idx })
+      }
     }
-  }, [isStreaming])
+    return entries
+  }, [displayItems])
+
+  const handleScrollToCard = useCallback(
+    (displayItemIndex: number) => {
+      virtuosoRef.current?.scrollToIndex({
+        index: displayItemIndex,
+        align: 'start',
+        behavior: 'smooth',
+      })
+    },
+    []
+  )
 
   const hasMessages = displayItems.length > 0
 
   return (
-    <ScrollArea
-      className={cn('h-full', className)}
-      viewportRef={scrollRef}
-      onScroll={handleScroll}
-    >
+    <>
       {!hasMessages && !isStreaming ? (
-        <WelcomeScreen agentType={agentType} />
+        <div className={cn('h-full', className)}>
+          <div className="flex flex-col gap-5 max-w-3xl mx-auto px-4 py-6">
+            <WelcomeScreen agentType={agentType} />
+          </div>
+        </div>
       ) : (
-        <div className="mx-auto max-w-3xl px-4 py-6">
-          <div className="flex flex-col gap-5">
-            {displayItems.map((item) => {
-              if (item.kind === 'standalone') {
-                return (
+        <div className="relative h-full">
+          {cardNavEntries.length > 0 && (
+            <CardNavIndex
+              entries={cardNavEntries}
+              onScrollTo={handleScrollToCard}
+            />
+          )}
+          <Virtuoso
+            ref={virtuosoRef}
+            className={cn('h-full', className)}
+            data={displayItems}
+            overscan={200}
+            initialTopMostItemIndex={displayItems.length > 0 ? displayItems.length - 1 : 0}
+            followOutput="smooth"
+            atBottomStateChange={setIsAtBottom}
+            computeItemKey={(index, item) =>
+              item.kind === 'standalone'
+                ? item.message.id
+                : item.messages[0]?.id ?? `turn-${index}`
+            }
+            itemContent={(_index, item) => (
+              <div className="max-w-3xl mx-auto px-4 py-2.5">
+                {item.kind === 'standalone' ? (
                   <StandaloneMessageRenderer
-                    key={item.message.id}
                     message={item.message}
                     context={context}
                     composer={composer}
                     cumulativeUsage={item.cumulativeUsage}
                   />
-                )
-              }
-
-              return (
-                <AssistantTurnRenderer
-                  key={item.messages[0]?.id ?? 'turn'}
-                  turn={item}
-                  context={context}
-                  composer={composer}
-                />
-              )
-            })}
-
-            {isStreaming && <StreamingIndicator />}
-          </div>
+                ) : (
+                  <AssistantTurnRenderer
+                    turn={item}
+                    context={context}
+                    composer={composer}
+                  />
+                )}
+              </div>
+            )}
+          />
         </div>
       )}
-    </ScrollArea>
+    </>
+  )
+}
+
+// =============================================================================
+// Activity Box (collapsible)
+// =============================================================================
+
+function ActivityBox({
+  regularActivity,
+  isStreaming,
+  showContextUsage,
+  latestModel,
+  cumulativeUsage,
+}: {
+  regularActivity: (ContentBlock | ToolGroup)[]
+  isStreaming: boolean
+  showContextUsage: boolean
+  latestModel?: string
+  cumulativeUsage: TokenUsage
+}) {
+  const [isOpen, setIsOpen] = useState(true)
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <div
+        className={cn(
+          'flex flex-col',
+          'rounded-lg border border-border/30',
+          'bg-muted/10',
+        )}
+      >
+        {/* Activity header / trigger */}
+        <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-muted/20">
+          <div className="flex items-center gap-2">
+            <IconActivity className="size-3.5 text-muted-foreground/60" />
+            <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+              Activity
+            </span>
+            {isStreaming && (
+              <IconLoader2 className="size-3 animate-spin text-primary/60" />
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {showContextUsage && latestModel && (
+              <ContextUsageIndicator
+                model={latestModel}
+                usage={cumulativeUsage}
+                showTokens={true}
+              />
+            )}
+            <IconChevronDown
+              className={cn(
+                'size-4 text-muted-foreground/40 transition-transform',
+                isOpen && 'rotate-180',
+              )}
+            />
+          </div>
+        </CollapsibleTrigger>
+
+        {/* Activity items */}
+        <CollapsibleContent>
+          <div className="flex flex-col gap-0.5 px-3 pb-2.5 pl-8">
+            {regularActivity.map((item) => {
+              if (isToolGroup(item)) {
+                return (
+                  <ToolCallInline
+                    key={item.toolUse.id}
+                    toolUse={item.toolUse}
+                    toolResult={item.toolResult}
+                  />
+                )
+              }
+              if (item.type === 'thinking') {
+                return (
+                  <ThinkingInline
+                    key={item.id}
+                    block={item as ThinkingBlockType}
+                  />
+                )
+              }
+              return null
+            })}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
   )
 }
 
@@ -324,7 +491,11 @@ function AssistantTurnRenderer({
   context: RenderContext
   composer?: AgentUIComposer
 }) {
-  const hasActivity = turn.activityBlocks.length > 0
+  // Partition activity blocks into regular (stay in Activity box) and promoted (special cards)
+  const { regularActivity, promotedTools } = partitionSpecialTools(turn.activityBlocks)
+
+  const hasRegularActivity = regularActivity.length > 0
+  const hasPromotedTools = promotedTools.length > 0
   const hasResponse = turn.responseBlocks.length > 0
 
   const showContextUsage = turn.latestModel && turn.cumulativeUsage &&
@@ -332,61 +503,26 @@ function AssistantTurnRenderer({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Activity Box - tool calls, thinking */}
-      {hasActivity && (
-        <div
-          className={cn(
-            'flex flex-col gap-1',
-            'rounded-lg border border-border/30',
-            'bg-muted/10 px-3 py-2.5',
-          )}
-        >
-          {/* Activity header */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <IconActivity className="size-3.5 text-muted-foreground/60" />
-              <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
-                Activity
-              </span>
-              {turn.isStreaming && (
-                <IconLoader2 className="size-3 animate-spin text-primary/60" />
-              )}
-            </div>
-            {showContextUsage && !hasResponse && (
-              <ContextUsageIndicator
-                model={turn.latestModel!}
-                usage={turn.cumulativeUsage}
-                showTokens={true}
-              />
-            )}
-          </div>
-
-          {/* Activity items */}
-          <div className="flex flex-col gap-0.5 pl-5">
-            {turn.activityBlocks.map((item) => {
-              if (isToolGroup(item)) {
-                return (
-                  <ToolCallInline
-                    key={item.toolUse.id}
-                    toolUse={item.toolUse}
-                    toolResult={item.toolResult}
-                  />
-                )
-              }
-              // Thinking blocks
-              if (item.type === 'thinking') {
-                return (
-                  <ThinkingInline
-                    key={item.id}
-                    block={item as ThinkingBlockType}
-                  />
-                )
-              }
-              return null
-            })}
-          </div>
-        </div>
+      {/* Activity Box - regular tool calls + thinking only */}
+      {hasRegularActivity && (
+        <ActivityBox
+          regularActivity={regularActivity}
+          isStreaming={turn.isStreaming}
+          showContextUsage={!!(showContextUsage && !hasResponse && !hasPromotedTools)}
+          latestModel={turn.latestModel}
+          cumulativeUsage={turn.cumulativeUsage}
+        />
       )}
+
+      {/* Special Tool Cards - Plan, Question, Todo */}
+      {hasPromotedTools &&
+        promotedTools.map((group) => (
+          <SpecialToolCard
+            key={group.toolUse.id}
+            toolUse={group.toolUse}
+            toolResult={group.toolResult}
+          />
+        ))}
 
       {/* Response Box - text, code, images, errors */}
       {hasResponse && (
@@ -429,7 +565,7 @@ function AssistantTurnRenderer({
       )}
 
       {/* If only activity and still streaming, show that we're waiting */}
-      {hasActivity && !hasResponse && turn.isStreaming && (
+      {(hasRegularActivity || hasPromotedTools) && !hasResponse && turn.isStreaming && (
         <div className="flex items-center gap-2 pl-1">
           <div className="flex size-6 items-center justify-center rounded-full bg-primary/15">
             <IconSparkles className="size-3.5 text-primary" />
@@ -727,22 +863,6 @@ function DefaultImageBlock({ image }: { image: ImageBlock }) {
         alt={image.alt || 'Image'}
         className="max-h-96 w-auto object-contain"
       />
-    </div>
-  )
-}
-
-/**
- * Streaming indicator shown at the bottom when conversation is active
- */
-function StreamingIndicator() {
-  return (
-    <div className="flex items-center gap-2 py-3">
-      <div className="flex gap-1">
-        <span className="size-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:0ms]" />
-        <span className="size-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:150ms]" />
-        <span className="size-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:300ms]" />
-      </div>
-      <span className="text-xs text-muted-foreground">Thinking...</span>
     </div>
   )
 }

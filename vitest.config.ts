@@ -7,7 +7,12 @@ export default defineConfig({
     environment: 'node',
 
     // Include test files
-    include: ['electron/**/*.test.ts', 'electron/**/*.spec.ts'],
+    include: [
+      'electron/**/*.test.ts',
+      'electron/**/*.spec.ts',
+      'src/**/*.test.ts',
+      'src/**/*.spec.ts',
+    ],
 
     // Exclude build directories
     exclude: [
