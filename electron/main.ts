@@ -205,26 +205,15 @@ function setupAutoUpdater() {
     return
   }
 
-  autoUpdater.on('checking-for-update', () => {
-    console.log('Checking for updates...')
-  })
-
   autoUpdater.on('update-available', (info) => {
-    console.log('Update available:', info.version)
     mainWindow?.webContents.send('update:available', info)
   })
 
-  autoUpdater.on('update-not-available', () => {
-    console.log('App is up to date')
-  })
-
   autoUpdater.on('download-progress', (progress) => {
-    console.log(`Download progress: ${progress.percent.toFixed(1)}%`)
     mainWindow?.webContents.send('update:progress', progress)
   })
 
   autoUpdater.on('update-downloaded', async (info) => {
-    console.log('Update downloaded:', info.version)
 
     // Check if user has dismissed this version recently
     const isDismissed = await isUpdateDismissed(info.version)
@@ -414,9 +403,6 @@ const agentTerminals: Map<string, AgentTerminalInfo> = new Map()
 
 async function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js')
-  console.log('[Main] __dirname:', __dirname)
-  console.log('[Main] Preload path:', preloadPath)
-  console.log('[Main] Preload exists:', fs.existsSync(preloadPath))
 
   const isWindows = process.platform === 'win32'
   const isMac = process.platform === 'darwin'
@@ -732,24 +718,18 @@ ipcMain.handle('dialog:open-directory', async () => {
 // Get package.json scripts from a directory
 // Implementation extracted to services/package-scripts.ts
 ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projectId?: string) => {
-  console.log(`[project:get-scripts] Called with projectPath="${projectPath}", projectId="${projectId}"`)
-
   try {
     // For SSH projects, use remote execution
     if (projectId && sshManager) {
       const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-      console.log(`[project:get-scripts] SSH manager exists, project master status:`, projectMasterStatus)
 
       if (projectMasterStatus.connected) {
-        console.log(`[project:get-scripts] Using SSH execution for project ${projectId}`)
         try {
           return await getPackageScriptsRemote(sshManager, projectId, projectPath)
         } catch (error: unknown) {
           console.error('[project:get-scripts] SSH execution failed:', error)
           return { hasPackageJson: false, packages: [], scripts: [], error: getErrorMessage(error) }
         }
-      } else {
-        console.log(`[project:get-scripts] SSH project master not connected, falling back to local`)
       }
     }
 
@@ -954,14 +934,12 @@ ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) =
 
 // CLI Detection IPC Handlers
 ipcMain.handle('cli:detect-all', async (_event, projectPath: string, projectId?: string, forceRefresh?: boolean): Promise<AllCliToolsResult> => {
-  console.log(`[CLI] Detecting all CLI tools for path="${projectPath}", projectId="${projectId}", forceRefresh=${forceRefresh}`)
   try {
     const result = await detectAllCliTools(projectPath, {
       projectId,
       sshManager: sshManager || undefined,
       forceRefresh: forceRefresh ?? false
     })
-    console.log(`[CLI] Detection complete:`, result.tools.map(t => `${t.id}:${t.installed}`))
     return result
   } catch (error: unknown) {
     console.error('[CLI] Detection failed:', error)
@@ -979,7 +957,6 @@ ipcMain.handle('cli:detect-all', async (_event, projectPath: string, projectId?:
 })
 
 ipcMain.handle('cli:detect', async (_event, toolId: string, projectPath: string, projectId?: string): Promise<CliToolDetectionResult> => {
-  console.log(`[CLI] Detecting tool "${toolId}" for path="${projectPath}", projectId="${projectId}"`)
   try {
     const toolDef = BUILTIN_CLI_TOOLS.find(t => t.id === toolId)
     if (!toolDef) {
@@ -991,7 +968,6 @@ ipcMain.handle('cli:detect', async (_event, toolId: string, projectPath: string,
       }
     }
     const result = await detectCliTool(toolDef, projectPath, projectId, sshManager || undefined)
-    console.log(`[CLI] Detection result for ${toolId}:`, result)
     return result
   } catch (error: unknown) {
     console.error(`[CLI] Detection failed for ${toolId}:`, error)
@@ -1025,7 +1001,6 @@ ipcMain.handle('cli:get-platform', async () => {
 })
 
 ipcMain.handle('cli:check-update', async (_event, agentId: string, currentVersion: string | null): Promise<UpdateCheckResult> => {
-  console.log(`[CLI] Checking update for ${agentId}, current version: ${currentVersion}`)
   try {
     return await checkAgentUpdate(agentId, currentVersion)
   } catch (error: unknown) {
@@ -1041,7 +1016,6 @@ ipcMain.handle('cli:check-update', async (_event, agentId: string, currentVersio
 })
 
 ipcMain.handle('cli:check-updates', async (_event, agents: Array<{ id: string; version: string | null }>): Promise<UpdateCheckResult[]> => {
-  console.log(`[CLI] Checking updates for ${agents.length} agents`)
   try {
     return await checkAgentUpdates(agents)
   } catch (error: unknown) {
@@ -1074,14 +1048,6 @@ ipcMain.handle('agent:create-terminal', async (_event, options: {
   }
 
   const { agentId, context, cwd } = options
-  console.log('[Main] agent:create-terminal called:', {
-    agentId: options.agentId,
-    hasContext: !!options.context,
-    contextLength: options.context?.length,
-    contextPreview: options.context?.substring(0, 100),
-    cwd: options.cwd
-  })
-  console.log(`[Agent] Creating agent terminal for ${agentId} in ${cwd}`)
 
   try {
     // The agent command is simply the agent ID (claude, gemini, codex)
@@ -1091,8 +1057,6 @@ ipcMain.handle('agent:create-terminal', async (_event, options: {
       agentCommand: agentId,
       context,
     })
-
-    console.log(`[Agent] Created terminal ${info.id} for ${agentId}`)
 
     return {
       success: true,
@@ -1114,8 +1078,6 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
   if (!ptyManager) {
     return { success: false, error: 'PTY manager not initialized' }
   }
-
-  console.log(`[Agent] Injecting context into terminal ${terminalId} (${context.length} bytes)`)
 
   return ptyManager.injectContext(terminalId, context)
 })
@@ -1204,8 +1166,6 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
   }
   agentTerminals.set(terminalInfo.id, agentInfo)
 
-  console.log(`[Agent] Created PTY terminal ${terminalInfo.id} for ${agentType}`)
-
   return {
     success: true,
     process: {
@@ -1231,14 +1191,12 @@ ipcMain.handle('agent:send-message', async (_event, id: string, message: Record<
   // not piped via stdin. Multi-turn messages spawn a new process via agent:spawn
   // with resumeSessionId + prompt. Sending messages to stdin is a no-op for Codex.
   if (agentInfo.agentType === 'codex') {
-    console.log(`[Agent] Codex agent ${id}: send-message is a no-op (prompt was passed at spawn time)`)
     return { success: true }
   }
 
   // With --input-format stream-json, Claude expects NDJSON messages
   // Format: {"type": "user", "message": {"role": "user", "content": "..."}}
   const jsonMessage = JSON.stringify(message)
-  console.log(`[Agent] Sending JSON message to ${id}:`, jsonMessage.substring(0, 200))
 
   // Write JSON followed by newline (NDJSON format)
   ptyManager.write(id, jsonMessage + '\n')
@@ -1250,11 +1208,8 @@ ipcMain.handle('agent:kill', async (_event, id: string) => {
   if (!ptyManager) return { success: false, error: 'PTY manager not initialized' }
 
   if (agentTerminals.has(id)) {
-    console.log(`[Agent] Killing agent terminal ${id}`)
     ptyManager.kill(id)
     agentTerminals.delete(id)
-  } else {
-    console.log(`[Agent] Kill: terminal ${id} already gone, skipping`)
   }
 
   return { success: true }
@@ -1279,14 +1234,13 @@ ipcMain.handle('agent:generate-title', async (_event, options: { userMessages: s
       .map((msg, i) => `Message ${i + 1}: ${msg}`)
       .join('\n')
 
-    const prompt = `Given these user messages from a coding assistant session, generate a concise 3-5 word title that summarizes the session topic. Reply with ONLY the title, nothing else.\n\n${messagesText}`
+    const prompt = `Given these user messages from a coding assistant session, generate a 1-3 word title that summarizes the topic. Reply with ONLY the title, nothing else. No quotes, no punctuation.\n\n${messagesText}`
 
     const result = await backgroundClaude.runTask({
       prompt,
       projectPath: process.cwd(),
       model: 'haiku',
       outputFormat: 'text',
-      maxTokens: 30,
       timeout: 30000,
       skipPermissions: true,
     })
@@ -1364,7 +1318,6 @@ ipcMain.handle('app:get-version', async () => {
 // ============================================================================
 
 ipcMain.handle('service:discover', async (_event, projectPath: string, projectId: string) => {
-  console.log(`[Service] Discovering services in ${projectPath}`)
   try {
     const services = await serviceManager.discoverServices(projectPath, projectId)
     return { success: true, services }
@@ -1385,7 +1338,6 @@ ipcMain.handle('service:getStatus', async (_event, serviceId: string) => {
 })
 
 ipcMain.handle('service:start', async (_event, serviceId: string) => {
-  console.log(`[Service] Starting service: ${serviceId}`)
   try {
     await serviceManager.start(serviceId)
     return { success: true }
@@ -1396,7 +1348,6 @@ ipcMain.handle('service:start', async (_event, serviceId: string) => {
 })
 
 ipcMain.handle('service:stop', async (_event, serviceId: string) => {
-  console.log(`[Service] Stopping service: ${serviceId}`)
   try {
     await serviceManager.stop(serviceId)
     return { success: true }
@@ -1407,7 +1358,6 @@ ipcMain.handle('service:stop', async (_event, serviceId: string) => {
 })
 
 ipcMain.handle('service:restart', async (_event, serviceId: string) => {
-  console.log(`[Service] Restarting service: ${serviceId}`)
   try {
     await serviceManager.restart(serviceId)
     return { success: true }
@@ -1444,7 +1394,6 @@ ipcMain.handle('docker:isAvailable', async () => {
 })
 
 ipcMain.handle('docker:getLogs', async (_event, serviceId: string, tail?: number) => {
-  console.log(`[Docker] Getting logs for: ${serviceId}`)
   try {
     const logs = await dockerComposeHandler.getLogs(serviceId, tail || 100)
     return { success: true, logs }

@@ -186,6 +186,27 @@ export function AgentWorkspace({
   )
   const sessionId = resumeSessionId ?? storeSessionId
 
+  // Auto-generate title once sessionId is available (after first message gets a response).
+  // Runs reactively when sessionId populates, avoiding the race condition of checking
+  // inside handleSend before the session init event arrives.
+  useEffect(() => {
+    if (!sessionId || !window.electron?.agent) return
+    const store = useAgentStreamStore.getState()
+    if (store.hasTitleBeenGenerated(sessionId)) return
+    const conversation = store.getConversation(initialProcessId)
+    if (conversation.userMessages.length < 1) return
+
+    store.markTitleGenerated(sessionId)
+    const firstMessage = conversation.userMessages[0].content
+    window.electron.agent.generateTitle({ userMessages: [firstMessage] }).then((result) => {
+      if (result.success && result.title) {
+        useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
+      }
+    }).catch((err) => {
+      console.warn('[AgentWorkspace] Title generation failed:', err)
+    })
+  }, [sessionId, initialProcessId])
+
   // Handle sending messages
   const handleSend = useCallback(
     async (message: string) => {
@@ -203,27 +224,6 @@ export function AgentWorkspace({
       setIsProcessing(true)
 
       try {
-        // Auto-generate title after 2+ user messages once sessionId is available.
-        // Uses >= 2 so that if the sessionId wasn't captured yet on the 2nd message
-        // (race condition with agent-session-init event), it retries on later messages.
-        const conversation = store.getConversation(initialProcessId)
-        const currentSessionId = sessionId || store.getSessionId(initialProcessId)
-        if (
-          conversation.userMessages.length >= 2 &&
-          currentSessionId &&
-          !store.hasTitleBeenGenerated(currentSessionId)
-        ) {
-          store.markTitleGenerated(currentSessionId)
-          const msgs = conversation.userMessages.slice(0, 2).map((m) => m.content)
-          window.electron.agent.generateTitle({ userMessages: msgs }).then((result) => {
-            if (result.success && result.title) {
-              useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
-            }
-          }).catch((err) => {
-            console.warn('[AgentWorkspace] Title generation failed:', err)
-          })
-        }
-
         // Codex uses one-shot `exec` mode — every message (including the first)
         // spawns a new process with the prompt as a CLI argument.
         // Multi-turn uses `codex exec resume SESSION_ID`.

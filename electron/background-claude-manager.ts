@@ -19,7 +19,6 @@ interface ClaudeTaskOptions {
   skipPermissions?: boolean
   model?: string        // e.g., 'haiku', 'sonnet'
   outputFormat?: string // e.g., 'text', 'json', 'stream-json'
-  maxTokens?: number    // max output tokens
 }
 
 interface ClaudeTaskResult {
@@ -95,7 +94,6 @@ export class BackgroundClaudeManager {
         const command = this.buildCommand(terminalInfo.shell, promptFile, outputFile, options.skipPermissions, {
           model: options.model,
           outputFormat: options.outputFormat,
-          maxTokens: options.maxTokens,
         })
         console.log(`[BackgroundClaude] Running command: ${command.trim()}`)
 
@@ -329,7 +327,7 @@ export class BackgroundClaudeManager {
     promptFile: string,
     outputFile: string,
     skipPermissions: boolean = true,
-    extraOptions?: { model?: string; outputFormat?: string; maxTokens?: number }
+    extraOptions?: { model?: string; outputFormat?: string }
   ): string {
     const shellLower = shell.toLowerCase()
     const isCmd = shellLower.includes('cmd.exe')
@@ -340,7 +338,6 @@ export class BackgroundClaudeManager {
     let claudeArgs = skipPermissions ? '-p --dangerously-skip-permissions' : ''
     if (extraOptions?.model) claudeArgs += ` --model ${extraOptions.model}`
     if (extraOptions?.outputFormat) claudeArgs += ` --output-format ${extraOptions.outputFormat}`
-    if (extraOptions?.maxTokens) claudeArgs += ` --max-tokens ${extraOptions.maxTokens}`
 
     if (isCmd) {
       // cmd.exe: redirect stderr to file

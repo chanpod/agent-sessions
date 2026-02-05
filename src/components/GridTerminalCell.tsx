@@ -3,7 +3,6 @@ import { useState, useRef, useEffect } from 'react'
 import { useTerminalStore, TerminalSession } from '../stores/terminal-store'
 import { useProjectStore } from '../stores/project-store'
 import { Terminal } from './Terminal'
-import { ActivityIndicator } from './ActivityIndicator'
 import { DetectedServers } from './DetectedServers'
 import { cn } from '../lib/utils'
 import { useSortable } from '@dnd-kit/sortable'
@@ -172,7 +171,6 @@ export function GridTerminalCell({
               <Check className="w-3 h-3" />
             </button>
           )}
-          <ActivityIndicator sessionId={session.id} className="w-1.5 h-1.5" />
           {canRemove && (
             <button
               onClick={handleRemove}

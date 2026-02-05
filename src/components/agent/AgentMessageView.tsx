@@ -464,7 +464,12 @@ export function AgentMessageView({
             data={displayItems}
             overscan={200}
             initialTopMostItemIndex={displayItems.length > 0 ? displayItems.length - 1 : 0}
-            followOutput="smooth"
+            followOutput={(isAtBottom) => {
+              if (!isAtBottom) return false
+              return isStreaming ? 'auto' : 'smooth'
+            }}
+            atBottomThreshold={150}
+            increaseViewportBy={{top: 0, bottom: 200}}
             atBottomStateChange={setIsAtBottom}
             computeItemKey={(index, item) =>
               item.kind === 'standalone'

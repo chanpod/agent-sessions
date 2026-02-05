@@ -26,7 +26,6 @@ export interface ArchivedSessionConfig {
   agentType: string
 }
 
-export type ActivityLevel = 'substantial' | 'minor' | 'idle'
 export type TerminalDisplayMode = 'raw' | 'pretty'
 
 // Full runtime session (includes pid, status, etc.)
@@ -37,9 +36,6 @@ export interface TerminalSession extends SavedTerminalConfig {
   isActive: boolean
   status: 'running' | 'exited'
   exitCode?: number
-  lastActivityTime: number
-  lastActivityLevel: ActivityLevel // Current activity level
-  lastSubstantialActivityTime: number // Last time we had substantial (green) activity
   // Agent terminal runtime state
   contextInjected?: boolean            // Was context successfully sent
   isAgentProcess?: boolean             // True if using AgentProcessManager (JSON streaming) vs PTY
@@ -70,8 +66,8 @@ interface TerminalStore {
   markRestored: () => void
 
   // Actions for runtime sessions
-  addSession: (session: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime' | 'lastActivityLevel' | 'lastSubstantialActivityTime'>) => void
-  addSessionsBatch: (sessions: Omit<TerminalSession, 'isActive' | 'status' | 'lastActivityTime' | 'lastActivityLevel' | 'lastSubstantialActivityTime'>[]) => void
+  addSession: (session: Omit<TerminalSession, 'isActive' | 'status'>) => void
+  addSessionsBatch: (sessions: Omit<TerminalSession, 'isActive' | 'status'>[]) => void
   removeSession: (id: string) => void
   removeSessionsByProject: (projectId: string) => void
   archiveSession: (config: SavedTerminalConfig, title: string, agentType: string) => void
@@ -82,8 +78,6 @@ interface TerminalStore {
   updateSessionTitle: (id: string, title: string) => void
   updateSessionPid: (id: string, pid: number) => void
   markSessionExited: (id: string, exitCode: number) => void
-  updateSessionActivity: (id: string, level: ActivityLevel) => void
-
   // Selectors
   getSessionsByProject: (projectId: string) => TerminalSession[]
   getGlobalSessions: () => TerminalSession[]
@@ -152,14 +146,10 @@ export const useTerminalStore = create<TerminalStore>()(
       // Runtime session actions
       addSession: (session) =>
         set((state) => {
-          const now = Date.now()
           const newSession: TerminalSession = {
             ...session,
             isActive: true,
             status: 'running',
-            lastActivityTime: 0, // Start with no activity
-            lastActivityLevel: 'idle',
-            lastSubstantialActivityTime: 0, // Start with no substantial activity
           }
           return {
             sessions: [...state.sessions, newSession],
@@ -173,9 +163,6 @@ export const useTerminalStore = create<TerminalStore>()(
             ...session,
             isActive: true,
             status: 'running' as const,
-            lastActivityTime: 0, // Start with no activity
-            lastActivityLevel: 'idle' as const,
-            lastSubstantialActivityTime: 0, // Start with no substantial activity
           }))
           return {
             sessions: [...state.sessions, ...newSessions],
@@ -298,32 +285,6 @@ export const useTerminalStore = create<TerminalStore>()(
             s.id === id ? { ...s, status: 'exited', exitCode } : s
           ),
         })),
-
-      updateSessionActivity: (id, level) => {
-        const now = Date.now()
-        const state = get()
-        const session = state.sessions.find((s) => s.id === id)
-
-        // Only update if last activity was more than 1 second ago (throttle)
-        if (!session || (now - session.lastActivityTime) < 1000) {
-          return
-        }
-
-        set((state) => ({
-          sessions: state.sessions.map((s) => {
-            if (s.id === id) {
-              return {
-                ...s,
-                lastActivityTime: now,
-                lastActivityLevel: level,
-                // Update lastSubstantialActivityTime only if this is substantial activity
-                lastSubstantialActivityTime: level === 'substantial' ? now : s.lastSubstantialActivityTime,
-              }
-            }
-            return s
-          }),
-        }))
-      },
 
       getSessionsByProject: (projectId) =>
         get().sessions.filter((s) => s.projectId === projectId),

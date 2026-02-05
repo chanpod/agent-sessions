@@ -112,7 +112,6 @@ export class PtyManager {
 
     // Forward detected events to renderer
     this.detectorManager.onEvent((event) => {
-      console.log(`[PtyManager] Forwarding detector event to renderer:`, event.type, event.terminalId)
       if (!this.window.isDestroyed()) {
         this.window.webContents.send('detector:event', event)
       }
@@ -276,8 +275,6 @@ export class PtyManager {
     // If we have an initial command, wrap it in a shell
     // This is used for agent terminals (claude, gemini, codex) and any other command execution
     if (options.initialCommand) {
-      console.log('[PtyManager] Creating terminal with initial command:', options.initialCommand.substring(0, 200))
-
       if (process.platform === 'win32') {
         // Use bash.exe (Git Bash) with -l -i for login interactive shell
         // -i is needed to properly load PATH for npm-installed tools like codex (which need node)
@@ -364,11 +361,6 @@ export class PtyManager {
 
     // Forward PTY data to renderer
     ptyProcess.onData((data) => {
-      // Debug: log raw PTY output for agent terminals
-      if (options.hidden) {
-        console.log(`[PtyManager] Agent PTY ${id} output (${data.length} bytes):`, data.substring(0, 500))
-      }
-
       // Process through detectors
       this.detectorManager.processOutput(id, data)
 
@@ -467,13 +459,6 @@ export class PtyManager {
   }): TerminalInfo {
     const { cwd, agentCommand, context, id } = options
 
-    console.log('[PtyManager] createAgentTerminal called (delegating to createTerminal):', {
-      agentCommand,
-      hasContext: !!context,
-      contextLength: context?.length,
-      cwd
-    })
-
     // Build the command with optional context as argument
     // Each agent has different context injection syntax
     let fullCommand = agentCommand
@@ -536,17 +521,13 @@ export class PtyManager {
         if (currentInstance) {
           // Use \r (carriage return) for Enter key - more universally recognized by TUIs
           currentInstance.ptyProcess.write('\r')
-          console.log(`[PtyManager] Context submitted to terminal ${terminalId}`)
         }
       }, SUBMIT_DELAY_MS)
     }
 
     try {
-      console.log(`[PtyManager] Starting context injection to terminal ${terminalId} (${context.length} bytes)`)
-
       if (context.length > CHUNK_SIZE) {
         // Chunk large contexts
-        console.log(`[PtyManager] Injecting large context in chunks`)
         let offset = 0
         const writeNextChunk = () => {
           const currentInstance = this.terminals.get(terminalId)
@@ -560,7 +541,6 @@ export class PtyManager {
               setTimeout(writeNextChunk, 10)
             } else {
               // All chunks written, wait then send submit
-              console.log(`[PtyManager] All chunks written, waiting before submit...`)
               sendSubmit()
             }
           }
@@ -568,7 +548,6 @@ export class PtyManager {
         writeNextChunk()
       } else {
         instance.ptyProcess.write(context)
-        console.log(`[PtyManager] Context written, waiting before submit...`)
         sendSubmit()
       }
 

@@ -34,6 +34,7 @@ import { useToastStore } from './stores/toast-store'
 import { useNotificationStore } from './stores/notification-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
+import { BranchSwitcher } from './components/BranchSwitcher'
 import { AgentMessageView } from './components/agent'
 import { AgentWorkspace } from './components/agent/AgentWorkspace'
 import { useAgentStream } from './hooks/useAgentStream'
@@ -196,7 +197,6 @@ function App() {
     updateSessionTitle,
     updateSessionPid,
     markSessionExited,
-    updateSessionActivity,
     saveConfig,
     removeSavedConfig,
     reorderSavedConfigs,
@@ -446,48 +446,6 @@ function App() {
     }
   }, [isElectron])
 
-  // Helper function to categorize terminal output activity level
-  // Returns: 'substantial' (green), 'minor' (yellow), or 'none' (no update)
-  const getActivityLevel = (data: string): 'substantial' | 'minor' | 'none' => {
-    // Empty or very short data is likely just cursor blink - ignore it
-    if (!data || data.length < 2) return 'none'
-
-    // Strip ANSI escape sequences to see what's left
-    const stripped = data
-      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '') // CSI sequences
-      .replace(/\x1b\][0-9;]*[^\x07]*(\x07|\x1b\\)/g, '') // OSC sequences
-      .replace(/\x1b[=>]/g, '') // Simple escape sequences
-      .replace(/\x07/g, '') // Bell
-      .replace(/\r/g, '') // Carriage returns
-      .trim()
-
-    // If nothing left after stripping, it's just control codes
-    if (stripped.length === 0) return 'none'
-
-    // Check if this looks like a prompt redraw
-    // Prompts typically end with $, #, >, :, or ) followed by optional space
-    const looksLikePrompt = /[$#>:)][\s]*$/.test(stripped) && stripped.length < 100
-
-    if (looksLikePrompt) {
-      // Prompt redraws are minor activity (don't trigger green)
-      return 'minor'
-    }
-
-    // Substantial activity: Has newlines (multi-line output) or significant length
-    // This catches command output, agent responses, compilation errors, etc.
-    if (data.includes('\n') || stripped.length >= 20) {
-      return 'substantial'
-    }
-
-    // Minor activity: Short output without newlines
-    // This catches spinners, single-char updates, small prompt changes
-    if (stripped.length > 0) {
-      return 'minor'
-    }
-
-    return 'none'
-  }
-
   // Restore saved terminals on startup (runs once)
   useEffect(() => {
     if (!isElectron || !window.electron || restoringRef.current) return
@@ -671,16 +629,6 @@ function App() {
     if (!isElectron || !window.electron) return
 
     // Set up PTY event listeners
-    const unsubData = window.electron.pty.onData((id, data) => {
-      // Categorize the activity level
-      const level = getActivityLevel(data)
-
-      // Update activity if it's substantial or minor (not 'none')
-      if (level !== 'none') {
-        updateSessionActivity(id, level)
-      }
-    })
-
     const unsubExit = window.electron.pty.onExit((id, code) => {
       markSessionExited(id, code)
 
@@ -701,11 +649,10 @@ function App() {
     })
 
     return () => {
-      unsubData()
       unsubExit()
       unsubTitle()
     }
-  }, [isElectron, markSessionExited, updateSessionTitle, updateSessionActivity, updateServerStatus])
+  }, [isElectron, markSessionExited, updateSessionTitle, updateServerStatus])
 
   // Keyboard shortcuts: Ctrl+N for project switch, Alt+N for terminal focus
   useEffect(() => {
@@ -1655,6 +1602,9 @@ function App() {
                   <ExternalLink className="h-3.5 w-3.5" />
                   Open
                 </button>
+                {activeProjectPath && (
+                  <BranchSwitcher projectId={activeProjectId} projectPath={activeProjectPath} />
+                )}
                 <button
                   onClick={() => setIsGitDrawerOpen((prev) => !prev)}
                   className={cn(

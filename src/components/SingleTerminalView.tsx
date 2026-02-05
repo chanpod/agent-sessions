@@ -1,7 +1,6 @@
 import { TerminalSession } from '../stores/terminal-store'
 import { useProjectStore } from '../stores/project-store'
 import { Terminal } from './Terminal'
-import { ActivityIndicator } from './ActivityIndicator'
 import { DetectedServers } from './DetectedServers'
 
 interface SingleTerminalViewProps {
@@ -22,7 +21,6 @@ export function SingleTerminalView({ session }: SingleTerminalViewProps) {
         </span>
         <span className="text-[10px] text-zinc-500">{projectName}</span>
         <span className="text-xs text-zinc-300 flex-1 truncate">{session.title}</span>
-        <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
       </div>
 
       <DetectedServers terminalId={session.id} />

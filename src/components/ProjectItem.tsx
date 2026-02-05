@@ -6,7 +6,6 @@ import { useGridStore } from '../stores/grid-store'
 import { useViewStore } from '../stores/view-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { useGitStore } from '../stores/git-store'
-import { ActivityIndicator } from './ActivityIndicator'
 import { ProjectTabBar } from './ProjectTabBar'
 import { TerminalsTab } from './TerminalsTab'
 import { FilesTab } from './FilesTab'
@@ -496,7 +495,6 @@ export function TerminalItem({ session, isActive, onSelect, onClose, onReconnect
         >
           <GripVertical className="w-4 h-4 flex-shrink-0 opacity-30 group-hover:opacity-70" />
         </div>
-        <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
         <Terminal className={cn('w-4 h-4 flex-shrink-0', isActive && 'text-green-400')} />
 
         {/* Terminal name - editable */}

@@ -654,6 +654,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           })
           return { terminals }
         })
+        // Persist so messages survive app restart after stop
+        get().persistSession(terminalId)
       },
 
       // Conversation state actions (survive component unmount/remount)

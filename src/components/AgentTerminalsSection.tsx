@@ -9,7 +9,7 @@ import { useTerminalStore, type TerminalSession } from '../stores/terminal-store
 import { useViewStore } from '../stores/view-store'
 import { useProjectStore } from '../stores/project-store'
 import { useAgentContextStore } from '../stores/agent-context-store'
-import { ActivityIndicator } from './ActivityIndicator'
+import { AgentStatusIcon } from './AgentStatusIcon'
 import { usePermissionStore } from '../stores/permission-store'
 import { useAgentStreamStore } from '../stores/agent-stream-store'
 import { ShieldAlert } from 'lucide-react'
@@ -138,7 +138,7 @@ function AgentSessionRow({
           <AgentIcon id={session.agentId || ''} className="w-4 h-4 text-muted-foreground" />
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
+          <AgentStatusIcon sessionId={session.id} className="w-2 h-2" />
           {hasPendingPermission && (
             <span title="Awaiting permission">
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400 animate-pulse flex-shrink-0" />
