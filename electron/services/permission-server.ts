@@ -109,6 +109,18 @@ export class PermissionServer {
 
       const requestPath = path.join(ipcDir, file)
       try {
+        // Skip and clean up stale request files that outlived the timeout.
+        // These are orphans from crashed hooks or failed cleanup that would
+        // otherwise be re-queued every 200ms, causing an infinite permission loop.
+        const stat = fs.statSync(requestPath)
+        const ageMs = Date.now() - stat.mtimeMs
+        if (ageMs > PERMISSION_REQUEST_TIMEOUT_MS + 5000) {
+          try { fs.unlinkSync(requestPath) } catch {}
+          try { fs.unlinkSync(path.join(ipcDir, `${id}.response`)) } catch {}
+          console.log(`[PermissionServer] Cleaned up stale request ${id} (age: ${Math.round(ageMs / 1000)}s)`)
+          continue
+        }
+
         const raw = fs.readFileSync(requestPath, 'utf8')
         const request: PermissionRequest = JSON.parse(raw)
         this.handleRequest(id, request, ipcDir)
@@ -155,10 +167,21 @@ export class PermissionServer {
 
   private writeResponse(ipcDir: string, id: string, response: PermissionResponse): void {
     const responsePath = path.join(ipcDir, `${id}.response`)
+    const requestPath = path.join(ipcDir, `${id}.request`)
     try {
       fs.writeFileSync(responsePath, JSON.stringify(response), 'utf8')
     } catch (err) {
       console.error(`[PermissionServer] Failed to write response ${id}:`, err)
+    }
+    // Delete request file so the scanner never re-queues it.
+    // The hook also tries to delete both files, but if it crashes or
+    // fails to clean up, this prevents an infinite permission loop.
+    try {
+      if (fs.existsSync(requestPath)) {
+        fs.unlinkSync(requestPath)
+      }
+    } catch {
+      // Best-effort; hook cleanup is the secondary safeguard
     }
   }
 
