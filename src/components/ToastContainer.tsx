@@ -37,9 +37,24 @@ export const ToastContainer: React.FC = () => {
       {toasts.map((toast) => (
         <div
           key={toast.id}
+          role={toast.onClick ? 'button' : undefined}
+          tabIndex={toast.onClick ? 0 : undefined}
+          onClick={() => {
+            if (toast.onClick) {
+              toast.onClick()
+              removeToast(toast.id)
+            }
+          }}
+          onKeyDown={(e) => {
+            if (toast.onClick && e.key === 'Enter') {
+              toast.onClick()
+              removeToast(toast.id)
+            }
+          }}
           className={cn(
             'bg-[#2d2d2d] border rounded-lg shadow-lg p-3 pr-10 min-w-[300px] max-w-[500px] pointer-events-auto animate-in slide-in-from-right',
-            getToastBorderColor(toast.type)
+            getToastBorderColor(toast.type),
+            toast.onClick && 'cursor-pointer hover:bg-[#3d3d3d] transition-colors'
           )}
         >
           <div className="flex items-start gap-2">

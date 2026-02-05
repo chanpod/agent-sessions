@@ -11,6 +11,9 @@ import { useProjectStore } from '../stores/project-store'
 import { useAgentContextStore } from '../stores/agent-context-store'
 import { useGridStore } from '../stores/grid-store'
 import { ActivityIndicator } from './ActivityIndicator'
+import { usePermissionStore } from '../stores/permission-store'
+import { useAgentStreamStore } from '../stores/agent-stream-store'
+import { ShieldAlert } from 'lucide-react'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { AgentLauncher } from './AgentLauncher'
 import { AgentContextEditor } from './AgentContextEditor'
@@ -72,6 +75,12 @@ function AgentSessionRow({
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(session.title)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Check if this session has pending permission requests
+  const cliSessionId = useAgentStreamStore((s) => s.terminalToSession.get(session.id))
+  const hasPendingPermission = usePermissionStore((s) =>
+    cliSessionId ? s.pendingRequests.some((r) => r.sessionId === cliSessionId) : false
+  )
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -136,6 +145,11 @@ function AgentSessionRow({
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <ActivityIndicator sessionId={session.id} className="w-2 h-2" />
+          {hasPendingPermission && (
+            <span title="Awaiting permission">
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400 animate-pulse flex-shrink-0" />
+            </span>
+          )}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {isEditing ? (
               <input

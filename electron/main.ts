@@ -1254,9 +1254,9 @@ ipcMain.handle('agent:list', async () => {
 // Permission Hook IPC Handlers
 // ============================================================================
 
-ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string) => {
+ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean) => {
   if (!permissionServer) return { success: false, error: 'Permission server not running' }
-  const resolved = permissionServer.resolvePermission(id, { decision, reason })
+  const resolved = permissionServer.resolvePermission(id, { decision, reason }, alwaysAllow)
   return { success: resolved }
 })
 

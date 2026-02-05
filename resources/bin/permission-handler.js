@@ -8,6 +8,7 @@ const crypto = require('crypto')
 const POLL_INTERVAL_MS = 100
 const TIMEOUT_MS = 30000 // 30 seconds - deny if app doesn't respond
 const HEARTBEAT_STALE_MS = 10000 // Consider app dead if heartbeat > 10s old
+const ALLOWLIST_FILENAME = 'permission-allowlist.json'
 
 // Tools that are always safe to allow without prompting.
 // Only potentially destructive tools (Bash, Edit, Write, NotebookEdit) need approval.
@@ -95,6 +96,20 @@ function isAppActive(ipcDir) {
   }
 }
 
+/**
+ * Load the user's always-allow list from .claude/permission-allowlist.json.
+ * The IPC dir is .claude/.permission-ipc, so the allowlist is one level up.
+ */
+function loadAllowlist(ipcDir) {
+  const allowlistPath = path.join(path.dirname(ipcDir), ALLOWLIST_FILENAME)
+  try {
+    const data = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'))
+    return Array.isArray(data) ? data : []
+  } catch {
+    return []
+  }
+}
+
 async function main() {
   debug(`Hook started. argv: ${JSON.stringify(process.argv)}`)
 
@@ -124,6 +139,14 @@ async function main() {
 
   if (toolName && SAFE_TOOLS.has(toolName)) {
     debug(`Tool "${toolName}" is in safe list, auto-allowing`)
+    process.stdout.write(toCliResponse('allow'))
+    return
+  }
+
+  // Gate 3: Check user's always-allow list
+  const allowlist = loadAllowlist(ipcDir)
+  if (toolName && allowlist.includes(toolName)) {
+    debug(`Tool "${toolName}" is in user allowlist, auto-allowing`)
     process.stdout.write(toCliResponse('allow'))
     return
   }

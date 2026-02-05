@@ -9,7 +9,7 @@ import {
   useSensors,
   PointerSensor,
 } from '@dnd-kit/core'
-import { Terminal as TerminalIcon, ChevronUp } from 'lucide-react'
+import { Terminal as TerminalIcon, ChevronUp, ExternalLink, GitCompare } from 'lucide-react'
 import { cn } from './lib/utils'
 import { TitleBar } from './components/TitleBar'
 import { ProjectHeader } from './components/ProjectHeader'
@@ -29,7 +29,9 @@ import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
 import { useViewStore } from './stores/view-store'
 import { useSSHStore } from './stores/ssh-store'
+import { useGitStore } from './stores/git-store'
 import { useGlobalRulesStore } from './stores/global-rules-store'
+import { useToastStore } from './stores/toast-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
 import { AgentMessageView } from './components/agent'
@@ -207,6 +209,9 @@ function App() {
   const restoringRef = useRef(false)
   const { projects, activeProjectId } = useProjectStore()
   const { getConnection } = useSSHStore()
+  const activeGitInfo = useGitStore((state) => activeProjectId ? state.gitInfo[activeProjectId] : undefined)
+  const changedFileCount = activeGitInfo?.changedFiles.length || 0
+  const activeProjectPath = projects.find(p => p.id === activeProjectId)?.path
   const {
     addServer,
     removeServer,
@@ -341,6 +346,44 @@ function App() {
     const { addRequest, removeRequest } = usePermissionStore.getState()
     const unsubRequest = window.electron.permission.onRequest((request) => {
       addRequest(request)
+
+      // If the request is for a session the user isn't currently viewing, show a toast
+      const activeTerminalId = useTerminalStore.getState().activeAgentSessionId
+      const activeCliSessionId = activeTerminalId
+        ? useAgentStreamStore.getState().getSessionId(activeTerminalId)
+        : null
+
+      if (request.sessionId !== activeCliSessionId) {
+        // Find the terminal that owns this session so we can navigate to it
+        const terminalToSession = useAgentStreamStore.getState().terminalToSession
+        let targetTerminalId: string | null = null
+        for (const [termId, sessId] of terminalToSession) {
+          if (sessId === request.sessionId) {
+            targetTerminalId = termId
+            break
+          }
+        }
+
+        const { addToast } = useToastStore.getState()
+        const sessionLabel = targetTerminalId
+          ? useTerminalStore.getState().sessions.find((s) => s.id === targetTerminalId)?.title ?? 'Agent session'
+          : 'Agent session'
+
+        addToast(
+          `${sessionLabel} needs permission for ${request.toolName}`,
+          'warning',
+          10000,
+          targetTerminalId
+            ? () => {
+                const session = useTerminalStore.getState().sessions.find((s) => s.id === targetTerminalId)
+                if (session?.projectId) {
+                  useTerminalStore.getState().setActiveAgentSession(targetTerminalId)
+                  useViewStore.getState().setProjectTerminalActive(session.projectId, targetTerminalId!)
+                }
+              }
+            : undefined
+        )
+      }
     })
     const unsubExpired = window.electron.permission.onExpired((id) => {
       removeRequest(id)
@@ -1521,8 +1564,6 @@ function App() {
           onCreateProject={handleCreateProject}
           onEditProject={handleEditProject}
           onDeleteProject={handleDeleteProject}
-          onToggleGitDrawer={() => setIsGitDrawerOpen((prev) => !prev)}
-          gitDrawerOpen={isGitDrawerOpen}
         />
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden relative">
@@ -1531,7 +1572,42 @@ function App() {
             onReconnectTerminal={handleReconnectTerminal}
             onCreateAgentTerminal={handleCreateAgentTerminal}
           />
-          <div className="flex flex-1 min-w-0 flex-col bg-zinc-950">
+          <div className="flex flex-1 min-w-0 flex-col bg-zinc-950 relative">
+            {/* Floating project action buttons */}
+            {activeProjectId && (
+              <div className="absolute top-3 right-3 z-40 flex items-center gap-1.5">
+                <button
+                  onClick={async () => {
+                    if (!window.electron?.system || !activeProjectPath) return
+                    await window.electron.system.openInEditor(activeProjectPath)
+                  }}
+                  disabled={!activeProjectPath}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md text-zinc-500 hover:text-zinc-300 bg-zinc-900/60 hover:bg-zinc-800/80 border border-zinc-800/50 hover:border-zinc-700/60 backdrop-blur-sm transition-all disabled:opacity-30 disabled:pointer-events-none"
+                  title="Open in editor"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open
+                </button>
+                <button
+                  onClick={() => setIsGitDrawerOpen((prev) => !prev)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md backdrop-blur-sm transition-all border',
+                    isGitDrawerOpen
+                      ? 'text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25'
+                      : 'text-zinc-500 hover:text-zinc-300 bg-zinc-900/60 hover:bg-zinc-800/80 border-zinc-800/50 hover:border-zinc-700/60'
+                  )}
+                  title="Toggle git drawer"
+                >
+                  <GitCompare className="h-3.5 w-3.5" />
+                  Git
+                  {changedFileCount > 0 && (
+                    <span className="ml-0.5 px-1 py-0 text-[10px] rounded bg-zinc-700/60">
+                      {changedFileCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
             <div className="flex-1 min-h-0">
               {activeAgentProcess ? (
                 // New process-based agent (JSON streaming via child_process)

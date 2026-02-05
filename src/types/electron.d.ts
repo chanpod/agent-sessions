@@ -330,7 +330,7 @@ export interface ElectronAPI {
     getLogs: (serviceId: string, tail?: number) => Promise<{ success: boolean; logs: string; error?: string }>
   }
   permission: {
-    respond: (id: string, decision: 'allow' | 'deny', reason?: string) => Promise<{ success: boolean; error?: string }>
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean) => Promise<{ success: boolean; error?: string }>
     checkHook: (projectPath: string) => Promise<boolean>
     installHook: (projectPath: string) => Promise<{ success: boolean; error?: string }>
     onRequest: (callback: (request: PermissionRequestForUI) => void) => () => void

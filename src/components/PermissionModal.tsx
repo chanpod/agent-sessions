@@ -2,6 +2,8 @@ import { useEffect, useCallback } from 'react'
 import { IconShieldCheck, IconShieldX, IconTerminal2, IconFile, IconTool } from '@tabler/icons-react'
 import { Button } from '@/components/ui/button'
 import { usePermissionStore } from '@/stores/permission-store'
+import { useTerminalStore } from '@/stores/terminal-store'
+import { useAgentStreamStore } from '@/stores/agent-stream-store'
 import { cn } from '@/lib/utils'
 
 function getToolIcon(toolName: string) {
@@ -35,13 +37,29 @@ function getToolSummary(toolName: string, toolInput: Record<string, unknown>): s
 }
 
 export function PermissionModal() {
-  const { pendingRequests, removeRequest, getNextRequest } = usePermissionStore()
-  const request = getNextRequest()
+  const { pendingRequests, removeRequest, getNextRequestForSession } = usePermissionStore()
+  const activeAgentSessionId = useTerminalStore((s) => s.activeAgentSessionId)
+  const terminalToSession = useAgentStreamStore((s) => s.terminalToSession)
+
+  // Get the CLI sessionId for the active agent terminal
+  const activeCliSessionId = activeAgentSessionId
+    ? terminalToSession.get(activeAgentSessionId) ?? null
+    : null
+
+  // Only show requests belonging to the active session
+  const request = activeCliSessionId
+    ? getNextRequestForSession(activeCliSessionId)
+    : null
+
+  // Count pending for this session only
+  const sessionQueueCount = activeCliSessionId
+    ? pendingRequests.filter((r) => r.sessionId === activeCliSessionId).length
+    : 0
 
   const respond = useCallback(
-    (decision: 'allow' | 'deny') => {
+    (decision: 'allow' | 'deny', alwaysAllow?: boolean) => {
       if (!request) return
-      window.electron?.permission.respond(request.id, decision)
+      window.electron?.permission.respond(request.id, decision, undefined, alwaysAllow)
       removeRequest(request.id)
     },
     [request, removeRequest]
@@ -60,7 +78,6 @@ export function PermissionModal() {
   if (!request) return null
 
   const summary = getToolSummary(request.toolName, request.toolInput)
-  const queueCount = pendingRequests.length
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -76,9 +93,9 @@ export function PermissionModal() {
               Agent wants to use <span className="font-medium text-foreground">{request.toolName}</span>
             </p>
           </div>
-          {queueCount > 1 && (
+          {sessionQueueCount > 1 && (
             <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-400">
-              +{queueCount - 1} pending
+              +{sessionQueueCount - 1} pending
             </span>
           )}
         </div>
@@ -112,6 +129,10 @@ export function PermissionModal() {
           <Button variant="destructive" size="sm" onClick={() => respond('deny')}>
             <IconShieldX className="size-4" />
             Deny
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => respond('allow', true)}>
+            <IconShieldCheck className="size-4" />
+            Always Allow
           </Button>
           <Button variant="default" size="sm" className="bg-emerald-600 hover:bg-emerald-500" onClick={() => respond('allow')}>
             <IconShieldCheck className="size-4" />

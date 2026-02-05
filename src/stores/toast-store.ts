@@ -7,20 +7,21 @@ export interface Toast {
   message: string
   type: ToastType
   duration?: number
+  onClick?: () => void
 }
 
 interface ToastStore {
   toasts: Toast[]
-  addToast: (message: string, type?: ToastType, duration?: number) => void
+  addToast: (message: string, type?: ToastType, duration?: number, onClick?: () => void) => void
   removeToast: (id: string) => void
 }
 
 export const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
-  addToast: (message: string, type: ToastType = 'info', duration: number = 5000) => {
+  addToast: (message: string, type: ToastType = 'info', duration: number = 5000, onClick?: () => void) => {
     const id = `${Date.now()}-${Math.random()}`
     set((state) => ({
-      toasts: [...state.toasts, { id, message, type, duration }]
+      toasts: [...state.toasts, { id, message, type, duration, onClick }]
     }))
 
     // Auto-remove after duration

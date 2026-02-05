@@ -5,6 +5,7 @@ import { app, BrowserWindow } from 'electron'
 import {
   PERMISSION_REQUEST_TIMEOUT_MS,
   PERMISSION_HOOK_FILENAME,
+  PERMISSION_ALLOWLIST_FILENAME,
 } from '../constants.js'
 import type {
   PermissionRequest,
@@ -76,14 +77,19 @@ export class PermissionServer {
     console.log('[PermissionServer] Stopped')
   }
 
-  resolvePermission(id: string, response: PermissionResponse): boolean {
+  resolvePermission(id: string, response: PermissionResponse, alwaysAllow?: boolean): boolean {
     const pending = this.pending.get(id)
     if (!pending) return false
+
+    if (alwaysAllow && response.decision === 'allow') {
+      const projectPath = path.dirname(path.dirname(pending.ipcDir))
+      PermissionServer.addToAllowlist(projectPath, pending.request.tool_name)
+    }
 
     clearTimeout(pending.timeoutHandle)
     pending.resolveHttp(response)
     this.pending.delete(id)
-    console.log(`[PermissionServer] Resolved ${id}: ${response.decision}`)
+    console.log(`[PermissionServer] Resolved ${id}: ${response.decision}${alwaysAllow ? ' (always)' : ''}`)
     return true
   }
 
@@ -131,6 +137,14 @@ export class PermissionServer {
   }
 
   private handleRequest(id: string, request: PermissionRequest, ipcDir: string): void {
+    // Check allowlist — auto-resolve without showing UI
+    const projectPath = path.dirname(path.dirname(ipcDir))
+    if (PermissionServer.isToolAllowed(projectPath, request.tool_name)) {
+      this.writeResponse(ipcDir, id, { decision: 'allow', reason: 'Always allowed' })
+      console.log(`[PermissionServer] Auto-allowed ${id}: ${request.tool_name} (allowlisted)`)
+      return
+    }
+
     const now = Date.now()
 
     const timeoutHandle = setTimeout(() => {
@@ -144,6 +158,7 @@ export class PermissionServer {
     const pending: PendingPermission = {
       id,
       request,
+      ipcDir,
       receivedAt: now,
       resolveHttp: (response: PermissionResponse) => {
         this.writeResponse(ipcDir, id, response)
@@ -247,6 +262,29 @@ export class PermissionServer {
     } catch {
       return false
     }
+  }
+
+  static readAllowlist(projectPath: string): string[] {
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    try {
+      const data = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'))
+      return Array.isArray(data) ? data : []
+    } catch {
+      return []
+    }
+  }
+
+  static isToolAllowed(projectPath: string, toolName: string): boolean {
+    return PermissionServer.readAllowlist(projectPath).includes(toolName)
+  }
+
+  static addToAllowlist(projectPath: string, toolName: string): void {
+    const allowlist = PermissionServer.readAllowlist(projectPath)
+    if (allowlist.includes(toolName)) return
+    allowlist.push(toolName)
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    writeFileForWsl(allowlistPath, JSON.stringify(allowlist, null, 2))
+    console.log(`[PermissionServer] Added "${toolName}" to allowlist for ${projectPath}`)
   }
 
   static installHook(projectPath: string): { success: boolean; error?: string } {

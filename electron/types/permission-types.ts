@@ -13,6 +13,7 @@ export interface PermissionResponse {
 export interface PendingPermission {
   id: string
   request: PermissionRequest
+  ipcDir: string
   receivedAt: number
   resolveHttp: (response: PermissionResponse) => void
   timeoutHandle: NodeJS.Timeout

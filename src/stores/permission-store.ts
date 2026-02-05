@@ -14,6 +14,9 @@ interface PermissionState {
   addRequest: (request: PermissionRequestForUI) => void
   removeRequest: (id: string) => void
   getNextRequest: () => PermissionRequestForUI | null
+  getNextRequestForSession: (sessionId: string | null) => PermissionRequestForUI | null
+  hasRequestsForSession: (sessionId: string | null) => boolean
+  getSessionIdsWithPending: () => Set<string>
   setHookInstalled: (projectPath: string, installed: boolean) => void
   isHookInstalled: (projectPath: string) => boolean | undefined
 }
@@ -33,6 +36,20 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
     })),
 
   getNextRequest: () => get().pendingRequests[0] ?? null,
+
+  getNextRequestForSession: (sessionId) => {
+    if (!sessionId) return null
+    return get().pendingRequests.find((r) => r.sessionId === sessionId) ?? null
+  },
+
+  hasRequestsForSession: (sessionId) => {
+    if (!sessionId) return false
+    return get().pendingRequests.some((r) => r.sessionId === sessionId)
+  },
+
+  getSessionIdsWithPending: () => {
+    return new Set(get().pendingRequests.map((r) => r.sessionId))
+  },
 
   setHookInstalled: (projectPath, installed) =>
     set((state) => ({
