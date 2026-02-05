@@ -419,6 +419,25 @@ export interface AgentMessage {
 }
 
 /**
+ * A debug event entry captured from the raw detector event stream.
+ * Used by the DebugEventLog panel to visualize event flow.
+ */
+export interface DebugEventEntry {
+  /** Monotonic index for ordering */
+  index: number
+  /** Event type (e.g. 'agent-message-start', 'agent-process-exit') */
+  type: string
+  /** Timestamp of the event */
+  timestamp: number
+  /** Key details extracted from event.data (kept small to avoid memory bloat) */
+  summary: string
+  /** Current isActive value AFTER this event was processed */
+  isActiveAfter: boolean
+  /** Current processExited value AFTER this event was processed */
+  processExitedAfter: boolean
+}
+
+/**
  * State for a terminal's agent interaction
  */
 export interface TerminalAgentState {
@@ -436,6 +455,8 @@ export interface TerminalAgentState {
   processExited: boolean
   /** Error message if something went wrong */
   error?: string
+  /** Debug event log for the DebugEventLog panel (capped at 200 entries) */
+  debugEvents?: DebugEventEntry[]
 }
 
 /**

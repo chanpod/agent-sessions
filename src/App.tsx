@@ -31,6 +31,7 @@ import { useSSHStore } from './stores/ssh-store'
 import { useGitStore } from './stores/git-store'
 import { useGlobalRulesStore } from './stores/global-rules-store'
 import { useToastStore } from './stores/toast-store'
+import { useNotificationStore } from './stores/notification-store'
 import { disposeTerminal, clearTerminal } from './lib/terminal-registry'
 import { useDetectedServers } from './hooks/useDetectedServers'
 import { AgentMessageView } from './components/agent'
@@ -367,6 +368,25 @@ function App() {
           ? useTerminalStore.getState().sessions.find((s) => s.id === targetTerminalId)?.title ?? 'Agent session'
           : 'Agent session'
 
+        // Add notification for non-active project permissions
+        const notifSession = targetTerminalId
+          ? useTerminalStore.getState().sessions.find((s) => s.id === targetTerminalId)
+          : null
+        const notifProject = notifSession?.projectId
+          ? useProjectStore.getState().projects.find((p) => p.id === notifSession.projectId)
+          : null
+
+        if (notifProject && notifSession?.projectId !== useProjectStore.getState().activeProjectId) {
+          useNotificationStore.getState().addNotification({
+            projectId: notifProject.id,
+            projectName: notifProject.name,
+            terminalId: targetTerminalId!,
+            sessionTitle: sessionLabel,
+            type: 'permission',
+            message: `Needs permission for ${request.toolName}`,
+          })
+        }
+
         addToast(
           `${sessionLabel} needs permission for ${request.toolName}`,
           'warning',
@@ -375,8 +395,8 @@ function App() {
             ? () => {
                 const session = useTerminalStore.getState().sessions.find((s) => s.id === targetTerminalId)
                 if (session?.projectId) {
+                  useProjectStore.getState().setActiveProject(session.projectId)
                   useTerminalStore.getState().setActiveAgentSession(targetTerminalId)
-                  useViewStore.getState().setProjectTerminalActive(session.projectId, targetTerminalId!)
                 }
               }
             : undefined

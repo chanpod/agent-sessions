@@ -427,7 +427,9 @@ function writeFileForWsl(windowsPath: string, content: string): void {
   if (process.platform === 'win32') {
     const wslPath = winToWsl(windowsPath)
     try {
-      execSync(`bash.exe -c 'cat > "${wslPath}"'`, {
+      // Remove existing file first to clear any broken NTFS metadata
+      // that prevents WSL from reading files written by Windows APIs
+      execSync(`bash.exe -c 'rm -f "${wslPath}" && cat > "${wslPath}"'`, {
         input: content,
         timeout: 10000,
       })

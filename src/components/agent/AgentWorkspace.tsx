@@ -1,11 +1,13 @@
 import { useEffect, useCallback, useState, useMemo } from 'react'
 import { Pencil, PencilOff } from 'lucide-react'
+import { IconSparkles } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { AgentMessageView } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
+import { DebugEventLog } from './DebugEventLog'
 import { cn } from '@/lib/utils'
 import type {
   AgentConversation,
@@ -200,16 +202,18 @@ export function AgentWorkspace({
       })
       setIsProcessing(true)
 
-      // Auto-generate title on 2nd user message
+      // Auto-generate title after 2+ user messages once sessionId is available.
+      // Uses >= 2 so that if the sessionId wasn't captured yet on the 2nd message
+      // (race condition with agent-session-init event), it retries on later messages.
       const conversation = store.getConversation(initialProcessId)
       const currentSessionId = sessionId || store.getSessionId(initialProcessId)
       if (
-        conversation.userMessages.length === 2 &&
+        conversation.userMessages.length >= 2 &&
         currentSessionId &&
         !store.hasTitleBeenGenerated(currentSessionId)
       ) {
         store.markTitleGenerated(currentSessionId)
-        const msgs = conversation.userMessages.map((m) => m.content)
+        const msgs = conversation.userMessages.slice(0, 2).map((m) => m.content)
         window.electron.agent.generateTitle({ userMessages: msgs }).then((result) => {
           if (result.success && result.title) {
             useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
@@ -279,7 +283,7 @@ export function AgentWorkspace({
   )
 
   const handleAnswerQuestion = useCallback(
-    (answers: Record<string, string>) => {
+    (toolId: string, answers: Record<string, string>) => {
       // Get the latest active process ID to send the answer to
       const processIds = Array.from(activeProcessIds)
       const latestProcessId = processIds[processIds.length - 1] ?? initialProcessId
@@ -287,11 +291,23 @@ export function AgentWorkspace({
       // Format the answer as a JSON string with the selected answers
       const answerContent = JSON.stringify({ answers })
 
+      // Mark as waiting so the sidebar badge transitions from "thinking" to "responding".
+      // This clears the amber badge immediately after the user submits their answer.
+      useAgentStreamStore.getState().markWaitingForResponse(latestProcessId)
+
+      // Send as a tool_result so Claude CLI recognizes it as a response to AskUserQuestion.
+      // The stream-json input format expects: { type, message: { role, content: [{ type, tool_use_id, content }] } }
       window.electron?.agent.sendMessage(latestProcessId, {
-        type: 'user',
+        type: 'tool_result',
         message: {
           role: 'user',
-          content: answerContent,
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: toolId,
+              content: answerContent,
+            },
+          ],
         },
       })
     },
@@ -394,8 +410,9 @@ export function AgentWorkspace({
     }
   }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive])
 
-  // Determine placeholder text
+  // Determine placeholder text and thinking indicator state
   const isStreaming = conversation.status === 'streaming'
+  const showThinkingIndicator = isStreaming && !conversation.currentMessage
   const placeholder = isStreaming
     ? 'Agent is responding...'
     : `Send a message to ${agentType}...`
@@ -421,6 +438,33 @@ export function AgentWorkspace({
           onAnswerQuestion={handleAnswerQuestion}
         />
       </div>
+
+      {/* Thinking indicator - outside scroll container to avoid breaking Virtuoso followOutput */}
+      <div
+        className={cn(
+          'overflow-hidden transition-all duration-300 ease-out',
+          showThinkingIndicator
+            ? 'max-h-12 opacity-100'
+            : 'max-h-0 opacity-0'
+        )}
+      >
+        <div className="flex items-center gap-2.5 px-4 py-2 max-w-3xl mx-auto">
+          <div className="flex size-5 items-center justify-center rounded-md bg-primary/10 ring-1 ring-primary/20">
+            <IconSparkles className="size-3 text-primary" />
+          </div>
+          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Thinking
+          </span>
+          <div className="flex gap-0.5">
+            <span className="size-1 rounded-full bg-primary/60 animate-pulse" />
+            <span className="size-1 rounded-full bg-primary/40 animate-pulse" style={{ animationDelay: '150ms' }} />
+            <span className="size-1 rounded-full bg-primary/20 animate-pulse" style={{ animationDelay: '300ms' }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Debug Event Log - collapsible panel above input */}
+      <DebugEventLog processIds={activeProcessIds} />
 
       {/* Input Area - Floating at bottom */}
       <div className="px-4 pb-4 pt-2">

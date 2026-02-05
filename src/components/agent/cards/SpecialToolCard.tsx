@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 interface SpecialToolCardProps {
   toolUse: ToolUseBlock
   toolResult?: ToolResultBlock
-  onAnswerQuestion?: (answers: Record<string, string>) => void
+  onAnswerQuestion?: (toolId: string, answers: Record<string, string>) => void
 }
 
 /**
@@ -100,6 +100,7 @@ export function SpecialToolCard({ toolUse, toolResult, onAnswerQuestion }: Speci
           input={parsed}
           toolResult={toolResult}
           status={toolUse.status}
+          toolId={toolUse.toolId}
           onAnswerQuestion={onAnswerQuestion}
         />
       )

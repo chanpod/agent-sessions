@@ -9,6 +9,7 @@ import { useGlobalRulesStore } from '../stores/global-rules-store'
 import { useAllProjectAgentStatuses } from '../hooks/useProjectAgentStatus'
 import { ProjectSwitcherItem } from './ProjectSwitcherItem'
 import { SettingsModal } from './SettingsModal'
+import NotificationCenter from './NotificationCenter'
 import { cn } from '../lib/utils'
 
 interface ProjectSwitcherProps {
@@ -38,14 +39,6 @@ export function ProjectSwitcher({
   const pinnedProjects = projects.filter((p) => p.isPinned)
   const unpinnedProjects = projects.filter((p) => !p.isPinned)
   const isDashboard = activeView.type === 'dashboard'
-
-  // Determine if any non-active project has a notification-worthy status
-  const hasGlobalNotification = projects.some((p) => {
-    if (p.id === activeProjectId) return false
-    const summary = agentStatuses[p.id]
-    if (!summary) return false
-    return summary.done > 0 || summary.needsAttention > 0 || summary.responding > 0 || summary.thinking > 0
-  })
 
   // Git watch effect (migrated from ProjectHeader)
   useEffect(() => {
@@ -93,15 +86,11 @@ export function ProjectSwitcher({
               'text-zinc-500 group-hover:text-zinc-300',
               open && 'rotate-180 text-zinc-300'
             )} />
-            {/* Global notification dot */}
-            {hasGlobalNotification && !open && (
-              <span className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0 animate-pulse" />
-            )}
           </Popover.Trigger>
 
           <Popover.Portal>
             <Popover.Positioner sideOffset={4} align="start" className="z-[100]">
-              <Popover.Popup className="w-72 bg-zinc-800 border border-zinc-700 rounded-lg shadow-2xl py-1.5 outline-none">
+              <Popover.Popup className="w-80 bg-zinc-800 border border-zinc-700 rounded-lg shadow-2xl py-1.5 outline-none">
                 {/* Dashboard */}
                 <button
                   onClick={handleSelectDashboard}
@@ -201,6 +190,8 @@ export function ProjectSwitcher({
             </Popover.Positioner>
           </Popover.Portal>
         </Popover.Root>
+
+        <NotificationCenter />
 
         {/* Global Settings button */}
         <button

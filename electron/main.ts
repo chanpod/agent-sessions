@@ -1218,7 +1218,7 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
   }
 })
 
-ipcMain.handle('agent:send-message', async (_event, id: string, message: { type: 'user', message: { role: 'user', content: string } }) => {
+ipcMain.handle('agent:send-message', async (_event, id: string, message: Record<string, unknown>) => {
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
   const agentInfo = agentTerminals.get(id)

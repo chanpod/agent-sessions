@@ -4,6 +4,7 @@ import { electronStorage } from '../lib/electron-storage'
 import { LayoutMode } from './grid-store'
 import { useViewStore } from './view-store'
 import { useTerminalStore } from './terminal-store'
+import { useNotificationStore } from './notification-store'
 
 export type ProjectTab = 'terminals' | 'files' | 'git' | 'search'
 
@@ -195,6 +196,16 @@ export const useProjectStore = create<ProjectStore>()(
             ),
           }
         })
+
+        // Auto-dismiss notifications for the newly active project
+        if (id) {
+          useNotificationStore.getState().dismissAllForProject(id)
+        }
+
+        // Auto-dismiss notifications for the newly active project
+        if (id) {
+          useNotificationStore.getState().dismissAllForProject(id)
+        }
       },
 
       toggleProjectExpanded: (id) =>

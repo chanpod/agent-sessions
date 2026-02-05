@@ -10,6 +10,7 @@ import {
   IconSparkles,
   IconChevronDown,
   IconChecklist,
+  IconMap,
 } from '@tabler/icons-react'
 
 import type {
@@ -36,6 +37,7 @@ import { CARD_NAV_CONFIG, CARD_NAV_TOOL_NAMES } from '@/components/agent/cards/c
 import type { CardNavEntry } from '@/components/agent/cards/card-nav-config'
 import { ContextUsageIndicator } from '@/components/agent/ContextUsageIndicator'
 import { TodoSheet, extractLatestTodos } from '@/components/agent/TodoSheet'
+import { PlanSheet, extractLatestPlan } from '@/components/agent/PlanSheet'
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -53,7 +55,7 @@ interface AgentMessageViewProps {
   className?: string
   autoScroll?: boolean
   agentType?: string
-  onAnswerQuestion?: (answers: Record<string, string>) => void
+  onAnswerQuestion?: (toolId: string, answers: Record<string, string>) => void
 }
 
 interface DefaultBlockRendererProps {
@@ -285,11 +287,15 @@ export function AgentMessageView({
   const isStreaming = conversation.status === 'streaming'
   const [_isAtBottom, setIsAtBottom] = useState(true)
   const [todoSheetOpen, setTodoSheetOpen] = useState(false)
+  const [planSheetOpen, setPlanSheetOpen] = useState(false)
 
   // Extract latest todo state for the floating badge
   const todos = useMemo(() => extractLatestTodos(conversation), [conversation])
   const todoCompletedCount = todos.filter((t) => t.status === 'completed').length
   const todoTotalCount = todos.length
+
+  // Extract latest plan state for the floating badge
+  const plan = useMemo(() => extractLatestPlan(conversation), [conversation])
 
   // Build render context
   const context: RenderContext = useMemo(
@@ -302,16 +308,15 @@ export function AgentMessageView({
     [conversation.terminalId, conversation.agentType, isStreaming]
   )
 
-  // Whether to show the "Thinking" indicator at the bottom of the list.
-  // Visible when the conversation is streaming but no assistant message is
-  // actively being built (i.e. between tool calls / waiting for the model).
-  const showThinkingIndicator = isStreaming && !conversation.currentMessage
-
-  // Combine completed messages with current streaming message
+  // Combine completed messages with current streaming message.
+  // Dedup: don't append currentMessage if a completed message with the same ID already exists.
   const allMessages = useMemo(() => {
     const messages = [...conversation.messages]
     if (conversation.currentMessage) {
-      messages.push(conversation.currentMessage)
+      const alreadyExists = messages.some((m) => m.id === conversation.currentMessage!.id)
+      if (!alreadyExists) {
+        messages.push(conversation.currentMessage)
+      }
     }
     return messages
   }, [conversation.messages, conversation.currentMessage])
@@ -402,6 +407,24 @@ export function AgentMessageView({
                 </button>
               )
             })}
+            {plan && (
+              <button
+                onClick={() => setPlanSheetOpen(true)}
+                className={cn(
+                  'flex items-center gap-2 rounded-full border px-3 py-1.5',
+                  'transition-colors duration-150 cursor-pointer',
+                  'hover:brightness-125',
+                  'border-blue-500/30 bg-blue-500/10',
+                )}
+              >
+                <div className="flex size-5 items-center justify-center rounded-full bg-blue-500/15">
+                  <IconMap className="size-3 text-blue-400" />
+                </div>
+                <span className="text-xs font-medium text-blue-400">
+                  Plan
+                </span>
+              </button>
+            )}
             {todoTotalCount > 0 && (
               <button
                 onClick={() => setTodoSheetOpen(true)}
@@ -425,6 +448,11 @@ export function AgentMessageView({
             )}
           </div>
 
+          <PlanSheet
+            open={planSheetOpen}
+            onOpenChange={setPlanSheetOpen}
+            conversation={conversation}
+          />
           <TodoSheet
             open={todoSheetOpen}
             onOpenChange={setTodoSheetOpen}
@@ -462,20 +490,7 @@ export function AgentMessageView({
                 )}
               </div>
             )}
-            components={{
-              Footer: () =>
-                showThinkingIndicator ? (
-                  <div className="flex items-center gap-2 px-4 py-3 max-w-3xl mx-auto">
-                    <div className="flex size-6 items-center justify-center rounded-full bg-primary/15">
-                      <IconSparkles className="size-3.5 text-primary" />
-                    </div>
-                    <span className="text-sm font-medium text-foreground">
-                      Thinking
-                    </span>
-                    <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
-                  </div>
-                ) : null,
-            }}
+            components={{}}
           />
         </div>
       )}
@@ -582,7 +597,7 @@ function AssistantTurnRenderer({
   turn: AssistantTurn
   context: RenderContext
   composer?: AgentUIComposer
-  onAnswerQuestion?: (answers: Record<string, string>) => void
+  onAnswerQuestion?: (toolId: string, answers: Record<string, string>) => void
 }) {
   // Partition activity blocks into regular (stay in Activity box) and promoted (special cards)
   const { regularActivity, promotedTools } = partitionSpecialTools(turn.activityBlocks)

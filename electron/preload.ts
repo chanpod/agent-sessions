@@ -393,7 +393,7 @@ const electronAPI = {
     // Agent process API
     spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[] }) =>
       ipcRenderer.invoke('agent:spawn', options),
-    sendMessage: (id: string, message: { type: 'user'; message: { role: 'user'; content: string } }) =>
+    sendMessage: (id: string, message: Record<string, unknown>) =>
       ipcRenderer.invoke('agent:send-message', id, message),
     kill: (id: string) =>
       ipcRenderer.invoke('agent:kill', id),

@@ -31,18 +31,22 @@ interface QuestionCardProps {
   input: Record<string, unknown>
   toolResult?: { result: string; isError?: boolean }
   status: 'pending' | 'running' | 'completed' | 'error'
-  onAnswerQuestion?: (answers: Record<string, string>) => void
+  toolId?: string
+  onAnswerQuestion?: (toolId: string, answers: Record<string, string>) => void
 }
 
 // Key for the "Other" custom text option
 const OTHER_KEY = '__other__'
 
-export function QuestionCard({ input, toolResult, status, onAnswerQuestion }: QuestionCardProps) {
+export function QuestionCard({ input, toolResult, status, toolId, onAnswerQuestion }: QuestionCardProps) {
   const [isOpen, setIsOpen] = useState(true)
 
   const questions = input.questions as Question[] | undefined
-  const isComplete = status === 'completed' || status === 'error'
-  const isInteractive = status === 'running' && !!onAnswerQuestion
+  const isComplete = (status === 'completed' || status === 'error') && !!toolResult
+  // Interactive when the tool has rendered its input and no answer has been received yet.
+  // The block may be marked 'completed' by content_block_stop before the user answers,
+  // so we check for the absence of toolResult rather than relying on status alone.
+  const isInteractive = !toolResult && !!onAnswerQuestion && !!toolId
 
   // Selection state: Record<questionIndex, Set<optionLabel>>
   const [selections, setSelections] = useState<Record<number, Set<string>>>({})
@@ -98,7 +102,7 @@ export function QuestionCard({ input, toolResult, status, onAnswerQuestion }: Qu
   )
 
   const handleSubmit = useCallback(() => {
-    if (!questions || !onAnswerQuestion || submitted) return
+    if (!questions || !onAnswerQuestion || submitted || !toolId) return
 
     const answers: Record<string, string> = {}
     for (let qi = 0; qi < questions.length; qi++) {
@@ -120,8 +124,8 @@ export function QuestionCard({ input, toolResult, status, onAnswerQuestion }: Qu
     }
 
     setSubmitted(true)
-    onAnswerQuestion(answers)
-  }, [questions, selections, otherTexts, onAnswerQuestion, submitted])
+    onAnswerQuestion(toolId, answers)
+  }, [questions, selections, otherTexts, onAnswerQuestion, submitted, toolId])
 
   // Check if any question has a selection (for enabling submit button)
   const hasAnySelection = questions

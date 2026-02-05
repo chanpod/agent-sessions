@@ -1,4 +1,4 @@
-import { IconMap, IconMessageQuestion } from '@tabler/icons-react'
+import { IconMessageQuestion } from '@tabler/icons-react'
 import type { FC } from 'react'
 
 export interface CardNavConfigEntry {
@@ -20,15 +20,6 @@ export interface CardNavEntry extends CardNavConfigEntry {
  * Order here determines display order in the nav panel.
  */
 export const CARD_NAV_CONFIG: CardNavConfigEntry[] = [
-  {
-    toolName: 'ExitPlanMode',
-    label: 'Plan',
-    icon: IconMap,
-    borderClass: 'border-blue-500/30',
-    bgClass: 'bg-blue-500/10',
-    textClass: 'text-blue-400',
-    iconBgClass: 'bg-blue-500/15',
-  },
   {
     toolName: 'AskUserQuestion',
     label: 'Question',

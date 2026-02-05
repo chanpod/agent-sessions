@@ -3,6 +3,9 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { electronStorage } from '../lib/electron-storage'
 import { useTerminalStore } from './terminal-store'
 import { usePermissionStore } from './permission-store'
+import { useNotificationStore } from './notification-store'
+import { useToastStore } from './toast-store'
+import { useProjectStore } from './project-store'
 import type {
   AgentMessage,
   ContentBlock,
@@ -16,6 +19,7 @@ import type {
   AgentToolEndData,
   AgentMessageEndData,
   AgentErrorData,
+  DebugEventEntry,
 } from '../types/stream-json'
 
 /**
@@ -61,6 +65,9 @@ interface AgentStreamStore {
 
   // Runtime-only: tracks sessions that already had title generation triggered
   titleGeneratedSessions: Set<string>
+
+  // Runtime-only: tracks terminals that have already been notified (prevents duplicate notifications)
+  notifiedTerminals: Set<string>
 
   // Actions
   processEvent(terminalId: string, event: AgentStreamEvent): void
@@ -124,6 +131,70 @@ function updateBlock(
   return blocks.map((block, idx) => (idx === blockIndex ? updater(block) : block))
 }
 
+/** Max debug events kept per terminal to avoid memory bloat */
+const DEBUG_EVENT_CAP = 200
+
+/** Monotonic counter for debug event ordering */
+let debugEventCounter = 0
+
+/**
+ * Create a short summary string from event data for the debug panel.
+ * Intentionally terse — just the key fields that help diagnose loading-state bugs.
+ */
+function summarizeEvent(type: string, data: unknown): string {
+  if (!data || typeof data !== 'object') return ''
+  const d = data as Record<string, unknown>
+  switch (type) {
+    case 'agent-message-start':
+      return `msgId=${d.messageId} model=${d.model}`
+    case 'agent-message-end':
+      return `stopReason=${d.stopReason}`
+    case 'agent-tool-start':
+      return `tool=${d.name} id=${d.toolId}`
+    case 'agent-block-end':
+    case 'agent-tool-end':
+      return `blockIndex=${d.blockIndex}`
+    case 'agent-error':
+      return `${d.errorType}: ${d.message}`
+    case 'agent-process-exit':
+      return `exitCode=${d.exitCode}`
+    case 'agent-session-init':
+      return `sessionId=${d.sessionId}`
+    case 'agent-text-delta':
+      return `blockIndex=${d.blockIndex} len=${(d.text as string)?.length ?? 0}`
+    case 'agent-thinking-delta':
+      return `blockIndex=${d.blockIndex} len=${(d.text as string)?.length ?? 0}`
+    case 'agent-tool-input-delta':
+      return `blockIndex=${d.blockIndex}`
+    default:
+      return JSON.stringify(d).substring(0, 80)
+  }
+}
+
+/**
+ * Append a debug event entry to the terminal state's debug log.
+ * Returns a new array (immutable). Caps at DEBUG_EVENT_CAP entries.
+ */
+function appendDebugEvent(
+  existing: DebugEventEntry[] | undefined,
+  type: string,
+  data: unknown,
+  isActiveAfter: boolean,
+  processExitedAfter: boolean,
+): DebugEventEntry[] {
+  const entry: DebugEventEntry = {
+    index: debugEventCounter++,
+    type,
+    timestamp: Date.now(),
+    summary: summarizeEvent(type, data),
+    isActiveAfter,
+    processExitedAfter,
+  }
+  const prev = existing ?? []
+  const next = [...prev, entry]
+  return next.length > DEBUG_EVENT_CAP ? next.slice(-DEBUG_EVENT_CAP) : next
+}
+
 // Promise resolver for waiting on rehydration
 let rehydrationResolver: (() => void) | null = null
 const rehydrationPromise = new Promise<void>((resolve) => {
@@ -141,6 +212,45 @@ export function waitForRehydration(): Promise<void> {
   return rehydrationPromise
 }
 
+/**
+ * Emit notifications when agents finish or need attention in non-active projects.
+ * Uses getState() pattern to avoid circular dependencies.
+ */
+function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attention') {
+  // Dynamic imports to avoid circular deps — use getState() pattern
+  const session = useTerminalStore.getState().sessions.find((s) => s.id === terminalId)
+  if (!session?.projectId) return
+
+  const activeProjectId = useProjectStore.getState().activeProjectId
+  if (session.projectId === activeProjectId) return // Don't notify for active project
+
+  const project = useProjectStore.getState().projects.find((p) => p.id === session.projectId)
+  if (!project) return
+
+  const sessionTitle = session.title ?? 'Agent session'
+
+  useNotificationStore.getState().addNotification({
+    projectId: project.id,
+    projectName: project.name,
+    terminalId,
+    sessionTitle,
+    type,
+    message: type === 'done'
+      ? `${sessionTitle} finished`
+      : `${sessionTitle} needs attention`,
+  })
+
+  useToastStore.getState().addToast(
+    `[${project.name}] ${sessionTitle} ${type === 'done' ? 'finished' : 'needs attention'}`,
+    type === 'done' ? 'success' : 'warning',
+    8000,
+    () => {
+      useProjectStore.getState().setActiveProject(project.id)
+      useTerminalStore.getState().setActiveAgentSession(terminalId)
+    }
+  )
+}
+
 export const useAgentStreamStore = create<AgentStreamStore>()(
   persist(
     (set, get) => ({
@@ -151,6 +261,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       sessionToInitialProcess: new Map(),
       hasRehydrated: false,
       titleGeneratedSessions: new Set(),
+      notifiedTerminals: new Set(),
 
       processEvent: (terminalId: string, event: AgentStreamEvent) => {
         set((state) => {
@@ -163,6 +274,16 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             case 'agent-message-start': {
               const data = event.data as AgentMessageStartData
               console.log('[AgentStreamStore] agent-message-start:', data.messageId, 'terminalId:', terminalId)
+
+              // Dedup: if a completed message with this ID already exists, skip creating a new currentMessage.
+              // This prevents the `assistant` print-mode event from re-creating a message that the
+              // streaming path (message_start -> message_stop) already finalized.
+              if (data.messageId && terminalState.messages.some((m) => m.id === data.messageId)) {
+                console.log('[AgentStreamStore] Skipping duplicate message-start for:', data.messageId)
+                newState = terminalState
+                break
+              }
+
               const newMessage: AgentMessage = {
                 id: data.messageId,
                 model: data.model,
@@ -359,9 +480,17 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               const data = event.data as AgentMessageEndData
               console.log('[AgentStreamStore] agent-message-end received, currentMessage:', !!terminalState.currentMessage, 'stopReason:', data.stopReason)
 
-              // isActive stays true during tool_use (agent will continue after tool execution).
-              // On end_turn the agent is done responding for this turn.
+              // Determine whether the agent is still active after this message ends.
+              //
+              // Only an EXPLICIT `end_turn` means the agent is done for this turn.
+              // `tool_use` means the agent will continue after executing a tool.
+              // `null` / missing stopReason comes from sub-agent messages leaking through
+              // the PTY — these are noise and should NOT change isActive.
               const stillActive = data.stopReason === 'tool_use'
+                ? true
+                : data.stopReason === 'end_turn'
+                  ? false
+                  : terminalState.isActive // preserve current state for null/unknown
 
               if (!terminalState.currentMessage) {
                 // No message to complete - duplicate event. Respect stopReason for isActive.
@@ -427,6 +556,18 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               newState = terminalState
           }
 
+          // Append debug event entry with post-processing state
+          newState = {
+            ...newState,
+            debugEvents: appendDebugEvent(
+              newState.debugEvents,
+              event.type,
+              event.data,
+              newState.isActive,
+              newState.processExited,
+            ),
+          }
+
           terminals.set(terminalId, newState)
           return { terminals }
         })
@@ -434,6 +575,22 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         // Persist session to DB after message completes so it survives app restart
         if (event.type === 'agent-message-end') {
           get().persistSession(terminalId)
+
+          // Emit notification based on stopReason:
+          // - end_turn: agent is done → 'done'
+          // - tool_use: agent is waiting for user input → 'needs-attention'
+          // - null/missing: sub-agent noise → don't notify
+          const endData = event.data as { stopReason?: string }
+          if (endData.stopReason === 'end_turn') {
+            emitAgentNotification(terminalId, 'done')
+            set((state) => {
+              const notifiedTerminals = new Set(state.notifiedTerminals)
+              notifiedTerminals.add(terminalId)
+              return { notifiedTerminals }
+            })
+          } else if (endData.stopReason === 'tool_use') {
+            emitAgentNotification(terminalId, 'needs-attention')
+          }
         }
       },
 
@@ -699,6 +856,16 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               console.log('[AgentStreamStore] Captured session_id from detector:', sessionId, 'for terminal:', event.terminalId)
               get().setTerminalSession(event.terminalId, sessionId)
               useTerminalStore.getState().updateConfigSessionId(event.terminalId, sessionId)
+              // Record in debug log
+              set((state) => {
+                const terminals = new Map(state.terminals)
+                const ts = getOrCreateTerminalState(terminals, event.terminalId)
+                terminals.set(event.terminalId, {
+                  ...ts,
+                  debugEvents: appendDebugEvent(ts.debugEvents, event.type, event.data, ts.isActive, ts.processExited),
+                })
+                return { terminals }
+              })
               return
             }
 
@@ -735,27 +902,39 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 if (!termState) return state
 
                 const terminals = new Map(state.terminals)
-                if (termState.currentMessage) {
-                  // Finalize any in-progress message
-                  terminals.set(event.terminalId, {
-                    ...termState,
-                    messages: [...termState.messages, { ...termState.currentMessage, status: 'completed' as const, completedAt: Date.now() }],
-                    currentMessage: null,
-                    isActive: false,
-                    isWaitingForResponse: false,
-                    processExited: true,
-                  })
-                } else {
-                  terminals.set(event.terminalId, {
-                    ...termState,
-                    isActive: false,
-                    isWaitingForResponse: false,
-                    processExited: true,
-                  })
-                }
+                const baseState = termState.currentMessage
+                  ? {
+                      ...termState,
+                      messages: [...termState.messages, { ...termState.currentMessage, status: 'completed' as const, completedAt: Date.now() }],
+                      currentMessage: null,
+                      isActive: false,
+                      isWaitingForResponse: false,
+                      processExited: true,
+                    }
+                  : {
+                      ...termState,
+                      isActive: false,
+                      isWaitingForResponse: false,
+                      processExited: true,
+                    }
+                // Append debug event
+                terminals.set(event.terminalId, {
+                  ...baseState,
+                  debugEvents: appendDebugEvent(baseState.debugEvents, event.type, event.data, false, true),
+                })
                 return { terminals }
               })
               get().persistSession(event.terminalId)
+              // Only notify on process exit if we didn't already notify on end_turn
+              if (!get().notifiedTerminals.has(event.terminalId)) {
+                emitAgentNotification(event.terminalId, 'done')
+              }
+              // Clean up the tracking set
+              set((state) => {
+                const notifiedTerminals = new Set(state.notifiedTerminals)
+                notifiedTerminals.delete(event.terminalId)
+                return { notifiedTerminals }
+              })
               return
             }
 
@@ -834,6 +1013,16 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
           // Persist session to DB on process exit so conversation history survives app restart
           get().persistSession(id)
+          // Only notify on process exit if we didn't already notify on end_turn
+          if (!get().notifiedTerminals.has(id)) {
+            emitAgentNotification(id, 'done')
+          }
+          // Clean up the tracking set
+          set((state) => {
+            const notifiedTerminals = new Set(state.notifiedTerminals)
+            notifiedTerminals.delete(id)
+            return { notifiedTerminals }
+          })
         })
 
         // Subscribe to errors from agent processes
@@ -871,6 +1060,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           state.terminalToSession = new Map()
           state.sessionToInitialProcess = new Map()
           state.titleGeneratedSessions = new Set()
+          state.notifiedTerminals = new Set()
           state.hasRehydrated = true
           console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
           // Resolve the rehydration promise so waitForRehydration() callers can proceed

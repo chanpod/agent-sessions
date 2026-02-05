@@ -87,15 +87,15 @@ export function ProjectSwitcherItem({
 
   return (
     <>
-      <button
-        onClick={onSelect}
-        onContextMenu={handleContextMenu}
+      <div
         className={cn(
-          'w-full flex items-center gap-3 px-3 py-2 text-left transition-colors rounded-md',
+          'group/item w-full flex items-center gap-3 px-3 py-2 text-left transition-colors rounded-md cursor-pointer',
           isActive
             ? 'bg-zinc-700/50 text-zinc-100'
             : 'text-zinc-300 hover:bg-zinc-700/30 hover:text-zinc-100'
         )}
+        onClick={onSelect}
+        onContextMenu={handleContextMenu}
       >
         <FolderGit2 className="w-4 h-4 flex-shrink-0 text-zinc-400" />
         <div className="flex-1 min-w-0">
@@ -104,14 +104,33 @@ export function ProjectSwitcherItem({
             <div className="text-[11px] text-zinc-500 truncate">{displayPath}</div>
           )}
         </div>
-        <div className="flex-shrink-0">
+        <div className="flex items-center gap-1 flex-shrink-0">
           {isActive ? (
             <Check className="w-4 h-4 text-blue-400" />
           ) : (
             <StatusBadge summary={agentSummary} />
           )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onEdit() }}
+            className="p-1.5 rounded-md text-zinc-600 hover:text-zinc-200 hover:bg-zinc-600/50 opacity-0 group-hover/item:opacity-100 transition-all"
+            title="Edit project"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onTogglePin() }}
+            className={cn(
+              'p-1.5 rounded-md hover:bg-zinc-600/50 transition-all',
+              project.isPinned
+                ? 'text-zinc-400 hover:text-zinc-200 opacity-100'
+                : 'text-zinc-600 hover:text-zinc-200 opacity-0 group-hover/item:opacity-100'
+            )}
+            title={project.isPinned ? 'Unpin project' : 'Pin project'}
+          >
+            {project.isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
+          </button>
         </div>
-      </button>
+      </div>
 
       {showContextMenu && (
         <div

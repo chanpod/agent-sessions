@@ -85,7 +85,7 @@ function AgentTile({
       onClick={onClick}
       className={cn(
         'group relative flex flex-col items-center gap-2 p-3 rounded-xl transition-all duration-200',
-        'border min-w-[88px]',
+        'border min-w-[88px] flex-1',
         selected
           ? `border-white/15 bg-white/[0.06] shadow-lg ${meta.glow}`
           : 'border-transparent hover:border-white/10 hover:bg-white/[0.03]'

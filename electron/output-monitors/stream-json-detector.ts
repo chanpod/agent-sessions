@@ -18,6 +18,8 @@ interface TerminalStreamState {
   usage: { inputTokens: number; outputTokens: number } | null
   stopReason: string | null
   lastEventTime: number
+  /** Message IDs that have been fully processed via the streaming path (message_start -> message_stop). */
+  processedMessageIds: Set<string>
 }
 
 /**
@@ -156,6 +158,7 @@ export class StreamJsonDetector implements OutputDetector {
         usage: null,
         stopReason: null,
         lastEventTime: Date.now(),
+        processedMessageIds: new Set(),
       }
       this.terminalStates.set(terminalId, state)
     }
@@ -292,6 +295,11 @@ export class StreamJsonDetector implements OutputDetector {
           },
         })
 
+        // Track this message ID so the duplicate `assistant` print-mode event is skipped
+        if (state.messageId) {
+          state.processedMessageIds.add(state.messageId)
+        }
+
         // Reset message state for potential next message
         state.messageId = null
         state.model = null
@@ -327,7 +335,9 @@ export class StreamJsonDetector implements OutputDetector {
       }
 
       case 'assistant': {
-        // Assistant message with complete content - emit as full message
+        // Assistant message with complete content - emit as full message.
+        // Claude CLI may emit BOTH streaming events (message_start/content_block_*/message_stop)
+        // AND a complete `assistant` event for the same message. Skip the duplicate.
         const assistantEvent = event as unknown as {
           message?: {
             id?: string
@@ -340,6 +350,11 @@ export class StreamJsonDetector implements OutputDetector {
         }
 
         if (assistantEvent.message) {
+          const msgId = assistantEvent.message.id
+          if (msgId && state.processedMessageIds.has(msgId)) {
+            // Already processed via the streaming path — skip to avoid duplicates
+            break
+          }
           const msg = assistantEvent.message
           state.messageId = msg.id || state.messageId
           state.model = msg.model || state.model
@@ -432,6 +447,13 @@ export class StreamJsonDetector implements OutputDetector {
             },
           })
 
+          // Reset message state so onTerminalExit doesn't emit a spurious synthetic agent-message-end
+          state.messageId = null
+          state.model = null
+          state.currentBlockIndex = -1
+          state.currentBlockType = null
+          state.usage = null
+          state.stopReason = null
         }
         break
       }

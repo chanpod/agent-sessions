@@ -1,0 +1,148 @@
+import { useMemo } from 'react'
+import {
+  IconMap,
+  IconLoader2,
+  IconCheck,
+  IconShieldCheck,
+} from '@tabler/icons-react'
+
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from '@/components/ui/sheet'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Badge } from '@/components/ui/badge'
+import type { AgentConversation } from '@/types/agent-ui'
+
+interface PlanData {
+  planText: string | null
+  allowedPrompts?: Array<{ tool: string; prompt: string }>
+  status: 'pending' | 'running' | 'completed' | 'error'
+}
+
+interface PlanSheetProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  conversation: AgentConversation
+}
+
+/**
+ * Extract the latest ExitPlanMode plan from all conversation messages.
+ * If an agent returns multiple plans, only the latest one is used (full replacement).
+ */
+export function extractLatestPlan(conversation: AgentConversation): PlanData | null {
+  const allMessages = [
+    ...conversation.messages,
+    ...(conversation.currentMessage ? [conversation.currentMessage] : []),
+  ]
+
+  let latestPlan: PlanData | null = null
+
+  for (const msg of allMessages) {
+    if (msg.role !== 'assistant') continue
+    for (const block of msg.blocks) {
+      if (block.type === 'tool_use' && block.toolName === 'ExitPlanMode') {
+        try {
+          const parsed = JSON.parse(block.input)
+
+          const planText = typeof parsed.plan === 'string'
+            ? parsed.plan
+            : parsed.plan != null
+              ? JSON.stringify(parsed.plan, null, 2)
+              : null
+
+          const allowedPrompts = Array.isArray(parsed.allowedPrompts)
+            ? parsed.allowedPrompts
+            : undefined
+
+          latestPlan = {
+            planText,
+            allowedPrompts,
+            status: block.status,
+          }
+        } catch {
+          // Ignore parse errors (e.g. streaming partial JSON)
+        }
+      }
+    }
+  }
+
+  return latestPlan
+}
+
+export function PlanSheet({ open, onOpenChange, conversation }: PlanSheetProps) {
+  const plan = useMemo(() => extractLatestPlan(conversation), [conversation])
+
+  const isComplete = plan?.status === 'completed' || plan?.status === 'error'
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="left" className="flex flex-col w-96">
+        <SheetHeader>
+          <SheetTitle className="flex items-center gap-2">
+            <div className="flex size-6 items-center justify-center rounded-full bg-blue-500/15">
+              <IconMap className="size-3.5 text-blue-400" />
+            </div>
+            Plan
+            {plan && !isComplete && (
+              <IconLoader2 className="size-3 animate-spin text-blue-400/60" />
+            )}
+            {plan && isComplete && plan.status !== 'error' && (
+              <IconCheck className="size-3.5 text-blue-400/60" />
+            )}
+          </SheetTitle>
+          <SheetDescription>
+            {!plan
+              ? 'No plan yet'
+              : isComplete
+                ? 'Plan ready for implementation'
+                : 'Plan is being prepared...'}
+          </SheetDescription>
+        </SheetHeader>
+
+        <ScrollArea className="flex-1 -mx-4 px-4">
+          {!plan || !plan.planText ? (
+            <div className="text-sm text-muted-foreground text-center py-8">
+              {plan
+                ? 'Preparing plan...'
+                : 'A plan will appear here when the agent creates one.'}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4 py-2">
+              {/* Plan content */}
+              <pre className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/80">
+                {plan.planText}
+              </pre>
+
+              {/* Allowed actions */}
+              {plan.allowedPrompts && plan.allowedPrompts.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <IconShieldCheck className="size-3.5 text-blue-400/60" />
+                    <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">
+                      Allowed Actions
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {plan.allowedPrompts.map((p, i) => (
+                      <Badge
+                        key={i}
+                        variant="outline"
+                        className="border-blue-500/30 text-blue-300/80 text-[11px]"
+                      >
+                        {p.prompt}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
+  )
+}
