@@ -1,5 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { IconCopy, IconCheck } from '@tabler/icons-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 import type { TextBlock, CodeBlock } from '@/types/agent-ui'
 import { cn } from '@/lib/utils'
@@ -33,20 +35,56 @@ interface TextContentProps {
 }
 
 function TextContent({ block, className }: TextContentProps) {
+  const components = useMemo(() => ({
+    // Render code blocks using our existing CodeContent-style styling
+    pre({ children }: React.ComponentProps<'pre'>) {
+      return <>{children}</>
+    },
+    code({ className: codeClassName, children, ...props }: React.ComponentProps<'code'>) {
+      const match = /language-(\w+)/.exec(codeClassName || '')
+      const isBlock = match || (typeof children === 'string' && children.includes('\n'))
+
+      if (isBlock) {
+        return (
+          <div className="group relative overflow-hidden rounded-lg bg-[#0d1117] ring-1 ring-white/[0.06] my-2">
+            {match && (
+              <div className="flex items-center border-b border-white/[0.06] px-3 py-1.5 bg-white/[0.02]">
+                <span className="text-[11px] font-medium text-zinc-500">{match[1]}</span>
+              </div>
+            )}
+            <div className="overflow-x-auto p-3">
+              <pre className="m-0">
+                <code className="font-mono text-[13px] leading-relaxed text-zinc-200" {...props}>
+                  {children}
+                </code>
+              </pre>
+            </div>
+          </div>
+        )
+      }
+
+      return (
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12.5px]" {...props}>
+          {children}
+        </code>
+      )
+    },
+  }), [])
+
   return (
     <div
       className={cn(
+        'agent-markdown',
         'prose prose-sm dark:prose-invert max-w-none',
         'text-foreground/90 leading-relaxed',
-        '[&_p]:mb-2 [&_p:last-child]:mb-0',
+        'text-[13.5px] leading-[1.7]',
         className
       )}
     >
-      {/* Simple text rendering - can be enhanced with markdown later */}
-      <div className="whitespace-pre-wrap text-[13.5px] leading-[1.7]">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {block.content}
-        {block.isStreaming && <StreamingCursor />}
-      </div>
+      </ReactMarkdown>
+      {block.isStreaming && <StreamingCursor />}
     </div>
   )
 }

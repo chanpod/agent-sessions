@@ -1,4 +1,4 @@
-import { IconMap, IconChecklist, IconMessageQuestion } from '@tabler/icons-react'
+import { IconMap, IconMessageQuestion } from '@tabler/icons-react'
 import type { FC } from 'react'
 
 export interface CardNavConfigEntry {
@@ -28,15 +28,6 @@ export const CARD_NAV_CONFIG: CardNavConfigEntry[] = [
     bgClass: 'bg-blue-500/10',
     textClass: 'text-blue-400',
     iconBgClass: 'bg-blue-500/15',
-  },
-  {
-    toolName: 'TodoWrite',
-    label: 'Tasks',
-    icon: IconChecklist,
-    borderClass: 'border-emerald-500/30',
-    bgClass: 'bg-emerald-500/10',
-    textClass: 'text-emerald-400',
-    iconBgClass: 'bg-emerald-500/15',
   },
   {
     toolName: 'AskUserQuestion',

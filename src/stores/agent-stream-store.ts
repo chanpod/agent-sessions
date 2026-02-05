@@ -109,6 +109,7 @@ function getOrCreateTerminalState(
     messages: [],
     isActive: false,
     isWaitingForResponse: false,
+    processExited: false,
   }
 }
 
@@ -265,6 +266,15 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 break
               }
 
+              // Deduplicate: skip if a block with this toolId already exists
+              const existingBlock = terminalState.currentMessage.blocks.find(
+                (b) => b.type === 'tool_use' && b.toolId === data.toolId
+              )
+              if (existingBlock) {
+                newState = terminalState
+                break
+              }
+
               // Create new tool_use block
               const newBlock: ContentBlock = {
                 type: 'tool_use',
@@ -313,7 +323,11 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               break
             }
 
-            case 'agent-tool-end': {
+            // agent-tool-end comes from the AgentProcessManager path;
+            // agent-block-end comes from the PTY/detector path (content_block_stop).
+            // Both carry { blockIndex } and mean the same thing: mark the block complete.
+            case 'agent-tool-end':
+            case 'agent-block-end': {
               const data = event.data as AgentToolEndData
               if (!terminalState.currentMessage) {
                 newState = terminalState
@@ -471,6 +485,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             messages,
             isActive: false,
             isWaitingForResponse: false,
+            processExited: true,
           })
           return { terminals }
         })
@@ -556,6 +571,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             messages: sessionData.messages,
             isActive: false,
             isWaitingForResponse: false,
+            processExited: true,
           })
 
           // Restore user messages into conversations Map
@@ -588,28 +604,44 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           return
         }
 
-        const terminalState = state.terminals.get(terminalId)
-        if (!terminalState) {
-          console.warn('[AgentStreamStore] No terminal state found:', terminalId)
-          return
-        }
-
-        // Only persist completed messages (status: 'completed')
-        const completedMessages = terminalState.messages.filter(
-          (msg) => msg.status === 'completed'
-        )
-
-        // Look up user messages from conversations via sessionToInitialProcess
+        // Look up all process IDs for this conversation
         const initialProcessId = state.sessionToInitialProcess.get(sessionId)
         const conversation = initialProcessId ? state.conversations.get(initialProcessId) : undefined
+        const allProcessIds = conversation?.processIds ?? [terminalId]
+
+        // Start with previously persisted messages as a fallback baseline.
+        // This handles processes whose terminal state has already been cleared.
+        const existingSession = state.sessions[sessionId]
+        const messageMap = new Map<string, AgentMessage>()
+        if (existingSession?.messages) {
+          for (const msg of existingSession.messages) {
+            messageMap.set(msg.id, msg)
+          }
+        }
+
+        // Layer on runtime terminal messages from ALL processes in the conversation.
+        // Runtime messages override persisted ones (they may have updated status).
+        for (const pid of allProcessIds) {
+          const termState = state.terminals.get(pid)
+          if (!termState) continue
+          for (const msg of termState.messages) {
+            if (msg.status === 'completed') {
+              messageMap.set(msg.id, msg)
+            }
+          }
+        }
+
+        // Sort by startedAt to maintain chronological order
+        const aggregatedMessages = Array.from(messageMap.values()).sort(
+          (a, b) => a.startedAt - b.startedAt
+        )
+
         const userMessages = conversation?.userMessages ?? []
 
-        // Get existing session data or create new
-        const existingSession = state.sessions[sessionId]
         const sessionData: PersistedSessionData = {
           sessionId,
           agentType: agentType || existingSession?.agentType || 'unknown',
-          messages: completedMessages,
+          messages: aggregatedMessages,
           userMessages,
           lastActiveAt: Date.now(),
           cwd: cwd || existingSession?.cwd || '',
@@ -624,8 +656,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
         console.log('[AgentStreamStore] Persisted session:', {
           sessionId,
-          messageCount: completedMessages.length,
+          messageCount: aggregatedMessages.length,
           userMessageCount: userMessages.length,
+          processCount: allProcessIds.length,
           agentType: sessionData.agentType,
         })
       },
@@ -710,12 +743,14 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                     currentMessage: null,
                     isActive: false,
                     isWaitingForResponse: false,
+                    processExited: true,
                   })
                 } else {
                   terminals.set(event.terminalId, {
                     ...termState,
                     isActive: false,
                     isWaitingForResponse: false,
+                    processExited: true,
                   })
                 }
                 return { terminals }
@@ -782,6 +817,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 currentMessage: null,
                 isActive: false,
                 isWaitingForResponse: false,
+                processExited: true,
               })
             } else {
               // No streaming message, but still clear activity flags
@@ -789,6 +825,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 ...termState,
                 isActive: false,
                 isWaitingForResponse: false,
+                processExited: true,
               })
             }
 
@@ -805,7 +842,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             const termState = state.terminals.get(id)
             const terminals = new Map(state.terminals)
             terminals.set(id, {
-              ...(termState || { currentMessage: null, messages: [], isActive: false, isWaitingForResponse: false }),
+              ...(termState || { currentMessage: null, messages: [], isActive: false, isWaitingForResponse: false, processExited: false }),
               error,
             })
             return { terminals }

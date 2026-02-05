@@ -4,12 +4,11 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Bot, Code, Gem, GripVertical, LayoutDashboard, LayoutGrid, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
+import { Bot, Code, Gem, GripVertical, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import { useTerminalStore, type TerminalSession } from '../stores/terminal-store'
 import { useViewStore } from '../stores/view-store'
 import { useProjectStore } from '../stores/project-store'
 import { useAgentContextStore } from '../stores/agent-context-store'
-import { useGridStore } from '../stores/grid-store'
 import { ActivityIndicator } from './ActivityIndicator'
 import { usePermissionStore } from '../stores/permission-store'
 import { useAgentStreamStore } from '../stores/agent-stream-store'
@@ -29,7 +28,7 @@ interface AgentTerminalsSectionProps {
   projectPath: string
   onCloseTerminal: (id: string) => void
   onReconnectTerminal: (id: string) => void
-  onLaunchAgent: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
+  onLaunchAgent: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => void
 }
 
 /**
@@ -67,11 +66,6 @@ function AgentSessionRow({
 }) {
   const { updateSessionTitle } = useTerminalStore()
   const { setProjectTerminalActive } = useViewStore()
-  const dashboard = useGridStore((state) => state.dashboard)
-  const addTerminalToDashboard = useGridStore((state) => state.addTerminalToDashboard)
-  const removeTerminalFromDashboard = useGridStore((state) => state.removeTerminalFromDashboard)
-
-  const isInDashboard = dashboard.terminalRefs.includes(session.id)
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(session.title)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -188,28 +182,6 @@ function AgentSessionRow({
           <Button
             variant="ghost"
             size="icon-xs"
-            onClick={(e) => {
-              e.stopPropagation()
-              if (isInDashboard) {
-                removeTerminalFromDashboard(session.id)
-              } else {
-                addTerminalToDashboard(session.id)
-              }
-            }}
-            className={cn(
-              'opacity-0 group-hover:opacity-100',
-              isInDashboard ? 'text-sky-300 hover:text-sky-200' : 'text-muted-foreground'
-            )}
-            title={isInDashboard ? 'Remove from Dashboard' : 'Add to Dashboard'}
-          >
-            <LayoutDashboard className="w-3.5 h-3.5" />
-          </Button>
-        )}
-
-        {!isEditing && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
             onClick={handleStartEdit}
             className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
             title="Rename"
@@ -257,7 +229,6 @@ export function AgentTerminalsSection({
   onLaunchAgent,
 }: AgentTerminalsSectionProps) {
   const { sessions, activeAgentSessionId, setActiveSession, setActiveAgentSession } = useTerminalStore()
-  const { activeView, setProjectGridActive } = useViewStore()
   const { projects } = useProjectStore()
   const { contexts, activeContextId, loadContexts } = useAgentContextStore()
 
@@ -317,15 +288,12 @@ export function AgentTerminalsSection({
   }, [projectContexts])
 
 
-  // Check if currently in project grid view for this project
-  const isInGridView = activeView.type === 'project-grid' && activeView.projectId === projectId
-
   // Get installed agents for the launcher
   const installedAgents = agents.filter((a) => a.installed)
 
   // Handle launch from modal
-  const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => {
-    onLaunchAgent(projectId, agentId, contextId, contextContent, skipPermissions)
+  const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => {
+    onLaunchAgent(projectId, agentId, contextId, contextContent, skipPermissions, model)
     setShowLauncher(false)
   }
 
@@ -418,19 +386,6 @@ export function AgentTerminalsSection({
           <div className="flex items-center justify-between">
             <div className="text-xs font-semibold uppercase tracking-[0.3em] text-muted-foreground">
               Sessions
-            </div>
-            <div className="flex items-center gap-1">
-              {agentSessions.length > 1 && (
-                <Button
-                  variant={isInGridView ? 'secondary' : 'outline'}
-                  size="sm"
-                  onClick={() => setProjectGridActive(projectId)}
-                  className="gap-1.5 border-sidebar-border/60"
-                >
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                  Dashboard
-                </Button>
-              )}
             </div>
           </div>
           <Separator className="bg-border/60" />

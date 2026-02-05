@@ -122,7 +122,18 @@ const PRESET_RULES: PresetRule[] = [
       'Briefly explain your approach before making changes, so the user can course-correct if needed.',
     category: 'workflow',
   },
+  {
+    id: 'complete-all-todos',
+    name: 'Complete All Todos',
+    description: 'Ensures the agent marks every task as completed before finishing.',
+    ruleContent:
+      'When using TodoWrite, always mark the current in_progress task as completed before finishing your response. Never leave tasks stuck in in_progress when you are done working on them.',
+    category: 'workflow',
+  },
 ]
+
+/** Preset rule IDs that should default to enabled */
+const DEFAULT_ENABLED_PRESETS = new Set(['complete-all-todos'])
 
 // ============================================================================
 // Utilities
@@ -135,19 +146,19 @@ function generateId(): string {
 function createDefaultRules(): GlobalRule[] {
   return PRESET_RULES.map((preset) => ({
     ...preset,
-    enabled: false,
+    enabled: DEFAULT_ENABLED_PRESETS.has(preset.id),
     isCustom: false,
   }))
 }
 
 function mergeWithPresets(storedRules: GlobalRule[]): GlobalRule[] {
-  // Start with fresh preset rules (all disabled)
+  // Start with fresh preset rules (using default enabled state)
   const merged: GlobalRule[] = createDefaultRules()
 
   // Create a map of stored rules by ID for quick lookup
   const storedMap = new Map(storedRules.map((r) => [r.id, r]))
 
-  // Update preset rules with stored enabled state
+  // Update preset rules with stored enabled state (only if the rule existed in storage)
   for (const rule of merged) {
     const stored = storedMap.get(rule.id)
     if (stored && !stored.isCustom) {

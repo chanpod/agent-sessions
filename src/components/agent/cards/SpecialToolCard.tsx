@@ -4,12 +4,12 @@ import type { ToolUseBlock, ToolResultBlock } from '@/types/agent-ui'
 import { ToolCallInline } from '@/components/agent/ToolCallInline'
 import { PlanCard } from './PlanCard'
 import { QuestionCard } from './QuestionCard'
-import { TodoCard } from './TodoCard'
 import { cn } from '@/lib/utils'
 
 interface SpecialToolCardProps {
   toolUse: ToolUseBlock
   toolResult?: ToolResultBlock
+  onAnswerQuestion?: (answers: Record<string, string>) => void
 }
 
 /**
@@ -46,15 +46,9 @@ const SKELETON_CONFIG: Record<string, SkeletonConfig> = {
     bgClass: 'bg-purple-500/5',
     textClass: 'text-purple-400/60',
   },
-  TodoWrite: {
-    label: 'Tasks',
-    borderClass: 'border-emerald-500/30',
-    bgClass: 'bg-emerald-500/5',
-    textClass: 'text-emerald-400/60',
-  },
 }
 
-const DEFAULT_SKELETON: SkeletonConfig = SKELETON_CONFIG['TodoWrite']!
+const DEFAULT_SKELETON: SkeletonConfig = SKELETON_CONFIG['ExitPlanMode']!
 
 function SpecialToolSkeleton({ toolName }: { toolName: string }) {
   const c = SKELETON_CONFIG[toolName] ?? DEFAULT_SKELETON
@@ -78,7 +72,7 @@ function SpecialToolSkeleton({ toolName }: { toolName: string }) {
  * Router component that renders the appropriate special tool card
  * based on toolName. Falls back to ToolCallInline on parse failure.
  */
-export function SpecialToolCard({ toolUse, toolResult }: SpecialToolCardProps) {
+export function SpecialToolCard({ toolUse, toolResult, onAnswerQuestion }: SpecialToolCardProps) {
   const parsed = safeParseJson(toolUse.input)
 
   // If JSON doesn't parse and tool is still running/pending, show skeleton
@@ -106,14 +100,7 @@ export function SpecialToolCard({ toolUse, toolResult }: SpecialToolCardProps) {
           input={parsed}
           toolResult={toolResult}
           status={toolUse.status}
-        />
-      )
-    case 'TodoWrite':
-      return (
-        <TodoCard
-          input={parsed}
-          toolResult={toolResult}
-          status={toolUse.status}
+          onAnswerQuestion={onAnswerQuestion}
         />
       )
     default:

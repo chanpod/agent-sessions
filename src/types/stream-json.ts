@@ -347,6 +347,7 @@ export type AgentStreamEvent =
   | { type: 'agent-tool-start'; data: AgentToolStartData }
   | { type: 'agent-tool-input-delta'; data: AgentToolInputDeltaData }
   | { type: 'agent-tool-end'; data: AgentToolEndData }
+  | { type: 'agent-block-end'; data: AgentToolEndData }
   | { type: 'agent-message-end'; data: AgentMessageEndData }
   | { type: 'agent-error'; data: AgentErrorData }
 
@@ -429,6 +430,10 @@ export interface TerminalAgentState {
   isActive: boolean
   /** Whether we're waiting for the agent to start responding (message sent, no response yet) */
   isWaitingForResponse: boolean
+  /** Whether the backing PTY process has exited. Used as a safety-net: even if isActive
+   *  is incorrectly cleared during tool execution, we know the agent isn't done until
+   *  the process actually exits. */
+  processExited: boolean
   /** Error message if something went wrong */
   error?: string
 }
@@ -441,6 +446,7 @@ export const initialTerminalAgentState: TerminalAgentState = {
   messages: [],
   isActive: false,
   isWaitingForResponse: false,
+  processExited: false,
 }
 
 // =============================================================================

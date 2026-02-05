@@ -249,19 +249,26 @@ export class PermissionServer {
   }
 
   static isHookInstalled(projectPath: string): boolean {
-    const settingsPath = path.join(projectPath, '.claude', 'settings.json')
-    if (!fs.existsSync(settingsPath)) return false
+    // Check both local (preferred) and repo-level settings
+    const localSettingsPath = path.join(projectPath, '.claude', 'settings.local.json')
+    const repoSettingsPath = path.join(projectPath, '.claude', 'settings.json')
 
-    try {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-      const matcherGroups = settings.hooks?.PreToolUse
-      if (!Array.isArray(matcherGroups)) return false
-      return matcherGroups.some((group: { hooks?: Array<{ command?: string }> }) =>
-        group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))
-      )
-    } catch {
-      return false
+    for (const settingsPath of [localSettingsPath, repoSettingsPath]) {
+      if (!fs.existsSync(settingsPath)) continue
+      try {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+        const matcherGroups = settings.hooks?.PreToolUse
+        if (!Array.isArray(matcherGroups)) continue
+        if (matcherGroups.some((group: { hooks?: Array<{ command?: string }> }) =>
+          group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))
+        )) {
+          return true
+        }
+      } catch {
+        continue
+      }
     }
+    return false
   }
 
   static readAllowlist(projectPath: string): string[] {
@@ -295,7 +302,8 @@ export class PermissionServer {
 
     const claudeDir = path.join(projectPath, '.claude')
     const hooksDir = path.join(claudeDir, 'hooks')
-    const settingsPath = path.join(claudeDir, 'settings.json')
+    const settingsPath = path.join(claudeDir, 'settings.local.json')
+    const repoSettingsPath = path.join(claudeDir, 'settings.json')
     const ipcDir = path.join(claudeDir, IPC_DIR_NAME)
     const installedScriptPath = path.join(hooksDir, PERMISSION_HOOK_FILENAME)
 
@@ -315,7 +323,7 @@ export class PermissionServer {
     const relativeIpcDir = `.claude/${IPC_DIR_NAME}`
     const expectedCommand = `node "${relativeScript}" "${relativeIpcDir}"`
 
-    // Read existing settings or start fresh
+    // Read existing local settings or start fresh
     let settings: Record<string, unknown> = {}
     if (fs.existsSync(settingsPath)) {
       try {
@@ -331,6 +339,8 @@ export class PermissionServer {
       for (const group of existingGroups as Array<{ hooks?: Array<{ command?: string }> }>) {
         const match = group.hooks?.find(h => h.command?.includes(PERMISSION_HOOK_FILENAME))
         if (match?.command === expectedCommand) {
+          // Still migrate old repo settings even if local is up-to-date
+          PermissionServer.removeHookFromSettings(repoSettingsPath)
           return { success: true }
         }
       }
@@ -362,8 +372,48 @@ export class PermissionServer {
 
     writeFileForWsl(settingsPath, JSON.stringify(settings, null, 2))
 
+    // Migrate: remove hook from repo-level settings.json if present
+    PermissionServer.removeHookFromSettings(repoSettingsPath)
+
     console.log(`[PermissionServer] Hook installed at ${settingsPath}`)
     return { success: true }
+  }
+
+  /**
+   * Remove permission hook entries from a settings file.
+   * Used to migrate hooks from repo-level settings.json to local settings.
+   */
+  private static removeHookFromSettings(settingsPath: string): void {
+    if (!fs.existsSync(settingsPath)) return
+
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+      const matcherGroups = settings.hooks?.PreToolUse
+      if (!Array.isArray(matcherGroups)) return
+
+      const filtered = matcherGroups.filter((group: { hooks?: Array<{ command?: string }>; command?: string }) => {
+        if (group.command?.includes(PERMISSION_HOOK_FILENAME)) return false
+        if (group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))) return false
+        return true
+      })
+
+      if (filtered.length === matcherGroups.length) return // Nothing to remove
+
+      settings.hooks.PreToolUse = filtered
+
+      // Clean up empty structures
+      if (filtered.length === 0) {
+        delete settings.hooks.PreToolUse
+      }
+      if (Object.keys(settings.hooks).length === 0) {
+        delete settings.hooks
+      }
+
+      writeFileForWsl(settingsPath, JSON.stringify(settings, null, 2))
+      console.log(`[PermissionServer] Removed hook from ${settingsPath} (migrated to local)`)
+    } catch {
+      // Best-effort cleanup
+    }
   }
 }
 

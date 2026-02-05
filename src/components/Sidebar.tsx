@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Archive } from 'lucide-react'
 import { AgentTerminalsSection } from './AgentTerminalsSection'
 import { ArchivedSessionsSheet } from './ArchivedSessionsSheet'
+import { ProjectSwitcher } from './ProjectSwitcher'
 import { ServicesSection } from '@/components/ServicesSection'
 import { useProjectStore } from '../stores/project-store'
 import { useTerminalStore } from '../stores/terminal-store'
@@ -14,12 +15,15 @@ import { Separator } from './ui/separator'
 interface SidebarProps {
   onCloseTerminal: (id: string) => void
   onReconnectTerminal: (id: string) => void
-  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
+  onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => void
   onRestoreArchivedSession: (sessionId: string) => void
   onPermanentDeleteArchivedSession: (sessionId: string) => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
+  onCreateProject: () => void
+  onEditProject: (projectId: string) => void
+  onDeleteProject: (projectId: string) => void
 }
 
 const MIN_WIDTH = 220
@@ -27,7 +31,7 @@ const MAX_WIDTH = 420
 const DEFAULT_WIDTH = 280
 
 export function Sidebar(props: SidebarProps) {
-  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal, onRestoreArchivedSession, onPermanentDeleteArchivedSession, onStartServer, onStopServer, onDeleteServer } = props
+  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal, onRestoreArchivedSession, onPermanentDeleteArchivedSession, onStartServer, onStopServer, onDeleteServer, onCreateProject, onEditProject, onDeleteProject } = props
   const { projects, activeProjectId } = useProjectStore()
   const activeProject = projects.find(p => p.id === activeProjectId)
   const archivedConfigs = useTerminalStore((s) => s.archivedConfigs)
@@ -97,7 +101,12 @@ export function Sidebar(props: SidebarProps) {
           isResizing && 'select-none'
         )}
       >
-        <div className="pt-2" />
+        <ProjectSwitcher
+          onCreateProject={onCreateProject}
+          onEditProject={onEditProject}
+          onDeleteProject={onDeleteProject}
+        />
+        <Separator className="mx-2" />
 
         <ScrollArea className="flex-1 px-4 pb-4">
           <div className="space-y-4 pt-2">

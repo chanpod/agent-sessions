@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@plugin "@tailwindcss/typography";
 @import "@fontsource-variable/inter";
 
 @custom-variant dark (&:is(.dark *));
@@ -291,6 +292,10 @@
   opacity: 0.5;
 }
 
+[data-drag-over="true"] {
+  border-top: 2px solid var(--color-primary);
+}
+
 .app-drag-region {
   -webkit-app-region: drag;
   -webkit-user-select: none;
@@ -468,6 +473,10 @@ body {
   opacity: 0.5;
 }
 
+[data-drag-over="true"] {
+  border-top: 2px solid var(--color-primary);
+}
+
 /* Window drag region styles */
 .app-drag-region {
   -webkit-app-region: drag;
@@ -477,4 +486,33 @@ body {
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+/* Agent markdown chat styles */
+.agent-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.agent-markdown ul,
+.agent-markdown ol {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+.agent-markdown table {
+  font-size: 0.8125rem;
+}
+
+.agent-markdown blockquote {
+  border-left-color: var(--color-primary);
+}
+
+.agent-markdown hr {
+  border-color: var(--color-border);
+}
+
+.agent-markdown a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

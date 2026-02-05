@@ -391,7 +391,7 @@ const electronAPI = {
     injectContext: (terminalId: string, context: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('agent:inject-context', terminalId, context),
     // Agent process API
-    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string }) =>
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[] }) =>
       ipcRenderer.invoke('agent:spawn', options),
     sendMessage: (id: string, message: { type: 'user'; message: { role: 'user'; content: string } }) =>
       ipcRenderer.invoke('agent:send-message', id, message),

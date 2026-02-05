@@ -12,7 +12,6 @@ import {
 import { Terminal as TerminalIcon, ChevronUp, ExternalLink, GitCompare } from 'lucide-react'
 import { cn } from './lib/utils'
 import { TitleBar } from './components/TitleBar'
-import { ProjectHeader } from './components/ProjectHeader'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
 import { ChangedFilesPanel } from './components/ChangedFilesPanel'
@@ -199,6 +198,7 @@ function App() {
     updateSessionActivity,
     saveConfig,
     removeSavedConfig,
+    reorderSavedConfigs,
     sessions,
     setActiveSession,
     activeSessionId,
@@ -220,12 +220,11 @@ function App() {
   const {
     dashboard,
     addTerminalToDashboard,
-    reorderDashboardTerminals,
     setDashboardFocusedTerminal,
     cleanupTerminalReferences,
     validateDashboardState,
   } = useGridStore()
-  const { activeView, isTerminalDockOpen, setTerminalDockOpen } = useViewStore()
+  const { isTerminalDockOpen, setTerminalDockOpen } = useViewStore()
   const { setActiveProject, removeProject, disconnectProject, addTerminalToProject, setProjectFocusedTerminal, removeTerminalFromProject } = useProjectStore()
   const { getEnabledRulesText, loadRules: loadGlobalRules } = useGlobalRulesStore()
 
@@ -737,12 +736,13 @@ function App() {
     projectId: string,
     agentType: 'claude' | 'codex' | 'gemini',
     cwd: string,
-    _contextContent?: string | null // Reserved for future context injection
+    _contextContent?: string | null,
+    model?: string | null
   ): Promise<string | null> => {
     if (!window.electron?.agent?.spawn) return null
 
     try {
-      const result = await window.electron.agent.spawn({ agentType, cwd })
+      const result = await window.electron.agent.spawn({ agentType, cwd, ...(model ? { model } : {}) })
       if (result.success && result.process) {
         // Track the agent process
         setAgentProcesses(prev => {
@@ -779,6 +779,7 @@ function App() {
           cwd,
           terminalType: 'agent',
           agentId: agentType,
+          ...(model ? { model } : {}),
         })
 
         // Set as active session (both terminal and agent)
@@ -808,7 +809,8 @@ function App() {
     agentId: string,
     contextId: string | null,
     contextContent: string | null,
-    skipPermissions?: boolean
+    skipPermissions?: boolean,
+    model?: string | null
   ) => {
     const project = projects.find(p => p.id === projectId)
     if (!project || !window.electron) return
@@ -851,7 +853,8 @@ function App() {
         projectId,
         agentId as 'claude' | 'codex' | 'gemini',
         project.path,
-        combinedContext
+        combinedContext,
+        model
       )
 
       if (processId) {
@@ -1557,63 +1560,21 @@ function App() {
     if (!over) return
 
     const draggedId = active.id as string
-    const overId = over.id as string
-    const overData = over.data.current as { viewType?: string; projectId?: string } | undefined
+    const overData = over.data.current as { type?: string; terminalId?: string } | undefined
 
-    // Get the dragged terminal's session to know its project
-    const draggedSession = sessions.find((s) => s.id === draggedId)
+    // Only handle sidebar reordering (drop target is another terminal item)
+    if (overData?.type !== 'terminal' || !overData.terminalId) return
 
-    // Handle dropping on empty terminal area - depends on current view
-    if (overId === 'empty-terminal-area-drop-zone') {
-      if (activeView.type === 'dashboard') {
-        if (!dashboard.terminalRefs.includes(draggedId)) {
-          addTerminalToDashboard(draggedId)
-        }
-      } else if (activeView.type === 'project-grid' && draggedSession?.projectId === activeView.projectId) {
-        // Terminal already belongs to this project, ensure it's in the grid
-        const project = projects.find((p) => p.id === activeView.projectId)
-        if (project && !project.gridTerminalIds.includes(draggedId)) {
-          addTerminalToProject(activeView.projectId, draggedId)
-        }
-      }
-      return
-    }
+    const targetId = overData.terminalId
+    if (draggedId === targetId) return
 
-    // Handle dropping on dashboard drop zone
-    if (overId === 'dashboard-drop-zone') {
-      if (!dashboard.terminalRefs.includes(draggedId)) {
-        addTerminalToDashboard(draggedId)
-      }
-      return
-    }
+    // Find indices in savedConfigs
+    const savedConfigs = useTerminalStore.getState().savedConfigs
+    const fromIndex = savedConfigs.findIndex((c) => c.id === draggedId)
+    const toIndex = savedConfigs.findIndex((c) => c.id === targetId)
 
-    // Handle dropping on project drop zone
-    if (overId.startsWith('project-drop-zone-')) {
-      const targetProjectId = overData?.projectId
-      if (targetProjectId && draggedSession?.projectId === targetProjectId) {
-        // Terminal belongs to this project - add to its grid
-        const project = projects.find((p) => p.id === targetProjectId)
-        if (project && !project.gridTerminalIds.includes(draggedId)) {
-          addTerminalToProject(targetProjectId, draggedId)
-        }
-      }
-      return
-    }
-
-    // Handle dropping on another terminal (reordering)
-    const isInDashboard = dashboard.terminalRefs.includes(draggedId)
-    const targetIsInDashboard = dashboard.terminalRefs.includes(overId)
-
-    if (targetIsInDashboard && isInDashboard) {
-      // Reordering within the dashboard
-      const fromIndex = dashboard.terminalRefs.indexOf(draggedId)
-      const toIndex = dashboard.terminalRefs.indexOf(overId)
-      if (fromIndex !== toIndex && fromIndex !== -1 && toIndex !== -1) {
-        reorderDashboardTerminals(fromIndex, toIndex)
-      }
-    } else if (targetIsInDashboard && !isInDashboard) {
-      // Terminal not in dashboard, add it
-      addTerminalToDashboard(draggedId)
+    if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
+      reorderSavedConfigs(fromIndex, toIndex)
     }
   }
 
@@ -1643,12 +1604,6 @@ function App() {
       <div className="flex flex-col h-screen overflow-hidden">
         {/* Custom title bar (Windows only) */}
         <TitleBar />
-        {/* Top header with project tabs */}
-        <ProjectHeader
-          onCreateProject={handleCreateProject}
-          onEditProject={handleEditProject}
-          onDeleteProject={handleDeleteProject}
-        />
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden relative">
           <Sidebar
@@ -1660,6 +1615,9 @@ function App() {
             onStartServer={handleStartServer}
             onStopServer={handleStopServer}
             onDeleteServer={handleDeleteServer}
+            onCreateProject={handleCreateProject}
+            onEditProject={handleEditProject}
+            onDeleteProject={handleDeleteProject}
           />
           <div className="flex flex-1 min-w-0 flex-col bg-zinc-950 relative">
             {/* Floating project action buttons */}

@@ -67,7 +67,7 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
   const addToast = useToastStore((state) => state.addToast)
   const projects = useProjectStore((state) => state.projects)
   const activeSessionId = useTerminalStore((state) => state.activeSessionId)
-  const triggerProjectFlash = useProjectStore((state) => state.triggerProjectFlash)
+  const setProjectNotification = useProjectStore((state) => state.setProjectNotification)
   const previousDisplayStateRef = useRef<'green' | 'yellow' | 'grey' | null>(null)
 
   // Calculate current display state based on activity (do this before early returns)
@@ -94,10 +94,14 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
   if (session?.status === 'exited') {
     agentStatus = 'exited'
   } else if (isAgentTerminal && agentState) {
+    // Safety net: detect tool execution that's pending even if isActive was reset
+    const lastMsg = agentState.messages[agentState.messages.length - 1]
+    const isToolExecutionPending = !agentState.processExited && lastMsg?.stopReason === 'tool_use'
+
     if (agentState.currentMessage || agentState.isWaitingForResponse) {
       // Actively streaming content or waiting for first response
       agentStatus = 'responding'
-    } else if (agentState.isActive) {
+    } else if (agentState.isActive || isToolExecutionPending) {
       // isActive but no currentMessage = between tool calls (executing tools)
       agentStatus = 'thinking'
     } else if (agentState.error) {
@@ -124,7 +128,11 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
         const project = projects.find(p => p.id === session.projectId)
         if (project) {
           addToast(`Terminal "${session.title}" in project "${project.name}" is now idle`, 'info', 5000)
-          triggerProjectFlash(session.projectId)
+          setProjectNotification(session.projectId, {
+            type: 'activity',
+            count: 1,
+            updatedAt: Date.now(),
+          })
           if (onActivityChange) {
             onActivityChange(false, sessionId, session.projectId)
           }
@@ -132,7 +140,7 @@ export function ActivityIndicator({ sessionId, className = '', onActivityChange 
       }
     }
     previousDisplayStateRef.current = displayState
-  }, [displayState, sessionId, session?.projectId, session?.title, session?.createdAt, now, projects, addToast, onActivityChange, activeSessionId, triggerProjectFlash, session])
+  }, [displayState, sessionId, session?.projectId, session?.title, session?.createdAt, now, projects, addToast, onActivityChange, activeSessionId, setProjectNotification, session])
 
   if (!session) return null
 

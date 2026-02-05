@@ -1121,10 +1121,10 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 })
 
 // Agent Process handlers (PTY-based for true streaming support)
-ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string }) => {
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[] }) => {
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
-  const { agentType, cwd, resumeSessionId, prompt } = options
+  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools } = options
   console.log(`[Agent] Spawning PTY-based agent: ${agentType} in ${cwd}`, resumeSessionId ? `(resuming ${resumeSessionId})` : '')
 
   // Build the CLI command based on agent type
@@ -1141,6 +1141,12 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       let claudeCmd = 'claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages'
       if (resumeSessionId) {
         claudeCmd += ` --resume ${resumeSessionId}`
+      }
+      if (model) {
+        claudeCmd += ` --model ${model}`
+      }
+      if (allowedTools && allowedTools.length > 0) {
+        claudeCmd += ' --allowedTools ' + allowedTools.map(t => `"${t}"`).join(' ')
       }
       // Use cat as a stdin wrapper to keep input open
       command = `cat | ${claudeCmd}`

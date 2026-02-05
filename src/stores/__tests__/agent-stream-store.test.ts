@@ -60,6 +60,7 @@ function makeTerminalState(messageCount: number): TerminalAgentState {
     messages,
     isActive: false,
     isWaitingForResponse: false,
+    processExited: false,
   }
 }
 
@@ -265,5 +266,130 @@ describe('agent-stream-store persistence', () => {
     // Both terminals should map to the same session
     expect(useAgentStreamStore.getState().terminalToSession.get(firstTerminal)).toBe(sessionId)
     expect(useAgentStreamStore.getState().terminalToSession.get(secondTerminal)).toBe(sessionId)
+  })
+
+  it('aggregates messages from all conversation processes (multi-turn)', () => {
+    const processA = 'proc-a'
+    const processB = 'proc-b'
+    const sessionId = 'session-multi'
+
+    // Set up two processes with different messages
+    useAgentStreamStore.setState({
+      terminals: new Map([
+        [
+          processA,
+          {
+            currentMessage: null,
+            messages: [
+              makeMessage('msg_1', { startedAt: 1000, completedAt: 1500 }),
+              makeMessage('msg_2', { startedAt: 2000, completedAt: 2500 }),
+            ],
+            isActive: false,
+            isWaitingForResponse: false,
+            processExited: true,
+          },
+        ],
+        [
+          processB,
+          {
+            currentMessage: null,
+            messages: [
+              makeMessage('msg_3', { startedAt: 3000, completedAt: 3500 }),
+              makeMessage('msg_4', { startedAt: 4000, completedAt: 4500 }),
+            ],
+            isActive: false,
+            isWaitingForResponse: false,
+            processExited: true,
+          },
+        ],
+      ]),
+      terminalToSession: new Map([
+        [processA, sessionId],
+        [processB, sessionId],
+      ]),
+      sessionToInitialProcess: new Map([[sessionId, processA]]),
+      conversations: new Map([
+        [
+          processA,
+          {
+            processIds: [processA, processB],
+            userMessages: [
+              { id: 'u1', content: 'Hello', timestamp: 500, agentType: 'claude' },
+              { id: 'u2', content: 'Follow up', timestamp: 2500, agentType: 'claude' },
+            ],
+          },
+        ],
+      ]),
+    })
+
+    // Persist from process B (the current turn)
+    useAgentStreamStore.getState().persistSession(processB, 'claude', '/test')
+
+    // All 4 messages from both processes should be persisted in order
+    const persisted = useAgentStreamStore.getState().sessions[sessionId]
+    expect(persisted).toBeDefined()
+    expect(persisted!.messages).toHaveLength(4)
+    expect(persisted!.messages.map((m) => m.id)).toEqual(['msg_1', 'msg_2', 'msg_3', 'msg_4'])
+    expect(persisted!.userMessages).toHaveLength(2)
+  })
+
+  it('falls back to previously persisted messages when terminal state is cleared', () => {
+    const processA = 'proc-a-cleared'
+    const processB = 'proc-b-active'
+    const sessionId = 'session-fallback'
+
+    // Process A's terminal was cleared, but its messages are in the persisted session
+    useAgentStreamStore.setState({
+      sessions: {
+        [sessionId]: {
+          sessionId,
+          agentType: 'claude',
+          messages: [
+            makeMessage('msg_old_1', { startedAt: 1000, completedAt: 1500 }),
+            makeMessage('msg_old_2', { startedAt: 2000, completedAt: 2500 }),
+          ],
+          userMessages: [{ id: 'u1', content: 'Hello', timestamp: 500, agentType: 'claude' }],
+          lastActiveAt: Date.now(),
+          cwd: '/test',
+        },
+      },
+      // Only process B has runtime terminal state (A was cleared)
+      terminals: new Map([
+        [
+          processB,
+          {
+            currentMessage: null,
+            messages: [makeMessage('msg_new_3', { startedAt: 3000, completedAt: 3500 })],
+            isActive: false,
+            isWaitingForResponse: false,
+            processExited: true,
+          },
+        ],
+      ]),
+      terminalToSession: new Map([[processB, sessionId]]),
+      sessionToInitialProcess: new Map([[sessionId, processA]]),
+      conversations: new Map([
+        [
+          processA,
+          {
+            processIds: [processA, processB],
+            userMessages: [
+              { id: 'u1', content: 'Hello', timestamp: 500, agentType: 'claude' },
+              { id: 'u2', content: 'Follow up', timestamp: 2500, agentType: 'claude' },
+            ],
+          },
+        ],
+      ]),
+    })
+
+    // Persist from process B
+    useAgentStreamStore.getState().persistSession(processB, 'claude', '/test')
+
+    // Old messages from persisted data + new from runtime = 3 total
+    const persisted = useAgentStreamStore.getState().sessions[sessionId]
+    expect(persisted).toBeDefined()
+    expect(persisted!.messages).toHaveLength(3)
+    expect(persisted!.messages.map((m) => m.id)).toEqual(['msg_old_1', 'msg_old_2', 'msg_new_3'])
+    expect(persisted!.userMessages).toHaveLength(2)
   })
 })

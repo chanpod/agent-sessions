@@ -16,6 +16,7 @@ export interface SavedTerminalConfig {
   agentId?: string                     // Which agent (claude/gemini/codex) if agent terminal
   contextId?: string                   // Which context was injected
   sessionId?: string                   // Claude CLI session ID for multi-turn resume
+  model?: string                       // Model selection for Claude (opus/sonnet/haiku)
 }
 
 export interface ArchivedSessionConfig {
@@ -65,6 +66,7 @@ interface TerminalStore {
   updateConfigSessionId: (id: string, sessionId: string) => void
   removeSavedConfig: (id: string) => void
   getSavedConfigs: () => SavedTerminalConfig[]
+  reorderSavedConfigs: (fromIndex: number, toIndex: number) => void
   markRestored: () => void
 
   // Actions for runtime sessions
@@ -122,6 +124,28 @@ export const useTerminalStore = create<TerminalStore>()(
         })),
 
       getSavedConfigs: () => get().savedConfigs,
+
+      reorderSavedConfigs: (fromIndex, toIndex) =>
+        set((state) => {
+          const newConfigs = [...state.savedConfigs]
+          const [moved] = newConfigs.splice(fromIndex, 1)
+          if (moved === undefined) return state
+          newConfigs.splice(toIndex, 0, moved)
+
+          // Also reorder the runtime sessions array (indices differ, find by ID)
+          const newSessions = [...state.sessions]
+          const sessionFromIndex = newSessions.findIndex((s) => s.id === moved.id)
+          const targetConfig = state.savedConfigs[toIndex]
+          const sessionToIndex = targetConfig ? newSessions.findIndex((s) => s.id === targetConfig.id) : -1
+          if (sessionFromIndex !== -1 && sessionToIndex !== -1) {
+            const [movedSession] = newSessions.splice(sessionFromIndex, 1)
+            if (movedSession !== undefined) {
+              newSessions.splice(sessionToIndex, 0, movedSession)
+            }
+          }
+
+          return { savedConfigs: newConfigs, sessions: newSessions }
+        }),
 
       markRestored: () => set({ hasRestored: true }),
 

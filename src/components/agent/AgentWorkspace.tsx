@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState, useMemo } from 'react'
+import { Pencil, PencilOff } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
@@ -138,6 +139,11 @@ export function AgentWorkspace({
   // isProcessing: true between user sending message and agent starting to respond
   // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
+  const [editsEnabled, setEditsEnabled] = useState(true)
+
+  // Read-only tools for when edits are disabled
+  const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Task', 'TodoRead', 'TodoWrite']
+  const allowedTools = editsEnabled ? undefined : READ_ONLY_TOOLS
 
   // Conversation state lives in the store so it survives unmount/remount (session switching).
   // Use separate selectors to avoid creating new objects on every render.
@@ -223,6 +229,7 @@ export function AgentWorkspace({
           cwd,
           resumeSessionId: sessionId || undefined,
           prompt: message,
+          ...(allowedTools ? { allowedTools } : {}),
         })
         if (result.success && result.process) {
           store.addConversationProcessId(initialProcessId, result.process.id)
@@ -239,6 +246,7 @@ export function AgentWorkspace({
           agentType,
           cwd,
           resumeSessionId: sessionId,
+          ...(allowedTools ? { allowedTools } : {}),
         })
         if (result.success && result.process) {
           // Track the new process ID in the store
@@ -267,7 +275,7 @@ export function AgentWorkspace({
         })
       }
     },
-    [initialProcessId, agentType, cwd, sessionId]
+    [initialProcessId, agentType, cwd, sessionId, allowedTools]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -303,11 +311,31 @@ export function AgentWorkspace({
     })
   )
 
-  // Check if any process is actively streaming or waiting to respond (from store state).
-  // This survives component unmount/remount, unlike the local isProcessing state.
-  const anyActive = useMemo(() => {
-    return allProcessStates.some((state) => state.isActive || state.isWaitingForResponse)
-  }, [allProcessStates])
+  // Compute anyActive directly from the store to avoid stale closure issues.
+  // The previous approach derived this from allProcessStates, which depended on
+  // activeProcessIds captured in a closure. When a new multi-turn process was added,
+  // the closure would be stale until the next render, causing a brief "done" flash.
+  const anyActive = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+
+    for (const pid of pids) {
+      const state = store.terminals.get(pid)
+      if (!state) continue
+
+      // Primary signals: actively streaming or waiting for response
+      if (state.isActive || state.isWaitingForResponse) return true
+
+      // Safety net: process still running and last message indicated tool execution.
+      // This handles cases where isActive might be incorrectly cleared during tool use
+      // (e.g., nested agent events from sub-agents leaking through the PTY).
+      if (!state.processExited) {
+        const lastMsg = state.messages[state.messages.length - 1]
+        if (lastMsg?.stopReason === 'tool_use') return true
+      }
+    }
+    return false
+  })
 
   // Clear isProcessing when agent starts responding (anyActive becomes true)
   // This transitions from "waiting for agent" to "agent is responding"
@@ -397,6 +425,28 @@ export function AgentWorkspace({
       {/* Input Area - Floating at bottom */}
       <div className="px-4 pb-4 pt-2">
         <div className="mx-auto max-w-3xl">
+          {/* Edits toggle - Claude only */}
+          {agentType === 'claude' && (
+            <div className="flex items-center gap-2 px-1 pb-1.5">
+              <button
+                onClick={() => setEditsEnabled(!editsEnabled)}
+                className={cn(
+                  'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all',
+                  editsEnabled
+                    ? 'text-muted-foreground hover:bg-muted/50'
+                    : 'text-amber-400 bg-amber-400/10 hover:bg-amber-400/20'
+                )}
+                title={editsEnabled ? 'Click to disable file edits (read-only mode)' : 'Click to enable file edits'}
+              >
+                {editsEnabled ? (
+                  <Pencil className="w-3.5 h-3.5" />
+                ) : (
+                  <PencilOff className="w-3.5 h-3.5" />
+                )}
+                <span>Edits {editsEnabled ? 'on' : 'off'}</span>
+              </button>
+            </div>
+          )}
           <AgentInputArea
             processId={initialProcessId}
             onSend={handleSend}

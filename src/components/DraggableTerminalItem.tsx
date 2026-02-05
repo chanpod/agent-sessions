@@ -1,6 +1,6 @@
-import { useDraggable } from '@dnd-kit/core'
+import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
-import { ReactNode, cloneElement, isValidElement } from 'react'
+import { ReactNode, cloneElement, isValidElement, useCallback } from 'react'
 
 interface DraggableTerminalItemProps {
   terminalId: string
@@ -9,7 +9,7 @@ interface DraggableTerminalItemProps {
 }
 
 export function DraggableTerminalItem({ terminalId, terminalTitle, children }: DraggableTerminalItemProps) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: terminalId,
     data: {
       type: 'terminal',
@@ -18,6 +18,22 @@ export function DraggableTerminalItem({ terminalId, terminalTitle, children }: D
     },
   })
 
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: `drop-${terminalId}`,
+    data: {
+      type: 'terminal',
+      terminalId,
+    },
+  })
+
+  const setNodeRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      setDragRef(node)
+      setDropRef(node)
+    },
+    [setDragRef, setDropRef]
+  )
+
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
   }
@@ -25,7 +41,7 @@ export function DraggableTerminalItem({ terminalId, terminalTitle, children }: D
   // Pass drag props to child so it can apply them to the drag handle
   if (isValidElement(children)) {
     return (
-      <div ref={setNodeRef} style={style} data-dragging={isDragging}>
+      <div ref={setNodeRef} style={style} data-dragging={isDragging} data-drag-over={isOver}>
         {cloneElement(children as React.ReactElement<{ dragHandleProps?: object }>, {
           dragHandleProps: { ...listeners, ...attributes },
         })}
@@ -34,7 +50,7 @@ export function DraggableTerminalItem({ terminalId, terminalTitle, children }: D
   }
 
   return (
-    <div ref={setNodeRef} style={style} data-dragging={isDragging}>
+    <div ref={setNodeRef} style={style} data-dragging={isDragging} data-drag-over={isOver}>
       {children}
     </div>
   )

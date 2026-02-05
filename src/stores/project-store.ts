@@ -18,7 +18,7 @@ export interface Project {
   createdAt: number
   isExpanded: boolean
   activeTab: ProjectTab
-  isHidden?: boolean // Whether the project is temporarily hidden from view
+  isPinned?: boolean // Whether the project is pinned to the top of the list
   // SSH project fields
   isSSHProject?: boolean // Whether this project uses SSH
   sshConnectionId?: string // ID of the SSH connection to use
@@ -34,24 +34,32 @@ export interface Project {
   lastViewState?: ProjectViewState
   // Remembers which agent session was active for this project
   lastActiveAgentSessionId?: string
+  // Timestamp of when this project was last viewed/active
+  lastViewedAt?: number
+}
+
+export interface ProjectNotification {
+  type: 'done' | 'needs-attention' | 'activity'
+  count: number
+  updatedAt: number
 }
 
 interface ProjectStore {
   projects: Project[]
   activeProjectId: string | null
-  flashingProjects: Set<string>
+  projectNotifications: Record<string, ProjectNotification>
 
   // Actions
   addProject: (project: Omit<Project, 'id' | 'createdAt' | 'isExpanded' | 'activeTab'>) => string
   removeProject: (id: string) => void
-  hideProject: (id: string) => void
-  showProject: (id: string) => void
+  pinProject: (id: string) => void
+  unpinProject: (id: string) => void
   setActiveProject: (id: string | null) => void
   toggleProjectExpanded: (id: string) => void
   setProjectTab: (id: string, tab: ProjectTab) => void
   updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath'>>) => void
-  triggerProjectFlash: (id: string) => void
-  clearProjectFlash: (id: string) => void
+  setProjectNotification: (projectId: string, notification: ProjectNotification) => void
+  clearProjectNotification: (projectId: string) => void
   // SSH connection management
   setProjectConnectionStatus: (id: string, status: 'disconnected' | 'connecting' | 'connected' | 'error', error?: string) => void
   connectProject: (id: string) => Promise<{ success: boolean; requiresInteractive?: boolean; error?: string } | undefined>
@@ -76,7 +84,7 @@ export const useProjectStore = create<ProjectStore>()(
     (set, get) => ({
       projects: [],
       activeProjectId: null,
-      flashingProjects: new Set<string>(),
+      projectNotifications: {} as Record<string, ProjectNotification>,
 
       addProject: (project) => {
         const id = generateId()
@@ -110,25 +118,17 @@ export const useProjectStore = create<ProjectStore>()(
           }
         }),
 
-      hideProject: (id) =>
-        set((state) => {
-          const visibleProjects = state.projects.filter((p) => p.id !== id && !p.isHidden)
-          const newActiveId =
-            state.activeProjectId === id
-              ? visibleProjects[0]?.id ?? null
-              : state.activeProjectId
-          return {
-            projects: state.projects.map((p) =>
-              p.id === id ? { ...p, isHidden: true } : p
-            ),
-            activeProjectId: newActiveId,
-          }
-        }),
-
-      showProject: (id) =>
+      pinProject: (id) =>
         set((state) => ({
           projects: state.projects.map((p) =>
-            p.id === id ? { ...p, isHidden: false } : p
+            p.id === id ? { ...p, isPinned: true } : p
+          ),
+        })),
+
+      unpinProject: (id) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, isPinned: false } : p
           ),
         })),
 
@@ -183,14 +183,16 @@ export const useProjectStore = create<ProjectStore>()(
         }
 
         set((state) => {
-          // Clear flash when project becomes active
-          const newFlashingProjects = new Set(state.flashingProjects)
-          if (id) {
-            newFlashingProjects.delete(id)
-          }
+          // Clear notification when project becomes active
+          const projectNotifications = id
+            ? (() => { const { [id]: _, ...rest } = state.projectNotifications; return rest })()
+            : state.projectNotifications
           return {
             activeProjectId: id,
-            flashingProjects: newFlashingProjects,
+            projectNotifications,
+            projects: state.projects.map((p) =>
+              p.id === id ? { ...p, lastViewedAt: Date.now() } : p
+            ),
           }
         })
       },
@@ -216,16 +218,15 @@ export const useProjectStore = create<ProjectStore>()(
           ),
         })),
 
-      triggerProjectFlash: (id) =>
+      setProjectNotification: (projectId, notification) =>
         set((state) => ({
-          flashingProjects: new Set(state.flashingProjects).add(id),
+          projectNotifications: { ...state.projectNotifications, [projectId]: notification },
         })),
 
-      clearProjectFlash: (id) =>
+      clearProjectNotification: (projectId) =>
         set((state) => {
-          const newFlashingProjects = new Set(state.flashingProjects)
-          newFlashingProjects.delete(id)
-          return { flashingProjects: newFlashingProjects }
+          const { [projectId]: _, ...rest } = state.projectNotifications
+          return { projectNotifications: rest }
         }),
 
       setProjectConnectionStatus: (id, status, error) =>
@@ -356,7 +357,7 @@ export const useProjectStore = create<ProjectStore>()(
     {
       name: 'toolchain-projects',
       storage: createJSONStorage(() => electronStorage),
-      // Don't persist flashingProjects and connection status (runtime state only)
+      // Don't persist projectNotifications and connection status (runtime state only)
       partialize: (state) => ({
         projects: state.projects.map(p => ({
           ...p,
@@ -372,9 +373,9 @@ export const useProjectStore = create<ProjectStore>()(
             console.error('[ProjectStore] Hydration error:', error)
           } else {
             console.log('[ProjectStore] Hydrated with state:', state)
-            // Initialize flashingProjects if not present
-            if (state && !state.flashingProjects) {
-              state.flashingProjects = new Set<string>()
+            // Initialize projectNotifications if not present
+            if (state && !state.projectNotifications) {
+              state.projectNotifications = {}
             }
             // Migration: Add activeTab to existing projects (only if missing)
             if (state) {
@@ -385,6 +386,15 @@ export const useProjectStore = create<ProjectStore>()(
                   ...p,
                   activeTab: (p as any).activeTab || 'terminals',
                 }))
+              }
+              // Migration: Convert isHidden to isPinned (hidden projects become unpinned)
+              const needsHiddenMigration = state.projects.some((p) => (p as any).isHidden !== undefined)
+              if (needsHiddenMigration) {
+                console.log('[ProjectStore] Running migration: isHidden → isPinned...')
+                state.projects = state.projects.map((p) => {
+                  const { isHidden, ...rest } = p as any
+                  return { ...rest, isPinned: rest.isPinned ?? false }
+                })
               }
               // Migration: Add grid fields to existing projects
               const needsGridMigration = state.projects.some((p) => !Array.isArray((p as any).gridTerminalIds))

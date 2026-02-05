@@ -9,6 +9,7 @@ import {
   IconTerminal2,
   IconSparkles,
   IconChevronDown,
+  IconChecklist,
 } from '@tabler/icons-react'
 
 import type {
@@ -30,10 +31,11 @@ import { MessageBlock } from '@/components/agent/MessageBlock'
 import { ThinkingInline } from '@/components/agent/ThinkingInline'
 import { ToolCallInline } from '@/components/agent/ToolCallInline'
 import { SpecialToolCard } from '@/components/agent/cards/SpecialToolCard'
-import { CardNavIndex } from '@/components/agent/CardNavIndex'
+// CardNavIndex rendering is now inlined alongside the Tasks floating button
 import { CARD_NAV_CONFIG, CARD_NAV_TOOL_NAMES } from '@/components/agent/cards/card-nav-config'
 import type { CardNavEntry } from '@/components/agent/cards/card-nav-config'
 import { ContextUsageIndicator } from '@/components/agent/ContextUsageIndicator'
+import { TodoSheet, extractLatestTodos } from '@/components/agent/TodoSheet'
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -51,6 +53,7 @@ interface AgentMessageViewProps {
   className?: string
   autoScroll?: boolean
   agentType?: string
+  onAnswerQuestion?: (answers: Record<string, string>) => void
 }
 
 interface DefaultBlockRendererProps {
@@ -67,16 +70,15 @@ export interface ToolGroup {
 }
 
 /** Tool names that get promoted to special cards outside the Activity box */
-const SPECIAL_TOOL_NAMES = new Set(['ExitPlanMode', 'AskUserQuestion', 'TodoWrite'])
+const SPECIAL_TOOL_NAMES = new Set(['ExitPlanMode', 'AskUserQuestion'])
 
 function isSpecialToolGroup(item: ContentBlock | ToolGroup): boolean {
   return isToolGroup(item) && SPECIAL_TOOL_NAMES.has(item.toolUse.toolName)
 }
 
 /**
- * Deduplicate special tools for card rendering.
- * TodoWrite is a full-snapshot tool - only the LAST call in a turn
- * becomes a promoted card; earlier ones stay in the Activity section.
+ * Separate special tools (questions, plans) from regular activity.
+ * Special tools get promoted to dedicated card components.
  */
 function partitionSpecialTools(
   activityBlocks: (ContentBlock | ToolGroup)[]
@@ -85,34 +87,13 @@ function partitionSpecialTools(
   promotedTools: ToolGroup[]
 } {
   const regularActivity: (ContentBlock | ToolGroup)[] = []
-  const specialCandidates: { group: ToolGroup }[] = []
+  const promotedTools: ToolGroup[] = []
 
   for (const item of activityBlocks) {
     if (isSpecialToolGroup(item)) {
-      specialCandidates.push({ group: item as ToolGroup })
+      promotedTools.push(item as ToolGroup)
     } else {
       regularActivity.push(item)
-    }
-  }
-
-  // TodoWrite dedup: only keep the LAST TodoWrite as promoted
-  const promotedTools: ToolGroup[] = []
-  let lastTodoWriteIdx = -1
-
-  for (let i = specialCandidates.length - 1; i >= 0; i--) {
-    if (specialCandidates[i]!.group.toolUse.toolName === 'TodoWrite') {
-      lastTodoWriteIdx = i
-      break
-    }
-  }
-
-  for (let i = 0; i < specialCandidates.length; i++) {
-    const { group } = specialCandidates[i]!
-    if (group.toolUse.toolName === 'TodoWrite' && i !== lastTodoWriteIdx) {
-      // Earlier TodoWrite snapshots fall back to regular activity
-      regularActivity.push(group)
-    } else {
-      promotedTools.push(group)
     }
   }
 
@@ -158,8 +139,34 @@ function isToolGroup(item: ContentBlock | ToolGroup): item is ToolGroup {
 }
 
 /**
- * Groups consecutive assistant messages into turns, leaves user/system as standalone.
- * Also splits each turn's blocks into activity (tools, thinking) and response (text, code, etc.)
+ * Check whether a message contains visible response content (text, code, images).
+ */
+function hasResponseContent(msg: AgentMessage): boolean {
+  return msg.blocks.some(
+    (block) =>
+      block.type !== 'tool_use' &&
+      block.type !== 'tool_result' &&
+      !ACTIVITY_TYPES.has(block.type)
+  )
+}
+
+/**
+ * Check whether a message contains a special tool (question, plan) that should
+ * act as a logical boundary in the conversation flow.
+ */
+function hasSpecialTool(msg: AgentMessage): boolean {
+  return msg.blocks.some(
+    (block) => block.type === 'tool_use' && SPECIAL_TOOL_NAMES.has(block.toolName)
+  )
+}
+
+/**
+ * Groups messages into display items. Consecutive activity-only assistant messages
+ * are merged into a single turn. A turn is flushed when an assistant message contains
+ * visible response content (text) or a special tool (question, plan), so the chat
+ * shows logical chunks of work rather than one giant merged block.
+ *
+ * User/system messages are always standalone items.
  */
 function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
   const items: DisplayItem[] = []
@@ -230,6 +237,11 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
 
     if (msg.role === 'assistant') {
       currentTurnMessages.push(msg)
+      // Flush the turn when this message has text output or a special tool
+      // (question, plan). Activity-only messages keep accumulating.
+      if (hasResponseContent(msg) || hasSpecialTool(msg)) {
+        flushTurn()
+      }
     } else {
       // Flush any pending assistant turn before a user/system message
       flushTurn()
@@ -241,7 +253,7 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
     }
   }
 
-  // Flush remaining assistant messages
+  // Flush remaining assistant messages (e.g. streaming activity)
   flushTurn()
 
   return items
@@ -267,10 +279,17 @@ export function AgentMessageView({
   className,
   autoScroll: _autoScroll = true,
   agentType,
+  onAnswerQuestion,
 }: AgentMessageViewProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const isStreaming = conversation.status === 'streaming'
   const [_isAtBottom, setIsAtBottom] = useState(true)
+  const [todoSheetOpen, setTodoSheetOpen] = useState(false)
+
+  // Extract latest todo state for the floating badge
+  const todos = useMemo(() => extractLatestTodos(conversation), [conversation])
+  const todoCompletedCount = todos.filter((t) => t.status === 'completed').length
+  const todoTotalCount = todos.length
 
   // Build render context
   const context: RenderContext = useMemo(
@@ -282,6 +301,11 @@ export function AgentMessageView({
     }),
     [conversation.terminalId, conversation.agentType, isStreaming]
   )
+
+  // Whether to show the "Thinking" indicator at the bottom of the list.
+  // Visible when the conversation is streaming but no assistant message is
+  // actively being built (i.e. between tool calls / waiting for the model).
+  const showThinkingIndicator = isStreaming && !conversation.currentMessage
 
   // Combine completed messages with current streaming message
   const allMessages = useMemo(() => {
@@ -348,12 +372,64 @@ export function AgentMessageView({
         </div>
       ) : (
         <div className="relative h-full">
-          {cardNavEntries.length > 0 && (
-            <CardNavIndex
-              entries={cardNavEntries}
-              onScrollTo={handleScrollToCard}
-            />
-          )}
+          {/* Floating side nav — cards + tasks button */}
+          <div className="absolute top-1/2 left-4 z-30 hidden -translate-y-1/2 flex-col gap-2 xl:flex">
+            {cardNavEntries.map((entry) => {
+              const Icon = entry.icon
+              return (
+                <button
+                  key={entry.toolName}
+                  onClick={() => handleScrollToCard(entry.displayItemIndex)}
+                  className={cn(
+                    'flex items-center gap-2 rounded-full border px-3 py-1.5',
+                    'transition-colors duration-150 cursor-pointer',
+                    'hover:brightness-125',
+                    entry.borderClass,
+                    entry.bgClass,
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'flex size-5 items-center justify-center rounded-full',
+                      entry.iconBgClass,
+                    )}
+                  >
+                    <Icon className={cn('size-3', entry.textClass)} />
+                  </div>
+                  <span className={cn('text-xs font-medium', entry.textClass)}>
+                    {entry.label}
+                  </span>
+                </button>
+              )
+            })}
+            {todoTotalCount > 0 && (
+              <button
+                onClick={() => setTodoSheetOpen(true)}
+                className={cn(
+                  'flex items-center gap-2 rounded-full border px-3 py-1.5',
+                  'transition-colors duration-150 cursor-pointer',
+                  'hover:brightness-125',
+                  'border-emerald-500/30 bg-emerald-500/10',
+                )}
+              >
+                <div className="flex size-5 items-center justify-center rounded-full bg-emerald-500/15">
+                  <IconChecklist className="size-3 text-emerald-400" />
+                </div>
+                <span className="text-xs font-medium text-emerald-400">
+                  Tasks
+                </span>
+                <span className="text-[10px] font-semibold text-emerald-400/70">
+                  {todoCompletedCount}/{todoTotalCount}
+                </span>
+              </button>
+            )}
+          </div>
+
+          <TodoSheet
+            open={todoSheetOpen}
+            onOpenChange={setTodoSheetOpen}
+            conversation={conversation}
+          />
           <Virtuoso
             ref={virtuosoRef}
             className={cn('h-full', className)}
@@ -381,10 +457,25 @@ export function AgentMessageView({
                     turn={item}
                     context={context}
                     composer={composer}
+                    onAnswerQuestion={onAnswerQuestion}
                   />
                 )}
               </div>
             )}
+            components={{
+              Footer: () =>
+                showThinkingIndicator ? (
+                  <div className="flex items-center gap-2 px-4 py-3 max-w-3xl mx-auto">
+                    <div className="flex size-6 items-center justify-center rounded-full bg-primary/15">
+                      <IconSparkles className="size-3.5 text-primary" />
+                    </div>
+                    <span className="text-sm font-medium text-foreground">
+                      Thinking
+                    </span>
+                    <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
+                  </div>
+                ) : null,
+            }}
           />
         </div>
       )}
@@ -486,10 +577,12 @@ function AssistantTurnRenderer({
   turn,
   context,
   composer,
+  onAnswerQuestion,
 }: {
   turn: AssistantTurn
   context: RenderContext
   composer?: AgentUIComposer
+  onAnswerQuestion?: (answers: Record<string, string>) => void
 }) {
   // Partition activity blocks into regular (stay in Activity box) and promoted (special cards)
   const { regularActivity, promotedTools } = partitionSpecialTools(turn.activityBlocks)
@@ -521,6 +614,7 @@ function AssistantTurnRenderer({
             key={group.toolUse.id}
             toolUse={group.toolUse}
             toolResult={group.toolResult}
+            onAnswerQuestion={onAnswerQuestion}
           />
         ))}
 

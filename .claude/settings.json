@@ -1,14 +1,1 @@
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \".claude/hooks/permission-handler.js\" \".claude/.permission-ipc\""
-          }
-        ]
-      }
-    ]
-  }
-}
+{}

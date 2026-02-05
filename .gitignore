@@ -35,3 +35,4 @@ Thumbs.db
 # Permission system (runtime files)
 .permission-ipc/
 .claude/hooks/
+.claude/settings.local.json
