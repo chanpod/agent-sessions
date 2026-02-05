@@ -307,7 +307,7 @@ export interface ElectronAPI {
     injectContext: (terminalId: string, context: string) => Promise<{ success: boolean; error?: string }>
 
     // Agent process methods (JSON streaming)
-    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string }) => Promise<{ success: boolean; process?: AgentProcessInfo; error?: string }>
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string }) => Promise<{ success: boolean; process?: AgentProcessInfo; error?: string }>
     sendMessage: (id: string, message: { type: 'user'; message: { role: 'user'; content: string } }) => Promise<{ success: boolean; error?: string }>
     kill: (id: string) => Promise<{ success: boolean; error?: string }>
     list: () => Promise<{ success: boolean; processes?: AgentProcessInfo[]; error?: string }>

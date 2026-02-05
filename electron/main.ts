@@ -1121,10 +1121,10 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 })
 
 // Agent Process handlers (PTY-based for true streaming support)
-ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string }) => {
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string }) => {
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
-  const { agentType, cwd, resumeSessionId } = options
+  const { agentType, cwd, resumeSessionId, prompt } = options
   console.log(`[Agent] Spawning PTY-based agent: ${agentType} in ${cwd}`, resumeSessionId ? `(resuming ${resumeSessionId})` : '')
 
   // Build the CLI command based on agent type
@@ -1145,9 +1145,29 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       // Use cat as a stdin wrapper to keep input open
       command = `cat | ${claudeCmd}`
       break
-    case 'codex':
-      command = 'codex'
+    case 'codex': {
+      // Codex CLI uses one-shot `exec` mode with --json for NDJSON streaming.
+      // Unlike Claude, the prompt is passed as a CLI argument, not piped via stdin.
+      // Each turn spawns a new process; multi-turn uses `exec resume SESSION_ID`.
+      if (!prompt && !resumeSessionId) {
+        // Initial spawn without prompt — create an idle placeholder process.
+        // It will be replaced when the user sends their first message, which
+        // triggers a new spawn with the prompt included.
+        command = 'sleep infinity'
+        break
+      }
+      // Shell-escape the prompt using single quotes (replace ' with '\'' for safe embedding)
+      const escapedPrompt = prompt ? prompt.replace(/'/g, "'\\''") : ''
+      if (resumeSessionId) {
+        // Resume a previous session with an optional follow-up prompt
+        command = escapedPrompt
+          ? `codex exec --json resume ${resumeSessionId} '${escapedPrompt}'`
+          : `codex exec --json resume ${resumeSessionId}`
+      } else {
+        command = `codex exec --json '${escapedPrompt}'`
+      }
       break
+    }
     case 'gemini':
       command = 'gemini'
       break
@@ -1193,6 +1213,14 @@ ipcMain.handle('agent:send-message', async (_event, id: string, message: { type:
   const agentInfo = agentTerminals.get(id)
   if (!agentInfo) {
     throw new Error(`Agent terminal ${id} not found`)
+  }
+
+  // Codex uses one-shot `exec` mode — the prompt is part of the spawn command,
+  // not piped via stdin. Multi-turn messages spawn a new process via agent:spawn
+  // with resumeSessionId + prompt. Sending messages to stdin is a no-op for Codex.
+  if (agentInfo.agentType === 'codex') {
+    console.log(`[Agent] Codex agent ${id}: send-message is a no-op (prompt was passed at spawn time)`)
+    return { success: true }
   }
 
   // With --input-format stream-json, Claude expects NDJSON messages

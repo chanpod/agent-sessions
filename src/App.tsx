@@ -800,14 +800,14 @@ function App() {
     const globalRulesText = getEnabledRulesText()
     const combinedContext = [globalRulesText, contextContent].filter(Boolean).join('\n\n') || null
 
-    // For Claude, use the new AgentProcessManager with JSON streaming
+    // For Claude and Codex, use the AgentProcessManager with JSON streaming
     // This provides structured streaming and better message handling
-    if (agentId === 'claude' && window.electron.agent?.spawn !== undefined) {
-      console.log('[App] Using AgentProcessManager for Claude (JSON streaming)')
+    if ((agentId === 'claude' || agentId === 'codex') && window.electron.agent?.spawn !== undefined) {
+      console.log(`[App] Using AgentProcessManager for ${agentId} (JSON streaming)`)
 
       const processId = await handleSpawnAgentProcess(
         projectId,
-        'claude',
+        agentId as 'claude' | 'codex' | 'gemini',
         project.path,
         combinedContext
       )

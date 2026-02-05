@@ -7,6 +7,7 @@ import { promisify } from 'util'
 import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
 import { StreamJsonDetector } from './output-monitors/stream-json-detector'
+import { CodexStreamDetector } from './output-monitors/codex-stream-detector'
 import { PathService } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
@@ -107,6 +108,7 @@ export class PtyManager {
     this.detectorManager = new DetectorManager()
     this.detectorManager.registerDetector(new ServerDetector())
     this.detectorManager.registerDetector(new StreamJsonDetector())
+    this.detectorManager.registerDetector(new CodexStreamDetector())
 
     // Forward detected events to renderer
     this.detectorManager.onEvent((event) => {

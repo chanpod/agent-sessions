@@ -193,6 +193,24 @@ export function AgentWorkspace({
       })
       setIsProcessing(true)
 
+      // Codex uses one-shot `exec` mode — every message (including the first)
+      // spawns a new process with the prompt as a CLI argument.
+      // Multi-turn uses `codex exec resume SESSION_ID`.
+      if (agentType === 'codex') {
+        console.log(`[AgentWorkspace] Codex: spawning process with prompt`, sessionId ? `(resuming ${sessionId})` : '(first message)')
+        const result = await window.electron.agent.spawn({
+          agentType,
+          cwd,
+          resumeSessionId: sessionId || undefined,
+          prompt: message,
+        })
+        if (result.success && result.process) {
+          store.addConversationProcessId(initialProcessId, result.process.id)
+          store.markWaitingForResponse(result.process.id)
+        }
+        return
+      }
+
       // For multi-turn: spawn new process with --resume if we have a session
       // The first message uses the existing process, follow-ups spawn new ones
       if (sessionId) {
