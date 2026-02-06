@@ -4,6 +4,12 @@ interface Props {
   children: ReactNode;
 }
 
+interface SectionProps {
+  children: ReactNode;
+  name?: string;
+  className?: string;
+}
+
 interface State {
   hasError: boolean;
   error: Error | null;
@@ -57,6 +63,54 @@ export class ErrorBoundary extends Component<Props, State> {
               </button>
             </div>
           </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+/**
+ * Lightweight error boundary for individual sections/panels.
+ * Shows an inline error message with retry instead of bricking the whole app.
+ */
+export class SectionErrorBoundary extends Component<SectionProps, State> {
+  constructor(props: SectionProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    window.electron?.log?.reportRendererError({
+      message: `[${this.props.name || 'Section'}] ${error.message}`,
+      stack: error.stack,
+      componentStack: errorInfo.componentStack ?? undefined,
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className={`flex flex-col items-center justify-center gap-3 p-4 text-zinc-400 ${this.props.className || ''}`}>
+          <p className="text-sm text-red-400">
+            {this.props.name ? `${this.props.name} crashed` : 'This section crashed'}
+          </p>
+          {this.state.error && (
+            <pre className="text-xs text-red-300/70 bg-zinc-800/50 rounded px-3 py-2 max-w-md overflow-auto max-h-24">
+              {this.state.error.message}
+            </pre>
+          )}
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors"
+          >
+            Retry
+          </button>
         </div>
       );
     }

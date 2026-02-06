@@ -1145,13 +1145,14 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       }
       // Shell-escape the prompt using single quotes (replace ' with '\'' for safe embedding)
       const escapedPrompt = prompt ? prompt.replace(/'/g, "'\\''") : ''
+      const codexModelFlag = model ? ` --model ${model}` : ''
       if (resumeSessionId) {
         // Resume a previous session with an optional follow-up prompt
         command = escapedPrompt
-          ? `codex exec --json --full-auto resume ${resumeSessionId} '${escapedPrompt}'`
-          : `codex exec --json --full-auto resume ${resumeSessionId}`
+          ? `codex exec --json --full-auto${codexModelFlag} resume ${resumeSessionId} '${escapedPrompt}'`
+          : `codex exec --json --full-auto${codexModelFlag} resume ${resumeSessionId}`
       } else {
-        command = `codex exec --json --full-auto '${escapedPrompt}'`
+        command = `codex exec --json --full-auto${codexModelFlag} '${escapedPrompt}'`
       }
       break
     }

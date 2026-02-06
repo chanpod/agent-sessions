@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Sparkles, Gem, Code, Bot, Loader2, CheckCircle, XCircle, RefreshCw, Download, Terminal } from 'lucide-react';
+import { X, Sparkles, Gem, Code, Bot, Loader2, CheckCircle, XCircle, RefreshCw, Download, Terminal, AlertTriangle, Package, Globe } from 'lucide-react';
 import type { CliToolDetectionResult, UpdateCheckResult } from '../types/electron';
 
 interface AgentUpdateDialogProps {
@@ -8,12 +8,13 @@ interface AgentUpdateDialogProps {
   agent: CliToolDetectionResult;
   updateInfo: UpdateCheckResult | null;
   isCheckingUpdate: boolean;
+  platform: 'windows' | 'wsl' | 'macos' | 'linux';
   onRefresh: () => Promise<void>;
   onInstall: (method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>;
   onInstallComplete: () => void;
 }
 
-type DialogStep = 'info' | 'installing' | 'result';
+type DialogStep = 'info' | 'select-method' | 'installing' | 'result';
 
 const AGENT_ICONS: Record<string, React.ReactNode> = {
   claude: <Sparkles className="w-6 h-6 text-amber-400" />,
@@ -25,12 +26,94 @@ function getAgentIcon(id: string): React.ReactNode {
   return AGENT_ICONS[id] || <Bot className="w-6 h-6 text-zinc-400" />;
 }
 
+/** Display label for an install method */
+function getMethodLabel(method: 'npm' | 'native' | 'brew' | 'unknown'): string {
+  switch (method) {
+    case 'native': return 'Native Installer';
+    case 'npm': return 'npm';
+    case 'brew': return 'Homebrew';
+    case 'unknown': return 'Unknown';
+  }
+}
+
+/** Badge color for install methods */
+function getMethodBadgeClass(method: 'npm' | 'native' | 'brew' | 'unknown'): string {
+  switch (method) {
+    case 'native': return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
+    case 'npm': return 'bg-red-500/15 text-red-400 border-red-500/30';
+    case 'brew': return 'bg-amber-500/15 text-amber-400 border-amber-500/30';
+    case 'unknown': return 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30';
+  }
+}
+
+/** Get available update methods for an agent */
+function getUpdateMethods(
+  agentId: string,
+  currentMethod: 'npm' | 'native' | 'brew' | 'unknown',
+  platform: 'windows' | 'wsl' | 'macos' | 'linux'
+): Array<{ id: 'npm' | 'native' | 'brew'; label: string; command: string; recommended: boolean; warning?: string }> {
+  const methods: Array<{ id: 'npm' | 'native' | 'brew'; label: string; command: string; recommended: boolean; warning?: string }> = [];
+
+  if (agentId === 'claude') {
+    // Native is always recommended for Claude
+    const nativeCmd = platform === 'windows'
+      ? 'irm https://claude.ai/install.ps1 | iex'
+      : 'curl -fsSL https://claude.ai/install.sh | bash';
+    methods.push({
+      id: 'native',
+      label: platform === 'windows' ? 'PowerShell Installer' : 'Native Installer',
+      command: nativeCmd,
+      recommended: true,
+    });
+    methods.push({
+      id: 'npm',
+      label: 'npm',
+      command: 'npm i -g @anthropic-ai/claude-code',
+      recommended: false,
+      warning: currentMethod === 'native' ? 'You installed via native - using npm may cause conflicts' : undefined,
+    });
+  } else if (agentId === 'codex') {
+    methods.push({
+      id: 'npm',
+      label: 'npm',
+      command: 'npm i -g @openai/codex',
+      recommended: true,
+    });
+    if (platform === 'macos') {
+      methods.push({
+        id: 'brew',
+        label: 'Homebrew Cask',
+        command: 'brew install --cask codex',
+        recommended: false,
+      });
+    }
+  } else if (agentId === 'gemini') {
+    methods.push({
+      id: 'npm',
+      label: 'npm',
+      command: 'npm i -g @google/gemini-cli',
+      recommended: true,
+    });
+    if (platform === 'macos') {
+      methods.push({
+        id: 'brew',
+        label: 'Homebrew',
+        command: 'brew install gemini-cli',
+        recommended: false,
+      });
+    }
+  }
+
+  return methods;
+}
+
 export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
   isOpen,
   onClose,
   agent,
   updateInfo,
   isCheckingUpdate,
+  platform,
   onRefresh,
   onInstall,
   onInstallComplete,
@@ -39,12 +122,14 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
   const [installOutput, setInstallOutput] = useState('');
   const [installSuccess, setInstallSuccess] = useState<boolean | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedMethod, setSelectedMethod] = useState<'npm' | 'native' | 'brew' | null>(null);
 
   const resetState = () => {
     setStep('info');
     setInstallOutput('');
     setInstallSuccess(null);
     setIsRefreshing(false);
+    setSelectedMethod(null);
   };
 
   const handleClose = () => {
@@ -61,19 +146,28 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
     }
   };
 
-  const handleInstall = async () => {
+  const handleUpdateClick = () => {
+    const methods = getUpdateMethods(agent.id, agent.installMethod || 'unknown', platform);
+    if (methods.length === 1 && methods[0]) {
+      // Only one method available, go straight to install
+      doInstall(methods[0].id);
+    } else {
+      setStep('select-method');
+    }
+  };
+
+  const doInstall = async (method: 'npm' | 'native' | 'brew') => {
+    setSelectedMethod(method);
     setStep('installing');
-    setInstallOutput('Starting installation...\n');
+    setInstallOutput('Starting update...\n');
 
     try {
-      // Use the detected install method, defaulting to 'npm' if unknown
-      const method = agent.installMethod === 'unknown' || !agent.installMethod ? 'npm' : agent.installMethod;
       const result = await onInstall(method);
       setInstallOutput(result.output);
       setInstallSuccess(result.success);
       setStep('result');
     } catch (error) {
-      setInstallOutput(`Installation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setInstallOutput(`Update failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       setInstallSuccess(false);
       setStep('result');
     }
@@ -92,6 +186,8 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
   const currentVersion = agent.version || updateInfo?.currentVersion;
   const latestVersion = updateInfo?.latestVersion;
   const isLoading = isCheckingUpdate || isRefreshing;
+  const installMethod = agent.installMethod || 'unknown';
+  const updateMethods = getUpdateMethods(agent.id, installMethod, platform);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -100,7 +196,8 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <h2 className="text-lg font-semibold text-zinc-200">
             {step === 'info' && agent.name}
-            {step === 'installing' && `Installing Update...`}
+            {step === 'select-method' && 'Choose Update Method'}
+            {step === 'installing' && 'Updating...'}
             {step === 'result' && (installSuccess ? 'Update Complete' : 'Update Failed')}
           </h2>
           <button
@@ -121,12 +218,21 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
                 <div className="flex-shrink-0">
                   {getAgentIcon(agent.id)}
                 </div>
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                   <div className="text-zinc-200 font-medium">{agent.name}</div>
-                  <div className="text-sm text-zinc-500">
+                  <div className="text-xs text-zinc-500 truncate" title={agent.path}>
                     {agent.path || 'CLI Agent'}
                   </div>
                 </div>
+                {/* Install method badge */}
+                <span className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded border ${getMethodBadgeClass(installMethod)}`}>
+                  {installMethod === 'native' ? (
+                    <Globe className="w-3 h-3" />
+                  ) : (
+                    <Package className="w-3 h-3" />
+                  )}
+                  {getMethodLabel(installMethod)}
+                </span>
               </div>
 
               {/* Version Info */}
@@ -169,7 +275,7 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
                       ) : updateInfo ? (
                         <div className="flex items-center gap-2 text-green-400">
                           <CheckCircle className="w-4 h-4" />
-                          <span className="text-sm">You are up to date</span>
+                          <span className="text-sm">Up to date</span>
                         </div>
                       ) : !currentVersion ? (
                         <div className="flex items-center gap-2 text-zinc-500">
@@ -184,6 +290,54 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
                   </>
                 )}
               </div>
+
+              {/* Warning for npm-installed Claude */}
+              {agent.id === 'claude' && installMethod === 'npm' && (
+                <div className="flex gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-300/80">
+                    <span className="font-medium">Native installer is recommended for Claude.</span>{' '}
+                    npm installs may not auto-update correctly. Consider switching to the native installer.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Select Method Step */}
+          {step === 'select-method' && (
+            <div className="space-y-3">
+              <p className="text-sm text-zinc-400">
+                Choose how to update {agent.name}:
+              </p>
+
+              {updateMethods.map((method) => (
+                <button
+                  key={method.id}
+                  onClick={() => doInstall(method.id)}
+                  className="w-full text-left px-4 py-3 bg-zinc-800 hover:bg-zinc-750 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium text-zinc-200">
+                      {method.label}
+                    </span>
+                    {method.recommended && (
+                      <span className="text-xs text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded">
+                        Recommended
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-mono text-xs text-zinc-500 bg-zinc-900/50 px-2 py-1 rounded">
+                    {method.command}
+                  </div>
+                  {method.warning && (
+                    <div className="flex items-center gap-1 mt-1.5 text-xs text-amber-400/80">
+                      <AlertTriangle className="w-3 h-3" />
+                      {method.warning}
+                    </div>
+                  )}
+                </button>
+              ))}
             </div>
           )}
 
@@ -192,13 +346,16 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
             <div className="space-y-4">
               <div className="flex items-center justify-center gap-3 py-4">
                 <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
-                <span className="text-zinc-200">Installing update for {agent.name}...</span>
+                <span className="text-zinc-200">
+                  Updating {agent.name}
+                  {selectedMethod ? ` via ${getMethodLabel(selectedMethod)}` : ''}...
+                </span>
               </div>
 
               <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-2 text-zinc-400">
                   <Terminal className="w-4 h-4" />
-                  <span className="text-xs">Installation Output</span>
+                  <span className="text-xs">Output</span>
                 </div>
                 <pre className="font-mono text-xs text-zinc-300 whitespace-pre-wrap max-h-48 overflow-y-auto">
                   {installOutput || 'Waiting for output...'}
@@ -229,7 +386,7 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
                     <div className="text-center">
                       <div className="text-zinc-200 font-medium">Update failed</div>
                       <div className="text-sm text-zinc-400">
-                        Please check the output below for details.
+                        Check the output below for details.
                       </div>
                     </div>
                   </>
@@ -239,7 +396,7 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
               <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-2 text-zinc-400">
                   <Terminal className="w-4 h-4" />
-                  <span className="text-xs">Installation Output</span>
+                  <span className="text-xs">Output</span>
                 </div>
                 <pre className="font-mono text-xs text-zinc-300 whitespace-pre-wrap max-h-48 overflow-y-auto">
                   {installOutput}
@@ -262,13 +419,23 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
                 Refresh
               </button>
               <button
-                onClick={handleInstall}
+                onClick={handleUpdateClick}
                 disabled={!hasUpdate || isLoading}
-                className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-md transition-colors"
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-md transition-colors"
               >
-                Install Update
+                <Download className="w-4 h-4" />
+                Update
               </button>
             </>
+          )}
+
+          {step === 'select-method' && (
+            <button
+              onClick={() => setStep('info')}
+              className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              Back
+            </button>
           )}
 
           {step === 'installing' && (
@@ -276,7 +443,7 @@ export const AgentUpdateDialog: React.FC<AgentUpdateDialogProps> = ({
               disabled
               className="px-4 py-2 text-sm bg-zinc-700 text-zinc-500 rounded-md cursor-not-allowed"
             >
-              Installing...
+              Updating...
             </button>
           )}
 

@@ -492,12 +492,12 @@ function getPathCommands(tool: CliToolDefinition, context: ExecutionContext): st
 // Note: checkFallbackPaths function was removed as Git Bash handles PATH properly on Windows
 
 /**
- * Infer the installation method from the detected path
+ * Infer the installation method from the detected path and tool ID
  */
-function inferInstallMethodFromPath(path: string | undefined): 'npm' | 'native' | 'brew' | 'unknown' {
-  if (!path) return 'unknown'
+function inferInstallMethodFromPath(detectedPath: string | undefined, toolId?: string): 'npm' | 'native' | 'brew' | 'unknown' {
+  if (!detectedPath) return 'unknown'
 
-  const normalized = path.toLowerCase().replace(/\\/g, '/')
+  const normalized = detectedPath.toLowerCase().replace(/\\/g, '/')
 
   // Check for npm indicators
   if (normalized.includes('/appdata/roaming/npm/') ||  // Windows npm
@@ -516,12 +516,20 @@ function inferInstallMethodFromPath(path: string | undefined): 'npm' | 'native' 
 
   // Check for native installer paths
   if (normalized.includes('/appdata/local/programs/') ||  // Windows native
-      normalized.includes('/program files/')) {
+      normalized.includes('/program files/') ||
+      normalized.includes('/.claude/')) {                  // Claude native installer directory
     return 'native'
   }
 
-  // ~/.local/bin could be npm or native - default to npm for CLI tools
+  // ~/.local/bin is used by both npm and native installers.
+  // For Claude, the native installer is now the primary method and puts binaries here.
+  // For other tools, npm is the primary source for ~/.local/bin.
   if (normalized.includes('/.local/bin/')) {
+    if (toolId === 'claude') {
+      // Claude native installer uses ~/.local/bin - check if it's a native install
+      // by looking for the native installer marker or just assume native since that's preferred
+      return 'native'
+    }
     return 'npm'
   }
 
@@ -593,7 +601,7 @@ export async function detectCliTool(
     }
 
     // Infer install method from detected path
-    result.installMethod = inferInstallMethodFromPath(result.path)
+    result.installMethod = inferInstallMethodFromPath(result.path, tool.id)
 
     console.log(`[cli-detector] ${tool.name}: installed=${result.installed}, version=${result.version || 'N/A'}, path=${result.path || 'N/A'}, installMethod=${result.installMethod}`)
     return result

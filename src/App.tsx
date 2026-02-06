@@ -11,6 +11,7 @@ import {
 } from '@dnd-kit/core'
 import { Terminal as TerminalIcon, ChevronUp, ExternalLink, GitCompare } from 'lucide-react'
 import { cn } from './lib/utils'
+import { SectionErrorBoundary } from './components/ErrorBoundary'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { TerminalArea } from './components/TerminalArea'
@@ -735,6 +736,7 @@ function App() {
           terminalType: 'agent',
           agentId: agentType,
           isAgentProcess: true, // Flag to distinguish from PTY-based agents
+          ...(model ? { model } : {}),
         })
 
         // Save config for persistence (sessionId added later by AgentWorkspace when stream captures it)
@@ -1573,19 +1575,21 @@ function App() {
         <TitleBar />
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden relative">
-          <Sidebar
-            onCloseTerminal={handleCloseTerminal}
-            onReconnectTerminal={handleReconnectTerminal}
-            onCreateAgentTerminal={handleCreateAgentTerminal}
-            onRestoreArchivedSession={handleRestoreArchivedSession}
-            onPermanentDeleteArchivedSession={handlePermanentDeleteArchivedSession}
-            onStartServer={handleStartServer}
-            onStopServer={handleStopServer}
-            onDeleteServer={handleDeleteServer}
-            onCreateProject={handleCreateProject}
-            onEditProject={handleEditProject}
-            onDeleteProject={handleDeleteProject}
-          />
+          <SectionErrorBoundary name="Sidebar">
+            <Sidebar
+              onCloseTerminal={handleCloseTerminal}
+              onReconnectTerminal={handleReconnectTerminal}
+              onCreateAgentTerminal={handleCreateAgentTerminal}
+              onRestoreArchivedSession={handleRestoreArchivedSession}
+              onPermanentDeleteArchivedSession={handlePermanentDeleteArchivedSession}
+              onStartServer={handleStartServer}
+              onStopServer={handleStopServer}
+              onDeleteServer={handleDeleteServer}
+              onCreateProject={handleCreateProject}
+              onEditProject={handleEditProject}
+              onDeleteProject={handleDeleteProject}
+            />
+          </SectionErrorBoundary>
           <div className="flex flex-1 min-w-0 flex-col bg-zinc-950 relative">
             {/* Floating project action buttons */}
             {activeProjectId && (
@@ -1596,10 +1600,10 @@ function App() {
                     await window.electron.system.openInEditor(activeProjectPath)
                   }}
                   disabled={!activeProjectPath}
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md text-zinc-500 hover:text-zinc-300 bg-zinc-900/60 hover:bg-zinc-800/80 border border-zinc-800/50 hover:border-zinc-700/60 backdrop-blur-sm transition-all disabled:opacity-30 disabled:pointer-events-none"
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg text-zinc-500 hover:text-zinc-300 bg-zinc-900/60 hover:bg-zinc-800/80 border border-zinc-800/50 hover:border-zinc-700/60 backdrop-blur-sm transition-all disabled:opacity-30 disabled:pointer-events-none"
                   title="Open in editor"
                 >
-                  <ExternalLink className="h-3.5 w-3.5" />
+                  <ExternalLink className="h-4 w-4" />
                   Open
                 </button>
                 {activeProjectPath && (
@@ -1608,17 +1612,17 @@ function App() {
                 <button
                   onClick={() => setIsGitDrawerOpen((prev) => !prev)}
                   className={cn(
-                    'flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md backdrop-blur-sm transition-all border',
+                    'flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg backdrop-blur-sm transition-all border',
                     isGitDrawerOpen
                       ? 'text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25'
                       : 'text-zinc-500 hover:text-zinc-300 bg-zinc-900/60 hover:bg-zinc-800/80 border-zinc-800/50 hover:border-zinc-700/60'
                   )}
                   title="Toggle git drawer"
                 >
-                  <GitCompare className="h-3.5 w-3.5" />
+                  <GitCompare className="h-4 w-4" />
                   Git
                   {changedFileCount > 0 && (
-                    <span className="ml-0.5 px-1 py-0 text-[10px] rounded bg-zinc-700/60">
+                    <span className="ml-0.5 px-1.5 py-0 text-[11px] rounded bg-zinc-700/60">
                       {changedFileCount}
                     </span>
                   )}
@@ -1626,71 +1630,75 @@ function App() {
               </div>
             )}
             <div className="flex-1 min-h-0">
-              {activeAgentProcess ? (
-                // New process-based agent (JSON streaming via child_process)
-                // key forces clean remount when switching agent sessions (e.g. project switch)
-                // while remaining stable during multi-turn within the same session
-                <AgentWorkspace
-                  key={activeAgentSessionId}
-                  processId={activeAgentProcess.id}
-                  agentType={activeAgentProcess.agentType as 'claude' | 'codex' | 'gemini'}
-                  cwd={activeAgentProcess.cwd}
-                  resumeSessionId={activeAgentResumeSessionId}
-                  className="h-full"
-                />
-              ) : isAgentTerminal && agentConversation ? (
-                // Backwards compatible: PTY-based agent terminal
-                <AgentMessageView
-                  key={activeAgentSessionId}
-                  conversation={agentConversation}
-                  className="h-full"
-                />
-              ) : (
-                // Empty placeholder
-                <div className="h-full w-full flex items-center justify-center text-zinc-500">
-                  <div className="text-center">
-                    <p className="text-sm uppercase tracking-[0.2em] text-zinc-600">Agent Workspace</p>
-                    <p className="mt-2 text-xs text-zinc-500">
-                      {sessions.some(s => s.terminalType === 'agent') || agentProcesses.size > 0
-                        ? 'Select an agent terminal to view conversation'
-                        : 'Launch an agent to get started'}
-                    </p>
+              <SectionErrorBoundary name="Agent Workspace" className="h-full">
+                {activeAgentProcess ? (
+                  // New process-based agent (JSON streaming via child_process)
+                  // key forces clean remount when switching agent sessions (e.g. project switch)
+                  // while remaining stable during multi-turn within the same session
+                  <AgentWorkspace
+                    key={activeAgentSessionId}
+                    processId={activeAgentProcess.id}
+                    agentType={activeAgentProcess.agentType as 'claude' | 'codex' | 'gemini'}
+                    cwd={activeAgentProcess.cwd}
+                    resumeSessionId={activeAgentResumeSessionId}
+                    className="h-full"
+                  />
+                ) : isAgentTerminal && agentConversation ? (
+                  // Backwards compatible: PTY-based agent terminal
+                  <AgentMessageView
+                    key={activeAgentSessionId}
+                    conversation={agentConversation}
+                    className="h-full"
+                  />
+                ) : (
+                  // Empty placeholder
+                  <div className="h-full w-full flex items-center justify-center text-zinc-500">
+                    <div className="text-center">
+                      <p className="text-sm uppercase tracking-[0.2em] text-zinc-600">Agent Workspace</p>
+                      <p className="mt-2 text-xs text-zinc-500">
+                        {sessions.some(s => s.terminalType === 'agent') || agentProcesses.size > 0
+                          ? 'Select an agent terminal to view conversation'
+                          : 'Launch an agent to get started'}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </SectionErrorBoundary>
             </div>
             {isTerminalDockOpen ? (
-              <div
-                style={{ height: terminalDockHeight }}
-                className={cn(
-                  'border-t border-zinc-800 bg-zinc-950 flex flex-col',
-                  isTerminalResizing && 'select-none'
-                )}
-              >
+              <SectionErrorBoundary name="Terminal Dock">
                 <div
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize terminal dock"
-                  onMouseDown={startTerminalResize}
+                  style={{ height: terminalDockHeight }}
                   className={cn(
-                    'h-1 flex-shrink-0 cursor-row-resize flex items-center justify-center transition-colors',
-                    isTerminalResizing ? 'bg-zinc-600' : 'hover:bg-zinc-700'
+                    'border-t border-zinc-800 bg-zinc-950 flex flex-col',
+                    isTerminalResizing && 'select-none'
                   )}
                 >
-                  <div className="w-8 h-0.5 rounded-full bg-zinc-600" />
+                  <div
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize terminal dock"
+                    onMouseDown={startTerminalResize}
+                    className={cn(
+                      'h-1 flex-shrink-0 cursor-row-resize flex items-center justify-center transition-colors',
+                      isTerminalResizing ? 'bg-zinc-600' : 'hover:bg-zinc-700'
+                    )}
+                  >
+                    <div className="w-8 h-0.5 rounded-full bg-zinc-600" />
+                  </div>
+                  <div className="flex-1 min-h-0">
+                    <TerminalArea
+                      onCreateTerminal={handleCreateTerminal}
+                      onCreateQuickTerminal={handleCreateQuickTerminal}
+                      onCloseTerminal={handleCloseTerminal}
+                      onStopServer={handleStopServer}
+                      onRestartServer={handleRestartServer}
+                      onDeleteServer={handleDeleteServer}
+                      onToggleCollapse={() => setTerminalDockOpen(false)}
+                    />
+                  </div>
                 </div>
-                <div className="flex-1 min-h-0">
-                  <TerminalArea
-                    onCreateTerminal={handleCreateTerminal}
-                    onCreateQuickTerminal={handleCreateQuickTerminal}
-                    onCloseTerminal={handleCloseTerminal}
-                    onStopServer={handleStopServer}
-                    onRestartServer={handleRestartServer}
-                    onDeleteServer={handleDeleteServer}
-                    onToggleCollapse={() => setTerminalDockOpen(false)}
-                  />
-                </div>
-              </div>
+              </SectionErrorBoundary>
             ) : (
               <button
                 className="h-10 border-t border-zinc-800 bg-zinc-950/90 px-4 text-left text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-3"
@@ -1703,7 +1711,9 @@ function App() {
               </button>
             )}
           </div>
-          <ChangedFilesPanel isOpen={isGitDrawerOpen} onClose={() => setIsGitDrawerOpen(false)} />
+          <SectionErrorBoundary name="Git Panel">
+            <ChangedFilesPanel isOpen={isGitDrawerOpen} onClose={() => setIsGitDrawerOpen(false)} />
+          </SectionErrorBoundary>
         </div>
       </div>
       <DragOverlay>

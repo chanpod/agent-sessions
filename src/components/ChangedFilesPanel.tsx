@@ -1,15 +1,15 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
-import { GitBranch, RefreshCw, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown } from 'lucide-react'
+import { RefreshCw, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown } from 'lucide-react'
 import { diffLines, type Change } from 'diff'
 import { useProjectStore } from '../stores/project-store'
 import { useGitStore, type GitInfo } from '../stores/git-store'
 import { cn, normalizeFilePath } from '../lib/utils'
 import type { ChangedFile } from '../types/electron'
 import { Button } from './ui/button'
-import { Badge } from './ui/badge'
 import { ScrollArea } from './ui/scroll-area'
 import { Separator } from './ui/separator'
 import { Sheet, SheetContent } from './ui/sheet'
+import { BranchSwitcher } from './BranchSwitcher'
 
 interface ChangedFilesPanelProps {
   isOpen: boolean
@@ -387,61 +387,62 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
             <div className="absolute left-1/2 top-1/2 h-10 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-800/80 bg-zinc-900/80 shadow-sm" />
           </div>
           <div className="flex h-full flex-col pl-3">
-            <div className="px-8 py-6 pr-16">
-              <div className="flex items-start justify-between gap-6">
-                <div className="space-y-2">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.35em] text-zinc-500">
-                    Git Workspace
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex items-center gap-2 rounded-full border border-zinc-800/80 bg-zinc-900/50 px-3 py-1 text-sm">
-                      <GitBranch className="h-4 w-4 text-zinc-400" />
-                      <span className="text-zinc-100">
-                        {projectGitInfo.branch || 'No branch'}
-                      </span>
-                    </div>
-                    {projectGitInfo.isGitRepo && (
-                      <div className="text-xs text-zinc-400">
-                        {changedFiles.length} changed files
-                      </div>
-                    )}
-                  </div>
+            <div className="px-8 py-5 pr-16 space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {activeProjectId && projectPath ? (
+                    <BranchSwitcher projectId={activeProjectId} projectPath={projectPath} />
+                  ) : (
+                    <span className="text-xs text-zinc-500">No branch</span>
+                  )}
+                  {projectGitInfo.isGitRepo && changedFiles.length > 0 && (
+                    <span className="text-[11px] text-zinc-500 shrink-0">
+                      {changedFiles.length} changed
+                    </span>
+                  )}
                 </div>
                 <Button
-                  variant="outline"
-                  size="sm"
+                  variant="ghost"
+                  size="icon-sm"
                   onClick={handleRefreshGitInfo}
-                  title="Refresh"
-                  className="h-9 px-4 text-xs uppercase tracking-[0.2em]"
+                  title="Fetch & refresh"
+                  className="h-8 w-8 text-zinc-500 hover:text-zinc-300 shrink-0"
                 >
-                  <RefreshCw className={cn('mr-2 h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
-                  Refresh
+                  <RefreshCw className={cn('h-4 w-4', isRefreshing && 'animate-spin')} />
                 </Button>
               </div>
 
-              <div className="mt-6 grid grid-cols-2 gap-3 text-xs text-zinc-400">
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
-                  <div className="text-[10px] uppercase tracking-[0.25em] text-emerald-300/90">Staged</div>
-                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{stagedCount}</div>
-                </div>
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-                  <div className="text-[10px] uppercase tracking-[0.25em] text-amber-300/90">Unstaged</div>
-                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{unstagedCount}</div>
-                </div>
-                <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/60 px-4 py-3">
-                  <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
-                    <ArrowUp className="h-3 w-3 text-emerald-400" />
-                    Ahead
-                  </div>
-                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{projectGitInfo.ahead}</div>
-                </div>
-                <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/60 px-4 py-3">
-                  <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
-                    <ArrowDown className="h-3 w-3 text-sky-400" />
-                    Behind
-                  </div>
-                  <div className="mt-2 text-2xl font-semibold text-zinc-100">{projectGitInfo.behind}</div>
-                </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePull}
+                  disabled={isPulling}
+                  className="flex-1 h-8 text-[11px] uppercase tracking-[0.15em] gap-1.5"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                  {isPulling ? 'Pulling...' : 'Pull'}
+                  {projectGitInfo.behind > 0 && (
+                    <span className="ml-1 inline-flex items-center justify-center rounded-full bg-sky-500/20 text-sky-300 text-[10px] font-semibold min-w-[18px] h-[18px] px-1">
+                      {projectGitInfo.behind}
+                    </span>
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePush}
+                  disabled={isPushing}
+                  className="flex-1 h-8 text-[11px] uppercase tracking-[0.15em] gap-1.5"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                  {isPushing ? 'Pushing...' : 'Push'}
+                  {projectGitInfo.ahead > 0 && (
+                    <span className="ml-1 inline-flex items-center justify-center rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold min-w-[18px] h-[18px] px-1">
+                      {projectGitInfo.ahead}
+                    </span>
+                  )}
+                </Button>
               </div>
             </div>
 
@@ -681,64 +682,41 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
 
                   <Separator className="bg-zinc-800/70" />
 
-                  <div className="px-6 py-5 space-y-4">
-                    <div className="text-[11px] uppercase tracking-[0.3em] text-zinc-500">Actions</div>
-                    <div className="space-y-3">
-                      <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">Commit</div>
-                      <textarea
-                        value={commitMessage}
-                        onChange={(e) => setCommitMessage(e.target.value)}
-                        placeholder="Write a commit message"
-                        className="w-full min-h-[110px] rounded-xl border border-zinc-800/80 bg-zinc-900/70 px-4 py-3 text-xs text-zinc-100 placeholder:text-zinc-600"
-                      />
+                  <div className="px-6 py-4 space-y-3">
+                    <textarea
+                      value={commitMessage}
+                      onChange={(e) => setCommitMessage(e.target.value)}
+                      placeholder="Commit message..."
+                      className="w-full min-h-[80px] rounded-lg border border-zinc-800/80 bg-zinc-900/70 px-3 py-2.5 text-xs text-zinc-100 placeholder:text-zinc-600 resize-none focus:outline-none focus:border-zinc-700"
+                    />
+                    <div className="flex items-center gap-2">
                       <Button
                         onClick={handleCommit}
-                        disabled={!commitMessage.trim() || isCommitting}
-                        className="w-full h-10 text-xs uppercase tracking-[0.2em]"
+                        disabled={!commitMessage.trim() || isCommitting || stagedCount === 0}
+                        className="flex-1 h-8 text-[11px] uppercase tracking-[0.15em]"
                       >
-                        {isCommitting ? 'Committing...' : 'Commit changes'}
+                        {isCommitting ? 'Committing...' : `Commit${stagedCount > 0 ? ` (${stagedCount})` : ''}`}
                       </Button>
+                      {unstagedCount > 0 && !pendingDiscardAll && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleDiscardAll}
+                          className="h-8 px-2.5 text-[11px] text-red-400/80 hover:text-red-300 hover:bg-red-500/10"
+                          title="Discard all unstaged changes"
+                        >
+                          <Undo2 className="w-3 h-3" />
+                        </Button>
+                      )}
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handlePull}
-                        disabled={isPulling}
-                        className="h-9 text-[11px] uppercase tracking-[0.2em]"
-                      >
-                        <ArrowDown className="w-3 h-3 mr-2" />
-                        {isPulling ? 'Pulling...' : 'Pull'}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handlePush}
-                        disabled={isPushing}
-                        className="h-9 text-[11px] uppercase tracking-[0.2em]"
-                      >
-                        <ArrowUp className="w-3 h-3 mr-2" />
-                        {isPushing ? 'Pushing...' : 'Push'}
-                      </Button>
-                    </div>
-                    {unstagedCount > 0 && (
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={handleDiscardAll}
-                        className="w-full h-9 text-[11px] uppercase tracking-[0.2em]"
-                      >
-                        <Undo2 className="w-3 h-3 mr-2" />
-                        Discard all
-                      </Button>
-                    )}
                     {pendingDiscardAll && (
-                      <div className="flex items-center gap-2 text-[10px]">
+                      <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2">
+                        <span className="flex-1 text-[11px] text-red-300/90">Discard all unstaged?</span>
                         <Button
                           variant="destructive"
                           size="xs"
                           onClick={confirmDiscardAll}
-                          className="flex-1"
+                          className="h-6 px-2.5 text-[10px]"
                         >
                           Confirm
                         </Button>
@@ -746,7 +724,7 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
                           variant="outline"
                           size="xs"
                           onClick={cancelDiscardAll}
-                          className="flex-1"
+                          className="h-6 px-2.5 text-[10px]"
                         >
                           Cancel
                         </Button>

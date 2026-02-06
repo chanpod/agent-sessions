@@ -100,35 +100,35 @@ export function BranchSwitcher({ projectId, projectPath }: BranchSwitcherProps) 
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md backdrop-blur-sm transition-all border cursor-pointer',
+          'flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg backdrop-blur-sm transition-all border cursor-pointer',
           open
             ? 'text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25'
             : 'text-zinc-500 hover:text-zinc-300 bg-zinc-900/60 hover:bg-zinc-800/80 border-zinc-800/50 hover:border-zinc-700/60'
         )}
         title={`Current branch: ${currentBranch}`}
       >
-        <GitBranch className="h-3.5 w-3.5 shrink-0" />
-        <span className="max-w-[120px] truncate">{currentBranch}</span>
+        <GitBranch className="h-4 w-4 shrink-0" />
+        <span className="max-w-[160px] truncate">{currentBranch}</span>
 
         {/* Ahead/behind indicators */}
         {(ahead > 0 || behind > 0) && (
-          <span className="flex items-center gap-0.5 text-[10px] text-zinc-500 ml-0.5">
+          <span className="flex items-center gap-1 text-[11px] text-zinc-500 ml-0.5">
             {ahead > 0 && (
               <span className="flex items-center text-emerald-500" title={`${ahead} ahead`}>
-                <ArrowUp className="h-2.5 w-2.5" />
+                <ArrowUp className="h-3 w-3" />
                 {ahead}
               </span>
             )}
             {behind > 0 && (
               <span className="flex items-center text-amber-500" title={`${behind} behind`}>
-                <ArrowDown className="h-2.5 w-2.5" />
+                <ArrowDown className="h-3 w-3" />
                 {behind}
               </span>
             )}
           </span>
         )}
         <ChevronDown className={cn(
-          'h-3 w-3 shrink-0 text-zinc-600 transition-transform duration-150',
+          'h-3.5 w-3.5 shrink-0 text-zinc-600 transition-transform duration-150',
           open && 'rotate-180'
         )} />
       </PopoverTrigger>

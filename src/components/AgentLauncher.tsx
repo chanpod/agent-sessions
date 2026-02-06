@@ -57,11 +57,18 @@ function getAgentMeta(id: string) {
 // Model definitions
 // =============================================================================
 
-const MODELS = [
-  { id: null, label: 'Default', desc: 'CLI default' },
+const CLAUDE_MODELS = [
+  { id: null, label: 'Sonnet', desc: 'Default' },
   { id: 'opus', label: 'Opus', desc: 'Most capable' },
   { id: 'sonnet', label: 'Sonnet', desc: 'Balanced' },
   { id: 'haiku', label: 'Haiku', desc: 'Fastest' },
+] as const
+
+const CODEX_MODELS = [
+  { id: null, label: 'codex-mini', desc: 'Default' },
+  { id: 'gpt-5.3-codex', label: '5.3 Codex', desc: 'Latest' },
+  { id: 'gpt-5.2-codex', label: '5.2 Codex', desc: 'Previous gen' },
+  { id: 'o3', label: 'o3', desc: 'Reasoning' },
 ] as const
 
 // =============================================================================
@@ -134,13 +141,15 @@ function AgentTile({
 function ModelSelector({
   selected,
   onChange,
+  models,
 }: {
-  selected: 'opus' | 'sonnet' | 'haiku' | null
-  onChange: (model: 'opus' | 'sonnet' | 'haiku' | null) => void
+  selected: string | null
+  onChange: (model: string | null) => void
+  models: ReadonlyArray<{ id: string | null; label: string; desc: string }>
 }) {
   return (
     <div className="flex rounded-lg border border-white/[0.08] bg-white/[0.02] p-0.5">
-      {MODELS.map((m) => (
+      {models.map((m) => (
         <button
           key={m.id ?? 'default'}
           onClick={() => onChange(m.id)}
@@ -151,7 +160,15 @@ function ModelSelector({
               : 'text-muted-foreground hover:text-foreground/70 hover:bg-white/[0.04]'
           )}
         >
-          <span className="relative z-10">{m.label}</span>
+          <div className="relative z-10 flex flex-col items-center gap-0.5">
+            <span>{m.label}</span>
+            <span className={cn(
+              'text-[9px] font-normal',
+              selected === m.id ? 'text-muted-foreground/70' : 'text-muted-foreground/40'
+            )}>
+              {m.desc}
+            </span>
+          </div>
           {selected === m.id && (
             <div className="absolute inset-x-2 -bottom-px h-px bg-emerald-400/60" />
           )}
@@ -261,7 +278,7 @@ export function AgentLauncher({
   )
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false)
   const [skipPermissions, setSkipPermissions] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<'opus' | 'sonnet' | 'haiku' | null>(null)
+  const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const hookInstalled = usePermissionStore((s) => s.isHookInstalled(projectPath ?? ''))
 
   const selectedContext = useMemo(
@@ -358,15 +375,15 @@ export function AgentLauncher({
                     key={agent.id}
                     agent={agent}
                     selected={selectedAgentId === agent.id}
-                    onClick={() => setSelectedAgentId(agent.id)}
+                    onClick={() => { setSelectedAgentId(agent.id); setSelectedModel(null) }}
                   />
                 ))}
               </div>
             )}
           </div>
 
-          {/* Model selector (Claude only) */}
-          {selectedAgentId === 'claude' && (
+          {/* Model selector (Claude & Codex) */}
+          {(selectedAgentId === 'claude' || selectedAgentId === 'codex') && (
             <div>
               <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-2">
                 Model
@@ -374,6 +391,7 @@ export function AgentLauncher({
               <ModelSelector
                 selected={selectedModel}
                 onChange={setSelectedModel}
+                models={selectedAgentId === 'codex' ? CODEX_MODELS : CLAUDE_MODELS}
               />
             </div>
           )}

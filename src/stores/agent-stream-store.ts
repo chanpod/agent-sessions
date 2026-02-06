@@ -591,8 +591,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           get().persistSession(terminalId)
 
           // Emit notification based on stopReason:
+          // - end_turn + isWaitingForQuestion: agent asked user a question → 'needs-attention'
           // - end_turn: agent is done → 'done'
-          // - tool_use: agent is waiting for user input → 'needs-attention'
+          // - tool_use: agent is executing a tool, still working → no notification
           // - null/missing: sub-agent noise → don't notify
           const endData = event.data as { stopReason?: string }
           // When isWaitingForQuestion is set, the agent ended its turn after the
@@ -608,9 +609,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               notifiedTerminals.add(terminalId)
               return { notifiedTerminals }
             })
-          } else if (endData.stopReason === 'tool_use') {
-            emitAgentNotification(terminalId, 'needs-attention')
           }
+          // tool_use means the agent called a tool and will continue working
+          // after the tool result — no notification needed.
         }
       },
 

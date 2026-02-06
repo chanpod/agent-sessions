@@ -18,7 +18,7 @@ import { AgentLauncher } from './AgentLauncher'
 import { AgentContextEditor } from './AgentContextEditor'
 import AgentContextManager from './AgentContextManager'
 import { SkillBrowser, type InstalledSkill, type MarketplaceSkill } from './skills/SkillBrowser'
-import { cn } from '../lib/utils'
+import { cn, formatModelDisplayName } from '../lib/utils'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Separator } from './ui/separator'
@@ -76,6 +76,31 @@ function AgentSessionRow({
   const hasPendingPermission = usePermissionStore((s) =>
     cliSessionId ? s.pendingRequests.some((r) => r.sessionId === cliSessionId) : false
   )
+
+  // Get the actual model from stream messages (includes version like "claude-opus-4-6-20260101")
+  const streamModel = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(session.id)
+    const pids = conv?.processIds ?? [session.id]
+    for (let i = pids.length - 1; i >= 0; i--) {
+      const pid = pids[i]
+      if (!pid) continue
+      const state = store.terminals.get(pid)
+      if (!state) continue
+      if (state.currentMessage?.model) return state.currentMessage.model
+      for (let j = state.messages.length - 1; j >= 0; j--) {
+        const msg = state.messages[j]
+        if (msg?.model) return msg.model
+      }
+    }
+    return null
+  })
+
+  // Format model name: "claude-opus-4-6-20260101" → "Opus 4.6", "o3" → "o3", etc.
+  const modelLabel = useMemo(() => {
+    const raw = streamModel || session.model
+    if (!raw) return null
+    return formatModelDisplayName(raw)
+  }, [streamModel, session.model])
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -166,6 +191,11 @@ function AgentSessionRow({
               >
                 {session.title}
               </span>
+            )}
+            {modelLabel && !isEditing && (
+              <Badge variant="outline" className="border-violet-400/30 text-violet-300/80 text-[10px] px-1.5 py-0">
+                {modelLabel}
+              </Badge>
             )}
             {contextLabel && !isEditing && (
               <Badge variant="outline" className="border-emerald-400/30 text-emerald-200/80">

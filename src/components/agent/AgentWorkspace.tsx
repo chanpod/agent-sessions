@@ -4,11 +4,11 @@ import { IconSparkles } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
-import { useTerminalStore } from '@/stores/terminal-store'
+import { useTerminalStore, type SavedTerminalConfig } from '@/stores/terminal-store'
 import { AgentMessageView } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
 import { DebugEventLog } from './DebugEventLog'
-import { cn } from '@/lib/utils'
+import { cn, formatModelDisplayName } from '@/lib/utils'
 import type {
   AgentConversation,
   AgentMessage as UIAgentMessage,
@@ -143,6 +143,11 @@ export function AgentWorkspace({
   const [isProcessing, setIsProcessing] = useState(false)
   const [editsEnabled, setEditsEnabled] = useState(true)
 
+  // Get the configured model from the terminal store (set at launch time)
+  const configuredModel = useTerminalStore(
+    (s) => s.savedConfigs.find((c: SavedTerminalConfig) => c.id === initialProcessId)?.model ?? null
+  )
+
   // Read-only tools for when edits are disabled
   const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Task', 'TodoRead', 'TodoWrite', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Skill']
   const allowedTools = editsEnabled ? undefined : READ_ONLY_TOOLS
@@ -234,6 +239,7 @@ export function AgentWorkspace({
             cwd,
             resumeSessionId: sessionId || undefined,
             prompt: message,
+            ...(configuredModel ? { model: configuredModel } : {}),
             ...(allowedTools ? { allowedTools } : {}),
           })
           if (result.success && result.process) {
@@ -290,7 +296,7 @@ export function AgentWorkspace({
         setIsProcessing(false)
       }
     },
-    [initialProcessId, agentType, cwd, sessionId, allowedTools]
+    [initialProcessId, agentType, cwd, sessionId, configuredModel, allowedTools]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -467,6 +473,28 @@ export function AgentWorkspace({
     }
   }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive])
 
+  // Derive the latest model name from the most recent assistant message
+  const latestModel = useMemo(() => {
+    // Check current streaming message first, iterating from most recent process
+    for (let i = allProcessStates.length - 1; i >= 0; i--) {
+      const state = allProcessStates[i]!
+      if (state.currentMessage?.model) return state.currentMessage.model
+      for (let j = state.messages.length - 1; j >= 0; j--) {
+        const msg = state.messages[j]
+        if (msg?.model) return msg.model
+      }
+    }
+    return null
+  }, [allProcessStates])
+
+  // Format full model ID to a short display name (e.g. "claude-opus-4-5-20251101" → "Opus 4.5")
+  // Falls back to configured model from terminal store (useful for Codex which doesn't report model in events)
+  const modelDisplayName = useMemo(() => {
+    const raw = latestModel || configuredModel
+    if (!raw) return null
+    return formatModelDisplayName(raw)
+  }, [latestModel, configuredModel])
+
   // Determine placeholder text and thinking indicator state
   const isStreaming = conversation.status === 'streaming'
   const showThinkingIndicator = isStreaming && !conversation.currentMessage
@@ -526,9 +554,10 @@ export function AgentWorkspace({
       {/* Input Area - Floating at bottom */}
       <div className="px-4 pb-4 pt-2">
         <div className="mx-auto max-w-3xl">
-          {/* Edits toggle - Claude only */}
-          {agentType === 'claude' && (
-            <div className="flex items-center gap-2 px-1 pb-1.5">
+          {/* Controls row - Edits toggle (left) + Model label (right) */}
+          <div className="flex items-center justify-between px-1 pb-1.5">
+            {/* Edits toggle - Claude only */}
+            {agentType === 'claude' ? (
               <button
                 onClick={() => setEditsEnabled(!editsEnabled)}
                 className={cn(
@@ -546,8 +575,16 @@ export function AgentWorkspace({
                 )}
                 <span>Edits {editsEnabled ? 'on' : 'off'}</span>
               </button>
-            </div>
-          )}
+            ) : (
+              <div />
+            )}
+            {/* Model label */}
+            {modelDisplayName && (
+              <span className="text-[11px] font-medium text-muted-foreground/70 px-2 py-1">
+                {modelDisplayName}
+              </span>
+            )}
+          </div>
           <AgentInputArea
             processId={initialProcessId}
             onSend={handleSend}
