@@ -44,7 +44,7 @@ interface CodexTurnCompletedEvent {
 
 interface CodexTurnFailedEvent {
   type: 'turn.failed'
-  error?: string
+  error?: string | { message?: string }
 }
 
 interface CodexItemEvent {
@@ -374,12 +374,17 @@ export class CodexStreamDetector implements OutputDetector {
 
       case 'turn.failed': {
         const failedEvent = event as CodexTurnFailedEvent
+        // error can be a string or an object with a message field
+        const errorMsg = typeof failedEvent.error === 'string'
+          ? failedEvent.error
+          : failedEvent.error?.message || 'Turn failed'
         events.push({
           terminalId,
           type: 'agent-error',
           timestamp,
           data: {
-            error: failedEvent.error || 'Turn failed',
+            errorType: 'api_error',
+            message: errorMsg,
           },
         })
 
@@ -486,7 +491,8 @@ export class CodexStreamDetector implements OutputDetector {
           type: 'agent-error',
           timestamp,
           data: {
-            error: errorEvent.message || errorEvent.error || 'Unknown error',
+            errorType: 'api_error',
+            message: errorEvent.message || errorEvent.error || 'Unknown error',
           },
         })
         break

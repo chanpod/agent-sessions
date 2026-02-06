@@ -2,7 +2,7 @@
  * AgentLauncher - Modal for launching AI agents with optional context injection
  */
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle, Zap, Download } from 'lucide-react'
 import { cn, formatModelDisplayName } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
@@ -64,21 +64,6 @@ interface ModelOption {
   label: string
   desc: string
 }
-
-// Known model options per agent (the "CLI Default" entry is prepended dynamically)
-const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'claude-opus-4-6', label: 'Opus 4.6', desc: 'Most capable' },
-  { id: 'claude-opus-4-5', label: 'Opus 4.5', desc: 'Previous gen' },
-  { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5', desc: 'Fast + smart' },
-  { id: 'claude-sonnet-4-0', label: 'Sonnet 4', desc: 'Previous gen' },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', desc: 'Fastest' },
-]
-
-const CODEX_MODEL_OPTIONS: ModelOption[] = [
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: 'Latest' },
-  { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', desc: 'Previous gen' },
-  { id: 'o3', label: 'o3', desc: 'Reasoning' },
-]
 
 /** Build the full model list with a "CLI Default" entry showing the detected default model */
 function buildModelList(options: ModelOption[], detectedDefault?: string): ModelOption[] {
@@ -328,7 +313,27 @@ export function AgentLauncher({
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false)
   const [skipPermissions, setSkipPermissions] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
+  const [agentModels, setAgentModels] = useState<Record<string, ModelOption[]>>({})
+  const fetchedModelsRef = useRef<Set<string>>(new Set())
   const hookInstalled = usePermissionStore((s) => s.isHookInstalled(projectPath ?? ''))
+
+  // Fetch models for all available agents on mount (so selector is ready on switch)
+  useEffect(() => {
+    if (!window.electron?.cli?.getModels) return
+
+    for (const agent of availableAgents) {
+      if (fetchedModelsRef.current.has(agent.id)) continue
+      fetchedModelsRef.current.add(agent.id)
+
+      window.electron.cli.getModels(agent.id).then((models) => {
+        if (models.length > 0) {
+          setAgentModels((prev) => ({ ...prev, [agent.id]: models }))
+        }
+      }).catch(() => {
+        // Silently fail — the model selector just won't appear for this agent
+      })
+    }
+  }, [availableAgents])
 
   const selectedContext = useMemo(
     () => projectContexts.find((c) => c.id === selectedContextId) ?? null,
@@ -453,8 +458,8 @@ export function AgentLauncher({
             </button>
           )}
 
-          {/* Model selector (Claude & Codex) */}
-          {(selectedAgentId === 'claude' || selectedAgentId === 'codex') && (
+          {/* Model selector - shown when models are available for the selected agent */}
+          {selectedAgentId && agentModels[selectedAgentId] && agentModels[selectedAgentId].length > 0 && (
             <div>
               <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-2">
                 Model
@@ -463,7 +468,7 @@ export function AgentLauncher({
                 selected={selectedModel}
                 onChange={setSelectedModel}
                 models={buildModelList(
-                  selectedAgentId === 'codex' ? CODEX_MODEL_OPTIONS : CLAUDE_MODEL_OPTIONS,
+                  agentModels[selectedAgentId],
                   availableAgents.find(a => a.id === selectedAgentId)?.defaultModel
                 )}
                 open={modelDropdownOpen}

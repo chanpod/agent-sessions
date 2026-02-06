@@ -16,11 +16,12 @@ import { ShieldAlert } from 'lucide-react'
 import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { AgentLauncher } from './AgentLauncher'
 import { AgentContextEditor } from './AgentContextEditor'
+import { AgentUpdateDialog } from './AgentUpdateDialog'
 import AgentContextManager from './AgentContextManager'
 import { SkillBrowser, type InstalledSkill, type MarketplaceSkill } from './skills/SkillBrowser'
 import { cn, formatModelDisplayName } from '../lib/utils'
 import { Button } from './ui/button'
-import type { CliToolDetectionResult } from '../types/electron'
+import type { CliToolDetectionResult, UpdateCheckResult } from '../types/electron'
 
 interface AgentTerminalsSectionProps {
   projectId: string
@@ -285,6 +286,12 @@ export function AgentTerminalsSection({
   const [agents, setAgents] = useState<CliToolDetectionResult[]>([])
   const loadedProjectRef = useRef<string | null>(null)
 
+  // Update state
+  const [updateAvailable, setUpdateAvailable] = useState<Record<string, UpdateCheckResult>>({})
+  const [updateAgent, setUpdateAgent] = useState<CliToolDetectionResult | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState<string | null>(null)
+  const [platform, setPlatform] = useState<'windows' | 'wsl' | 'macos' | 'linux'>('linux')
+
   // Modal state
   const [showLauncher, setShowLauncher] = useState(false)
   const [showContextEditor, setShowContextEditor] = useState(false)
@@ -387,6 +394,56 @@ export function AgentTerminalsSection({
     detectAgents()
   }, [detectAgents])
 
+  // Detect platform for update dialog
+  useEffect(() => {
+    if (window.electron?.cli?.getPlatform) {
+      window.electron.cli.getPlatform().then(setPlatform)
+    }
+  }, [])
+
+  // Check all updates after agent detection
+  const checkAllUpdates = useCallback(async (agentList: CliToolDetectionResult[]) => {
+    if (!window.electron?.cli?.checkUpdates) return
+
+    const installed = agentList.filter((a) => a.installed && a.version)
+    if (installed.length === 0) return
+
+    try {
+      const results = await window.electron.cli.checkUpdates(
+        installed.map((a) => ({ id: a.id, version: a.version || null }))
+      )
+      const map: Record<string, UpdateCheckResult> = {}
+      for (const r of results) {
+        map[r.agentId] = r
+      }
+      setUpdateAvailable(map)
+    } catch {
+      // Silently fail - update checks are non-critical
+    }
+  }, [])
+
+  // Check single update (for the update dialog)
+  const checkSingleUpdate = useCallback(async (agentId: string, currentVersion: string | null) => {
+    if (!window.electron?.cli?.checkUpdate) return
+
+    setCheckingUpdate(agentId)
+    try {
+      const result = await window.electron.cli.checkUpdate(agentId, currentVersion)
+      setUpdateAvailable((prev) => ({ ...prev, [agentId]: result }))
+    } catch {
+      // Silently fail
+    } finally {
+      setCheckingUpdate(null)
+    }
+  }, [])
+
+  // Trigger update check when agents are detected
+  useEffect(() => {
+    if (agents.length > 0) {
+      checkAllUpdates(agents)
+    }
+  }, [agents, checkAllUpdates])
+
   // Filter sessions to only agent terminals for this project
   const agentSessions = sessions.filter(
     (s) => s.projectId === projectId && s.terminalType === 'agent'
@@ -406,6 +463,14 @@ export function AgentTerminalsSection({
   const handleLaunch = (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => {
     onLaunchAgent(projectId, agentId, contextId, contextContent, skipPermissions, model)
     setShowLauncher(false)
+  }
+
+  // Handle update click from launcher
+  const handleUpdateClick = (agent: CliToolDetectionResult) => {
+    setUpdateAgent(agent)
+    if (agent.version) {
+      checkSingleUpdate(agent.id, agent.version)
+    }
   }
 
   // Handle edit context from launcher
@@ -527,6 +592,8 @@ export function AgentTerminalsSection({
           onLaunch={handleLaunch}
           onClose={() => setShowLauncher(false)}
           onEditContext={handleEditContext}
+          updateInfo={updateAvailable}
+          onUpdateAgent={handleUpdateClick}
         />
       )}
 
@@ -582,6 +649,33 @@ export function AgentTerminalsSection({
         }}
         isLoading={skillsLoading}
       />
+
+      {/* Agent Update Dialog */}
+      {updateAgent && (
+        <AgentUpdateDialog
+          isOpen={!!updateAgent}
+          onClose={() => setUpdateAgent(null)}
+          agent={updateAgent}
+          updateInfo={updateAvailable[updateAgent.id] || null}
+          isCheckingUpdate={checkingUpdate === updateAgent.id}
+          platform={platform}
+          onRefresh={async () => {
+            if (updateAgent.version) {
+              await checkSingleUpdate(updateAgent.id, updateAgent.version)
+            }
+          }}
+          onInstall={async (method) => {
+            if (!window.electron?.cli?.install) {
+              return { success: false, output: 'Installation not available' }
+            }
+            return await window.electron.cli.install(updateAgent.id, method)
+          }}
+          onInstallComplete={async () => {
+            await new Promise(resolve => setTimeout(resolve, 500))
+            await detectAgents(true)
+          }}
+        />
+      )}
     </>
   )
 }

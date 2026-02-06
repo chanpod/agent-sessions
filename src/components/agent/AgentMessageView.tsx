@@ -1,4 +1,4 @@
-import { useRef, useMemo, useCallback, useState } from 'react'
+import { useRef, useMemo, useCallback, useState, useImperativeHandle, forwardRef } from 'react'
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import {
   IconLoader2,
@@ -52,6 +52,10 @@ import { cn } from '@/lib/utils'
 // =============================================================================
 // Types
 // =============================================================================
+
+export interface AgentMessageViewHandle {
+  scrollToBottom: (behavior?: 'auto' | 'smooth') => void
+}
 
 interface AgentMessageViewProps {
   conversation: AgentConversation
@@ -279,17 +283,27 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
  * - Supports composer pattern for custom rendering
  * - Auto-scrolls to bottom when streaming
  */
-export function AgentMessageView({
+export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageViewProps>(function AgentMessageView({
   conversation,
   composer,
   className,
   autoScroll: _autoScroll = true,
   agentType,
   onAnswerQuestion,
-}: AgentMessageViewProps) {
+}, ref) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const isStreaming = conversation.status === 'streaming'
   const [_isAtBottom, setIsAtBottom] = useState(true)
+
+  useImperativeHandle(ref, () => ({
+    scrollToBottom: (behavior: 'auto' | 'smooth' = 'smooth') => {
+      virtuosoRef.current?.scrollToIndex({
+        index: 'LAST',
+        align: 'end',
+        behavior,
+      })
+    },
+  }), [])
   const [todoSheetOpen, setTodoSheetOpen] = useState(false)
   const [planSheetOpen, setPlanSheetOpen] = useState(false)
 
@@ -499,13 +513,15 @@ export function AgentMessageView({
                 )}
               </div>
             )}
-            components={{}}
+            components={{
+              Footer: () => <div className="h-10" />,
+            }}
           />
         </div>
       )}
     </>
   )
-}
+})
 
 // =============================================================================
 // Activity Box (collapsible)

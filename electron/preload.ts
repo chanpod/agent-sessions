@@ -384,6 +384,8 @@ const electronAPI = {
       ipcRenderer.invoke('cli:check-update', agentId, currentVersion),
     checkUpdates: (agents: Array<{ id: string; version: string | null }>): Promise<UpdateCheckResult[]> =>
       ipcRenderer.invoke('cli:check-updates', agents),
+    getModels: (agentId: string): Promise<Array<{ id: string; label: string; desc: string }>> =>
+      ipcRenderer.invoke('cli:get-models', agentId),
   },
   agent: {
     createTerminal: (options: {

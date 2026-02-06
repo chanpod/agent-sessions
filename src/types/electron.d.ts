@@ -297,6 +297,7 @@ export interface ElectronAPI {
     install: (agentId: string, method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>
     checkUpdate: (agentId: string, currentVersion: string | null) => Promise<UpdateCheckResult>
     checkUpdates: (agents: Array<{ id: string; version: string | null }>) => Promise<UpdateCheckResult[]>
+    getModels: (agentId: string) => Promise<Array<{ id: string; label: string; desc: string }>>
   }
   agent: {
     // Existing terminal-based methods

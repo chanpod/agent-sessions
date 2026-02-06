@@ -41,7 +41,7 @@ import {
   type AllCliToolsResult,
   type UpdateCheckResult
 } from './services/cli-detector.js'
-import { BUILTIN_CLI_TOOLS } from './services/cli-config.js'
+import { BUILTIN_CLI_TOOLS, getAgentModels, type AgentModelOption } from './services/cli-config.js'
 import { installCliTool } from './services/cli-installer.js'
 import { PermissionServer } from './services/permission-server.js'
 import { serviceManager } from './services/service-manager.js'
@@ -1041,6 +1041,15 @@ ipcMain.handle('cli:check-updates', async (_event, agents: Array<{ id: string; v
       updateAvailable: false,
       error: getErrorMessage(error)
     }))
+  }
+})
+
+ipcMain.handle('cli:get-models', async (_event, agentId: string): Promise<AgentModelOption[]> => {
+  try {
+    return await getAgentModels(agentId)
+  } catch (error: unknown) {
+    console.error(`[CLI] Get models error for ${agentId}:`, error)
+    return []
   }
 })
 

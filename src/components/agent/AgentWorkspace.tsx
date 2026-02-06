@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
 import { useTerminalStore, type SavedTerminalConfig } from '@/stores/terminal-store'
-import { AgentMessageView } from './AgentMessageView'
+import { AgentMessageView, type AgentMessageViewHandle } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
 import { DebugEventSheet } from './DebugEventLog'
 import { cn, formatModelDisplayName } from '@/lib/utils'
@@ -138,6 +138,8 @@ export function AgentWorkspace({
   className,
   resumeSessionId,
 }: AgentWorkspaceProps) {
+  const messageViewRef = useRef<AgentMessageViewHandle>(null)
+
   // isProcessing: true between user sending message and agent starting to respond
   // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
@@ -229,12 +231,25 @@ export function AgentWorkspace({
       })
       setIsProcessing(true)
 
+      // Scroll to bottom after user message is rendered
+      requestAnimationFrame(() => {
+        messageViewRef.current?.scrollToBottom('auto')
+      })
+
       try {
         // Codex uses one-shot `exec` mode — every message (including the first)
         // spawns a new process with the prompt as a CLI argument.
         // Multi-turn uses `codex exec resume SESSION_ID`.
         if (agentType === 'codex') {
           console.log(`[AgentWorkspace] Codex: spawning process with prompt`, sessionId ? `(resuming ${sessionId})` : '(first message)')
+
+          // Kill the idle placeholder process (sleep infinity) before spawning the real one.
+          // This avoids node-pty conpty cleanup errors ("AttachConsole failed") that occur
+          // when the placeholder is killed later during terminal cleanup on Windows.
+          if (!sessionId) {
+            await window.electron.agent.kill(initialProcessId).catch(() => {})
+          }
+
           const result = await window.electron.agent.spawn({
             agentType,
             cwd,
@@ -325,6 +340,11 @@ export function AgentWorkspace({
         agentType,
       })
       setIsProcessing(true)
+
+      // Scroll to bottom after user message is rendered
+      requestAnimationFrame(() => {
+        messageViewRef.current?.scrollToBottom('auto')
+      })
 
       try {
         if (sessionId) {
@@ -570,35 +590,38 @@ export function AgentWorkspace({
       </button>
 
       {/* Message View - Flex grow, scrollable */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden relative">
         <AgentMessageView
+          ref={messageViewRef}
           conversation={conversation}
           autoScroll={true}
           agentType={agentType}
           onAnswerQuestion={handleAnswerQuestion}
         />
-      </div>
 
-      {/* Thinking indicator - outside scroll container to avoid breaking Virtuoso followOutput */}
-      <div
-        className={cn(
-          'overflow-hidden transition-all duration-300 ease-out',
-          showThinkingIndicator
-            ? 'max-h-12 opacity-100'
-            : 'max-h-0 opacity-0'
-        )}
-      >
-        <div className="flex items-center gap-2.5 px-4 py-2 max-w-3xl mx-auto">
-          <div className="flex size-5 items-center justify-center rounded-md bg-primary/10 ring-1 ring-primary/20">
-            <IconSparkles className="size-3 text-primary" />
-          </div>
-          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Thinking
-          </span>
-          <div className="flex gap-0.5">
-            <span className="size-1 rounded-full bg-primary/60 animate-pulse" />
-            <span className="size-1 rounded-full bg-primary/40 animate-pulse" style={{ animationDelay: '150ms' }} />
-            <span className="size-1 rounded-full bg-primary/20 animate-pulse" style={{ animationDelay: '300ms' }} />
+        {/* Thinking indicator - absolutely positioned so it doesn't shrink the scroll container */}
+        <div
+          className={cn(
+            'absolute bottom-0 left-0 right-0 z-10',
+            'bg-gradient-to-t from-background via-background/95 to-transparent',
+            'transition-all duration-300 ease-out',
+            showThinkingIndicator
+              ? 'opacity-100 translate-y-0'
+              : 'opacity-0 translate-y-2 pointer-events-none'
+          )}
+        >
+          <div className="flex items-center gap-2.5 px-4 py-2 max-w-3xl mx-auto">
+            <div className="flex size-5 items-center justify-center rounded-md bg-primary/10 ring-1 ring-primary/20">
+              <IconSparkles className="size-3 text-primary" />
+            </div>
+            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              Thinking
+            </span>
+            <div className="flex gap-0.5">
+              <span className="size-1 rounded-full bg-primary/60 animate-pulse" />
+              <span className="size-1 rounded-full bg-primary/40 animate-pulse" style={{ animationDelay: '150ms' }} />
+              <span className="size-1 rounded-full bg-primary/20 animate-pulse" style={{ animationDelay: '300ms' }} />
+            </div>
           </div>
         </div>
       </div>
