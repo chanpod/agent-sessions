@@ -245,6 +245,8 @@ export interface CliToolDetectionResult {
   error?: string
   /** Inferred installation method based on path */
   installMethod?: 'npm' | 'native' | 'brew' | 'unknown'
+  /** Configured default model (from CLI settings/config) */
+  defaultModel?: string
 }
 
 /**
@@ -537,6 +539,59 @@ function inferInstallMethodFromPath(detectedPath: string | undefined, toolId?: s
 }
 
 /**
+ * Detect the configured default model for a CLI tool by reading its config files.
+ *
+ * - Claude: reads ~/.claude/settings.json → "model" field, or ANTHROPIC_MODEL env var
+ * - Codex: reads ~/.codex/config.toml → model = "..." at top level, or falls back to "codex-mini"
+ */
+async function detectDefaultModel(toolId: string): Promise<string | undefined> {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || ''
+  if (!homeDir) return undefined
+
+  try {
+    switch (toolId) {
+      case 'claude': {
+        // Check ANTHROPIC_MODEL env var first (highest priority after --model flag)
+        if (process.env.ANTHROPIC_MODEL) {
+          return process.env.ANTHROPIC_MODEL
+        }
+        // Read ~/.claude/settings.json
+        const settingsPath = path.join(homeDir, '.claude', 'settings.json')
+        const settingsContent = await fs.promises.readFile(settingsPath, 'utf-8')
+        const settings = JSON.parse(settingsContent)
+        if (settings.model && typeof settings.model === 'string') {
+          return settings.model
+        }
+        // No explicit model configured — CLI defaults to "default" which maps to
+        // opus for Max/Pro accounts. We return undefined to let the UI show "CLI Default".
+        return undefined
+      }
+
+      case 'codex': {
+        // Read ~/.codex/config.toml for a top-level model = "..."
+        const configPath = path.join(homeDir, '.codex', 'config.toml')
+        const configContent = await fs.promises.readFile(configPath, 'utf-8')
+        // Simple TOML line parse: look for `model = "value"` before any [section]
+        for (const line of configContent.split('\n')) {
+          const trimmed = line.trim()
+          if (trimmed.startsWith('[')) break // hit a section, stop
+          const match = trimmed.match(/^model\s*=\s*"([^"]+)"/)
+          if (match) return match[1]
+        }
+        // No explicit model — Codex defaults to codex-mini-latest
+        return undefined
+      }
+
+      default:
+        return undefined
+    }
+  } catch {
+    // Config file doesn't exist or is unreadable — that's fine
+    return undefined
+  }
+}
+
+/**
  * Detect a single CLI tool
  *
  * @param tool - The tool definition to detect
@@ -603,7 +658,12 @@ export async function detectCliTool(
     // Infer install method from detected path
     result.installMethod = inferInstallMethodFromPath(result.path, tool.id)
 
-    console.log(`[cli-detector] ${tool.name}: installed=${result.installed}, version=${result.version || 'N/A'}, path=${result.path || 'N/A'}, installMethod=${result.installMethod}`)
+    // Detect configured default model from CLI config files
+    if (result.installed) {
+      result.defaultModel = await detectDefaultModel(tool.id)
+    }
+
+    console.log(`[cli-detector] ${tool.name}: installed=${result.installed}, version=${result.version || 'N/A'}, path=${result.path || 'N/A'}, installMethod=${result.installMethod}, defaultModel=${result.defaultModel || 'N/A'}`)
     return result
   } catch (error: unknown) {
     result.error = error instanceof Error ? error.message : String(error)

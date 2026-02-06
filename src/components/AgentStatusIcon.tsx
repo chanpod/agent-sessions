@@ -8,7 +8,7 @@
 
 import { useTerminalStore } from '../stores/terminal-store'
 import { useAgentStreamStore } from '../stores/agent-stream-store'
-import { IconLoader2, IconCheck, IconQuestionMark } from '@tabler/icons-react'
+import { IconLoader2 } from '@tabler/icons-react'
 
 type AgentStatus = 'responding' | 'thinking' | 'done' | 'needs-attention' | 'idle' | 'exited'
 
@@ -17,7 +17,7 @@ interface AgentStatusIconProps {
   className?: string
 }
 
-export function AgentStatusIcon({ sessionId, className = '' }: AgentStatusIconProps) {
+export function AgentStatusIcon({ sessionId }: AgentStatusIconProps) {
   const session = useTerminalStore((state) =>
     state.sessions.find((s) => s.id === sessionId)
   )
@@ -66,57 +66,52 @@ export function AgentStatusIcon({ sessionId, className = '' }: AgentStatusIconPr
     }
   }
 
+  // Spinner for active states, colored dots for static states
+  // Sized to work as an overlay on the agent icon
   switch (agentStatus) {
     case 'responding':
       return (
         <IconLoader2
-          size={18}
+          size={14}
           stroke={2.5}
-          className="animate-spin text-blue-400 shrink-0"
+          className="animate-spin text-blue-400 shrink-0 drop-shadow-[0_0_2px_rgba(0,0,0,0.8)]"
           title="Agent is responding..."
         />
       )
     case 'thinking':
       return (
         <IconLoader2
-          size={18}
+          size={14}
           stroke={2.5}
-          className="animate-spin text-amber-400 shrink-0"
+          className="animate-spin text-amber-400 shrink-0 drop-shadow-[0_0_2px_rgba(0,0,0,0.8)]"
           title="Agent is thinking..."
         />
       )
     case 'done':
       return (
-        <IconCheck
-          size={18}
-          stroke={2.5}
-          className="text-emerald-400 shrink-0"
-          title="Agent completed"
-        />
+        <span className="relative flex shrink-0" title="Agent completed">
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-background" />
+        </span>
       )
     case 'needs-attention':
       return (
-        <IconQuestionMark
-          size={18}
-          stroke={2.5}
-          className="text-yellow-400 shrink-0"
-          title="Needs attention"
-        />
+        <span className="relative flex shrink-0" title="Needs attention">
+          <span className="absolute inline-flex h-2.5 w-2.5 animate-ping rounded-full bg-yellow-400 opacity-50" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-yellow-400 ring-2 ring-background" />
+        </span>
       )
     case 'exited':
       return (
-        <span
-          className={`w-2 h-2 rounded-full bg-zinc-500 shrink-0 ${className}`}
-          title="Exited"
-        />
+        <span className="relative flex shrink-0" title="Exited">
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-zinc-500 ring-2 ring-background" />
+        </span>
       )
     case 'idle':
     default:
       return (
-        <span
-          className={`w-2 h-2 rounded-full bg-zinc-400 shrink-0 ${className}`}
-          title="Idle"
-        />
+        <span className="relative flex shrink-0" title="Idle">
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-zinc-500 ring-2 ring-background" />
+        </span>
       )
   }
 }

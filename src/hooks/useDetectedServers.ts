@@ -12,30 +12,52 @@ export function useDetectedServers() {
   useEffect(() => {
     if (!window.electron?.detector) return
 
-    const unsubscribe = window.electron.detector.onEvent((event) => {
-      console.log('[useDetectedServers] Received event:', event)
+    // Prefer batched events to avoid per-event overhead
+    if (window.electron.detector.onEventBatch) {
+      const unsubscribe = window.electron.detector.onEventBatch((events) => {
+        for (const event of events) {
+          switch (event.type) {
+            case 'server-detected': {
+              const server = event.data as DetectedServer
+              addServer(event.terminalId, server)
+              break
+            }
+            case 'server-crashed': {
+              const { exitCode } = event.data
+              markServerCrashed(event.terminalId, exitCode)
+              break
+            }
+            case 'server-error': {
+              markServerCrashed(event.terminalId, 1)
+              break
+            }
+          }
+        }
+      })
 
+      return () => { unsubscribe() }
+    }
+
+    // Fallback: individual events
+    const unsubscribe = window.electron.detector.onEvent((event) => {
       switch (event.type) {
-        case 'server-detected':
+        case 'server-detected': {
           const server = event.data as DetectedServer
           addServer(event.terminalId, server)
           break
-
-        case 'server-crashed':
+        }
+        case 'server-crashed': {
           const { exitCode } = event.data
           markServerCrashed(event.terminalId, exitCode)
           break
-
-        case 'server-error':
-          // Server crashed due to error (port in use, etc.)
-          console.log('[useDetectedServers] Server error in terminal', event.terminalId, '- marking as crashed')
-          markServerCrashed(event.terminalId, 1) // Exit code 1 for error
+        }
+        case 'server-error': {
+          markServerCrashed(event.terminalId, 1)
           break
+        }
       }
     })
 
-    return () => {
-      unsubscribe()
-    }
+    return () => { unsubscribe() }
   }, [addServer, markServerCrashed, clearTerminalServers])
 }

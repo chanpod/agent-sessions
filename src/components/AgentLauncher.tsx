@@ -4,7 +4,7 @@
 
 import { useState, useMemo } from 'react'
 import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle, Zap } from 'lucide-react'
-import { cn } from '../lib/utils'
+import { cn, formatModelDisplayName } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
 import { useGlobalRulesStore } from '../stores/global-rules-store'
 import { usePermissionStore } from '@/stores/permission-store'
@@ -57,19 +57,37 @@ function getAgentMeta(id: string) {
 // Model definitions
 // =============================================================================
 
-const CLAUDE_MODELS = [
-  { id: null, label: 'Sonnet', desc: 'Default' },
-  { id: 'opus', label: 'Opus', desc: 'Most capable' },
-  { id: 'sonnet', label: 'Sonnet', desc: 'Balanced' },
-  { id: 'haiku', label: 'Haiku', desc: 'Fastest' },
-] as const
+interface ModelOption {
+  id: string | null
+  label: string
+  desc: string
+}
 
-const CODEX_MODELS = [
-  { id: null, label: 'codex-mini', desc: 'Default' },
-  { id: 'gpt-5.3-codex', label: '5.3 Codex', desc: 'Latest' },
-  { id: 'gpt-5.2-codex', label: '5.2 Codex', desc: 'Previous gen' },
+// Known model options per agent (the "CLI Default" entry is prepended dynamically)
+const CLAUDE_MODEL_OPTIONS: ModelOption[] = [
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', desc: 'Most capable' },
+  { id: 'claude-opus-4-5', label: 'Opus 4.5', desc: 'Previous gen' },
+  { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5', desc: 'Fast + smart' },
+  { id: 'claude-sonnet-4-0', label: 'Sonnet 4', desc: 'Previous gen' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', desc: 'Fastest' },
+]
+
+const CODEX_MODEL_OPTIONS: ModelOption[] = [
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: 'Latest' },
+  { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', desc: 'Previous gen' },
   { id: 'o3', label: 'o3', desc: 'Reasoning' },
-] as const
+]
+
+/** Build the full model list with a "CLI Default" entry showing the detected default model */
+function buildModelList(options: ModelOption[], detectedDefault?: string): ModelOption[] {
+  const defaultDesc = detectedDefault
+    ? formatModelDisplayName(detectedDefault)
+    : 'Not configured'
+  return [
+    { id: null, label: 'CLI Default', desc: defaultDesc },
+    ...options,
+  ]
+}
 
 // =============================================================================
 // Sub-components
@@ -142,38 +160,64 @@ function ModelSelector({
   selected,
   onChange,
   models,
+  open,
+  onToggle,
 }: {
   selected: string | null
   onChange: (model: string | null) => void
-  models: ReadonlyArray<{ id: string | null; label: string; desc: string }>
+  models: ModelOption[]
+  open: boolean
+  onToggle: () => void
 }) {
+  const selectedModel = models.find((m) => m.id === selected) ?? models[0]
+
+  const handleSelect = (id: string | null) => {
+    onChange(id)
+    onToggle()
+  }
+
   return (
-    <div className="flex rounded-lg border border-white/[0.08] bg-white/[0.02] p-0.5">
-      {models.map((m) => (
-        <button
-          key={m.id ?? 'default'}
-          onClick={() => onChange(m.id)}
+    <div className="relative">
+      <button
+        onClick={onToggle}
+        className={cn(
+          'w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg',
+          'border border-white/[0.08] bg-white/[0.02]',
+          'text-sm transition-colors hover:bg-white/[0.04]',
+          open && 'bg-white/[0.04] border-white/[0.12]'
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-foreground text-xs">{selectedModel?.label}</span>
+          <span className="text-[10px] text-muted-foreground/50">{selectedModel?.desc}</span>
+        </div>
+        <ChevronDown
           className={cn(
-            'flex-1 relative px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150',
-            selected === m.id
-              ? 'bg-white/[0.10] text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground/70 hover:bg-white/[0.04]'
+            'w-3.5 h-3.5 text-muted-foreground/40 transition-transform duration-200',
+            open && 'rotate-180'
           )}
-        >
-          <div className="relative z-10 flex flex-col items-center gap-0.5">
-            <span>{m.label}</span>
-            <span className={cn(
-              'text-[9px] font-normal',
-              selected === m.id ? 'text-muted-foreground/70' : 'text-muted-foreground/40'
-            )}>
-              {m.desc}
-            </span>
-          </div>
-          {selected === m.id && (
-            <div className="absolute inset-x-2 -bottom-px h-px bg-emerald-400/60" />
-          )}
-        </button>
-      ))}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 top-full left-0 right-0 mt-1 rounded-lg border border-white/[0.08] bg-zinc-900/98 shadow-xl shadow-black/40 overflow-hidden backdrop-blur-xl">
+          {models.map((m) => (
+            <button
+              key={m.id ?? 'default'}
+              onClick={() => handleSelect(m.id)}
+              className={cn(
+                'w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors',
+                selected === m.id
+                  ? 'text-emerald-300 bg-emerald-500/10'
+                  : 'text-foreground/80 hover:bg-white/[0.04]'
+              )}
+            >
+              <span>{m.label}</span>
+              <span className="text-[10px] text-muted-foreground/40">{m.desc}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -277,6 +321,7 @@ export function AgentLauncher({
     activeContext?.id ?? null
   )
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false)
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false)
   const [skipPermissions, setSkipPermissions] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const hookInstalled = usePermissionStore((s) => s.isHookInstalled(projectPath ?? ''))
@@ -375,7 +420,7 @@ export function AgentLauncher({
                     key={agent.id}
                     agent={agent}
                     selected={selectedAgentId === agent.id}
-                    onClick={() => { setSelectedAgentId(agent.id); setSelectedModel(null) }}
+                    onClick={() => { setSelectedAgentId(agent.id); setSelectedModel(null); setModelDropdownOpen(false) }}
                   />
                 ))}
               </div>
@@ -391,7 +436,12 @@ export function AgentLauncher({
               <ModelSelector
                 selected={selectedModel}
                 onChange={setSelectedModel}
-                models={selectedAgentId === 'codex' ? CODEX_MODELS : CLAUDE_MODELS}
+                models={buildModelList(
+                  selectedAgentId === 'codex' ? CODEX_MODEL_OPTIONS : CLAUDE_MODEL_OPTIONS,
+                  availableAgents.find(a => a.id === selectedAgentId)?.defaultModel
+                )}
+                open={modelDropdownOpen}
+                onToggle={() => { setModelDropdownOpen(!modelDropdownOpen); setContextDropdownOpen(false) }}
               />
             </div>
           )}
@@ -406,7 +456,7 @@ export function AgentLauncher({
             </label>
             <div className="relative">
               <button
-                onClick={() => setContextDropdownOpen(!contextDropdownOpen)}
+                onClick={() => { setContextDropdownOpen(!contextDropdownOpen); setModelDropdownOpen(false) }}
                 className={cn(
                   'w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg',
                   'border border-white/[0.08] bg-white/[0.02]',

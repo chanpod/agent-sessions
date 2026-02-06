@@ -214,6 +214,11 @@ const electronAPI = {
       ipcRenderer.on('detector:event', handler)
       return () => ipcRenderer.removeListener('detector:event', handler)
     },
+    onEventBatch: (callback: (events: DetectorEvent[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, events: DetectorEvent[]) => callback(events)
+      ipcRenderer.on('detector:events-batch', handler)
+      return () => ipcRenderer.removeListener('detector:events-batch', handler)
+    },
   },
   system: {
     getShells: (projectPath?: string): Promise<ShellInfo[]> =>

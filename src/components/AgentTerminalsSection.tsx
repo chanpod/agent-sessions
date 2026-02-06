@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Bot, Code, Gem, GripVertical, Package, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
+import { Bot, Code, Gem, Package, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import { useTerminalStore, type TerminalSession } from '../stores/terminal-store'
 import { useViewStore } from '../stores/view-store'
 import { useProjectStore } from '../stores/project-store'
@@ -19,9 +19,7 @@ import { AgentContextEditor } from './AgentContextEditor'
 import AgentContextManager from './AgentContextManager'
 import { SkillBrowser, type InstalledSkill, type MarketplaceSkill } from './skills/SkillBrowser'
 import { cn, formatModelDisplayName } from '../lib/utils'
-import { Badge } from './ui/badge'
 import { Button } from './ui/button'
-import { Separator } from './ui/separator'
 import type { CliToolDetectionResult } from '../types/electron'
 
 interface AgentTerminalsSectionProps {
@@ -138,6 +136,9 @@ function AgentSessionRow({
     }
   }
 
+  const isExited = session.status === 'exited'
+  const isSsh = !!(session.sshConnectionId || session.shell === 'ssh')
+
   return (
     <li>
       <div
@@ -146,31 +147,45 @@ function AgentSessionRow({
         onClick={handleSelect}
         onKeyDown={(e) => !isEditing && e.key === 'Enter' && handleSelect()}
         className={cn(
-          'group flex items-center gap-2 rounded-lg border px-2.5 py-2 transition-all',
+          'group relative flex items-start gap-2.5 rounded-lg border px-2.5 py-2 transition-all',
           isActive
             ? 'border-emerald-400/40 bg-emerald-400/10 text-foreground shadow-[inset_0_0_0_1px_rgba(16,185,129,0.15)]'
-            : 'border-border/60 bg-card/50 hover:bg-card/80'
+            : 'border-transparent bg-transparent hover:bg-card/60'
         )}
       >
+        {/* Drag handle - slim left edge */}
         <div
-          className="active:cursor-grabbing touch-none rounded-md p-1 text-muted-foreground/70 hover:text-foreground"
+          className="absolute left-0 top-0 bottom-0 w-1.5 cursor-grab rounded-l-lg opacity-0 group-hover:opacity-100 active:cursor-grabbing active:opacity-100 transition-opacity touch-none flex items-center justify-center"
           {...dragHandleProps}
-          style={{ cursor: 'grab' }}
           onClick={(e) => e.stopPropagation()}
         >
-          <GripVertical className="w-4 h-4" />
+          <div className="w-0.5 h-4 rounded-full bg-muted-foreground/30" />
         </div>
-        <div className="rounded-md bg-muted/40 p-1.5">
-          <AgentIcon id={session.agentId || ''} className="w-4 h-4 text-muted-foreground" />
+
+        {/* Agent icon with status overlay */}
+        <div className="relative shrink-0 mt-0.5">
+          <div className={cn(
+            'rounded-md p-1.5 transition-colors',
+            isActive ? 'bg-emerald-400/15' : 'bg-muted/50'
+          )}>
+            <AgentIcon id={session.agentId || ''} className={cn(
+              'w-4 h-4',
+              isActive ? 'text-emerald-300' : 'text-muted-foreground'
+            )} />
+          </div>
+          {/* Status dot overlay — bottom-right corner of icon */}
+          <div className="absolute -bottom-0.5 -right-0.5">
+            <AgentStatusIcon sessionId={session.id} className="w-2 h-2" />
+          </div>
         </div>
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <AgentStatusIcon sessionId={session.id} className="w-2 h-2" />
-          {hasPendingPermission && (
-            <span title="Awaiting permission">
-              <ShieldAlert className="w-3.5 h-3.5 text-amber-400 animate-pulse flex-shrink-0" />
-            </span>
-          )}
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+
+        {/* Content area - two lines */}
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          {/* Top row: title + close button */}
+          <div className="flex items-center gap-1.5">
+            {hasPendingPermission && (
+              <span title="Awaiting permission"><ShieldAlert className="w-3.5 h-3.5 text-amber-400 animate-pulse shrink-0" /></span>
+            )}
             {isEditing ? (
               <input
                 ref={inputRef}
@@ -181,72 +196,75 @@ function AgentSessionRow({
                 onKeyDown={handleKeyDown}
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="w-full min-w-0 rounded-md border border-border/60 bg-background/60 px-2 py-1 text-xs text-foreground outline-none focus:border-emerald-400"
+                className="w-full min-w-0 rounded border border-border/60 bg-background/60 px-1.5 py-0.5 text-xs text-foreground outline-none focus:border-emerald-400"
               />
             ) : (
               <span
-                className="truncate text-sm font-medium"
+                className="truncate text-[13px] font-medium leading-tight"
                 onDoubleClick={handleStartEdit}
-                title="Double-click to rename"
+                title={session.title}
               >
                 {session.title}
               </span>
             )}
-            {modelLabel && !isEditing && (
-              <Badge variant="outline" className="border-violet-400/30 text-violet-300/80 text-[10px] px-1.5 py-0">
-                {modelLabel}
-              </Badge>
-            )}
-            {contextLabel && !isEditing && (
-              <Badge variant="outline" className="border-emerald-400/30 text-emerald-200/80">
-                {contextLabel}
-              </Badge>
+
+            {/* Hover actions — float right */}
+            {!isEditing && (
+              <div className="ml-auto flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={handleStartEdit}
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  title="Rename"
+                >
+                  <Pencil className="w-3 h-3" />
+                </Button>
+                {isSsh && onReconnect && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={(e) => { e.stopPropagation(); onReconnect() }}
+                    className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                    title="Reconnect SSH"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={(e) => { e.stopPropagation(); onClose() }}
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  title="Close"
+                >
+                  <X className="w-3 h-3" />
+                </Button>
+              </div>
             )}
           </div>
+
+          {/* Bottom row: metadata badges */}
+          {!isEditing && (
+            <div className="flex items-center gap-1.5 text-[10px]">
+              {modelLabel && (
+                <span className="text-violet-300/70">{modelLabel}</span>
+              )}
+              {modelLabel && (contextLabel || isExited) && (
+                <span className="text-muted-foreground/40">&middot;</span>
+              )}
+              {contextLabel && (
+                <span className="text-emerald-300/70 truncate">{contextLabel}</span>
+              )}
+              {contextLabel && isExited && (
+                <span className="text-muted-foreground/40">&middot;</span>
+              )}
+              {isExited && (
+                <span className="text-muted-foreground/60">exited</span>
+              )}
+            </div>
+          )}
         </div>
-
-        {session.status === 'exited' && (
-          <span className="text-xs text-muted-foreground">exited</span>
-        )}
-
-        {!isEditing && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={handleStartEdit}
-            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
-            title="Rename"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </Button>
-        )}
-
-        {!isEditing && (session.sshConnectionId || session.shell === 'ssh') && onReconnect && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={(e) => {
-              e.stopPropagation()
-              onReconnect()
-            }}
-            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
-            title="Reconnect SSH"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </Button>
-        )}
-
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose()
-          }}
-          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
-        >
-          <X className="w-3.5 h-3.5" />
-        </Button>
       </div>
     </li>
   )
@@ -404,132 +422,100 @@ export function AgentTerminalsSection({
 
   return (
     <>
-      <div className="space-y-3">
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-semibold uppercase tracking-[0.3em] text-muted-foreground">
-              Agents
-            </div>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setShowLauncher(true)}
-                disabled={installedAgents.length === 0}
-                className="text-muted-foreground hover:text-foreground"
-                title="New session"
-              >
-                <Plus className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setShowSkillBrowser(true)}
-                className="text-muted-foreground hover:text-foreground"
-                title="Browse skills"
-              >
-                <Package className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setShowContextManager(true)}
-                className="text-muted-foreground hover:text-foreground"
-                title="Project contexts"
-              >
-                <Settings2 className="w-4 h-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <Badge
-              variant="secondary"
-              className={cn(
-                'border',
-                installedAgents.some(a => a.id === 'claude' && a.installed)
-                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/20'
-                  : 'bg-muted/40 text-muted-foreground border-border/60'
-              )}
-            >
-              Claude
-            </Badge>
-            <Badge
-              variant="secondary"
-              className={cn(
-                'border',
-                installedAgents.some(a => a.id === 'codex' && a.installed)
-                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/20'
-                  : 'bg-muted/40 text-muted-foreground border-border/60'
-              )}
-            >
-              Codex
-            </Badge>
-            <Badge
-              variant="secondary"
-              className={cn(
-                'border',
-                installedAgents.some(a => a.id === 'gemini' && a.installed)
-                  ? 'bg-sky-500/15 text-sky-300 border-sky-500/20'
-                  : 'bg-muted/40 text-muted-foreground border-border/60'
-              )}
-            >
-              Gemini
-            </Badge>
+      <div className="space-y-2">
+        {/* Section header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-muted-foreground">
+              Sessions
+            </span>
             {activeContext && (
-              <Badge variant="outline" className="border-emerald-400/30 text-emerald-200/80">
-                Context: {activeContext.name}
-              </Badge>
+              <span className="text-[10px] text-emerald-300/70 truncate max-w-[100px]" title={`Context: ${activeContext.name}`}>
+                {activeContext.name}
+              </span>
             )}
-            <button
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={() => detectAgents(true)}
               disabled={detectingAgents}
-              className="inline-flex items-center justify-center rounded-md px-1.5 py-0.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              className="text-muted-foreground hover:text-foreground h-7 w-7"
               title="Refresh agent detection"
             >
-              <RefreshCw className={cn('w-3 h-3', detectingAgents && 'animate-spin')} />
-            </button>
+              <RefreshCw className={cn('w-4 h-4', detectingAgents && 'animate-spin')} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setShowLauncher(true)}
+              disabled={installedAgents.length === 0}
+              className="text-muted-foreground hover:text-foreground h-7 w-7"
+              title="New session"
+            >
+              <Plus className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setShowSkillBrowser(true)}
+              className="text-muted-foreground hover:text-foreground h-7 w-7"
+              title="Browse skills"
+            >
+              <Package className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setShowContextManager(true)}
+              className="text-muted-foreground hover:text-foreground h-7 w-7"
+              title="Project contexts"
+            >
+              <Settings2 className="w-4 h-4" />
+            </Button>
           </div>
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-semibold uppercase tracking-[0.3em] text-muted-foreground">
-              Sessions
-            </div>
-          </div>
-          <Separator className="bg-border/60" />
-          {agentSessions.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-sidebar-border/70 bg-card/40 px-3 py-4 text-center text-sm text-muted-foreground">
-              No agent terminals yet. Launch one to begin a session.
-            </div>
-          ) : (
-            <ul className="space-y-2">
-              {agentSessions.map((session) => {
-                const contextLabel = session.contextId
-                  ? contextNameById.get(session.contextId)
-                  : session.contextInjected
-                    ? 'Context'
-                    : undefined
-                return (
-                  <DraggableTerminalItem
-                    key={session.id}
-                    terminalId={session.id}
-                    terminalTitle={session.title}
-                  >
-                    <AgentSessionRow
-                      session={session}
-                      isActive={activeAgentSessionId === session.id}
-                      onSelect={() => {
-                        setActiveSession(session.id)
-                        setActiveAgentSession(session.id)
-                      }}
-                      onClose={() => onCloseTerminal(session.id)}
-                      onReconnect={() => onReconnectTerminal(session.id)}
-                      contextLabel={contextLabel}
-                    />
-                  </DraggableTerminalItem>
-                )
-              })}
-            </ul>
-          )}
         </div>
+
+        {/* Session list */}
+        {agentSessions.length === 0 ? (
+          <button
+            onClick={() => installedAgents.length > 0 && setShowLauncher(true)}
+            disabled={installedAgents.length === 0}
+            className="w-full rounded-lg border border-dashed border-sidebar-border/70 bg-card/30 px-3 py-3 text-center text-xs text-muted-foreground hover:bg-card/50 hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-default"
+          >
+            Launch an agent session to get started
+          </button>
+        ) : (
+          <ul className="space-y-1">
+            {agentSessions.map((session) => {
+              const contextLabel = session.contextId
+                ? contextNameById.get(session.contextId)
+                : session.contextInjected
+                  ? 'Context'
+                  : undefined
+              return (
+                <DraggableTerminalItem
+                  key={session.id}
+                  terminalId={session.id}
+                  terminalTitle={session.title}
+                >
+                  <AgentSessionRow
+                    session={session}
+                    isActive={activeAgentSessionId === session.id}
+                    onSelect={() => {
+                      setActiveSession(session.id)
+                      setActiveAgentSession(session.id)
+                    }}
+                    onClose={() => onCloseTerminal(session.id)}
+                    onReconnect={() => onReconnectTerminal(session.id)}
+                    contextLabel={contextLabel}
+                  />
+                </DraggableTerminalItem>
+              )
+            })}
+          </ul>
+        )}
       </div>
 
       {/* Agent Launcher Modal */}

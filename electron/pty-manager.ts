@@ -101,6 +101,13 @@ export class PtyManager {
   private lastChildState: Map<string, boolean> = new Map() // Track previous state per terminal
   private monitorCheckInProgress = false
 
+  // Batch detector events to reduce IPC overhead.
+  // Without batching, every text delta (100+/sec per agent) sends a separate IPC message
+  // that triggers a separate React re-render, overwhelming the renderer process.
+  private pendingDetectorEvents: import('./output-monitors/output-detector').DetectedEvent[] = []
+  private detectorFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly DETECTOR_BATCH_INTERVAL_MS = 50
+
   constructor(window: BrowserWindow) {
     this.window = window
 
@@ -110,15 +117,31 @@ export class PtyManager {
     this.detectorManager.registerDetector(new StreamJsonDetector())
     this.detectorManager.registerDetector(new CodexStreamDetector())
 
-    // Forward detected events to renderer
+    // Batch detected events before forwarding to renderer.
+    // Events are accumulated and flushed every 50ms as a single IPC message.
     this.detectorManager.onEvent((event) => {
-      if (!this.window.isDestroyed()) {
-        this.window.webContents.send('detector:event', event)
+      if (this.window.isDestroyed()) return
+      this.pendingDetectorEvents.push(event)
+      if (!this.detectorFlushTimer) {
+        this.detectorFlushTimer = setTimeout(() => {
+          this.flushDetectorEvents()
+        }, PtyManager.DETECTOR_BATCH_INTERVAL_MS)
       }
     })
 
     // Start single global process monitor (ONE wmic call for ALL terminals)
     this.startGlobalProcessMonitor()
+  }
+
+  /**
+   * Flush accumulated detector events to the renderer as a single batched IPC message.
+   */
+  private flushDetectorEvents(): void {
+    this.detectorFlushTimer = null
+    if (this.pendingDetectorEvents.length > 0 && !this.window.isDestroyed()) {
+      this.window.webContents.send('detector:events-batch', this.pendingDetectorEvents)
+      this.pendingDetectorEvents = []
+    }
   }
 
   /**
@@ -429,6 +452,13 @@ export class PtyManager {
   }
 
   dispose(): void {
+    // Flush any remaining detector events before shutdown
+    if (this.detectorFlushTimer) {
+      clearTimeout(this.detectorFlushTimer)
+      this.detectorFlushTimer = null
+    }
+    this.flushDetectorEvents()
+
     // Stop global process monitor
     if (this.globalMonitorInterval) {
       clearInterval(this.globalMonitorInterval)

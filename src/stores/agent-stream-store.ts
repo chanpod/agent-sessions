@@ -136,6 +136,9 @@ function updateBlock(
 /** Max debug events kept per terminal to avoid memory bloat */
 const DEBUG_EVENT_CAP = 200
 
+/** Delta event types that fire very frequently during streaming - skip debug logging for these */
+const DELTA_EVENT_TYPES = new Set(['agent-text-delta', 'agent-thinking-delta', 'agent-tool-input-delta'])
+
 /** Monotonic counter for debug event ordering */
 let debugEventCounter = 0
 
@@ -195,6 +198,286 @@ function appendDebugEvent(
   const prev = existing ?? []
   const next = [...prev, entry]
   return next.length > DEBUG_EVENT_CAP ? next.slice(-DEBUG_EVENT_CAP) : next
+}
+
+/**
+ * Pure function: apply a single agent event to a terminal state, returning the new state.
+ * Extracted from processEvent so it can be called in tight loops (batch processing)
+ * without triggering Zustand set() per event.
+ */
+function applyAgentEvent(
+  terminalState: TerminalAgentState,
+  event: AgentStreamEvent,
+): TerminalAgentState {
+  let newState: TerminalAgentState
+
+  switch (event.type) {
+    case 'agent-message-start': {
+      const data = event.data as AgentMessageStartData
+
+      if (data.messageId && terminalState.messages.some((m) => m.id === data.messageId)) {
+        newState = terminalState
+        break
+      }
+
+      const newMessage: AgentMessage = {
+        id: data.messageId,
+        model: data.model,
+        blocks: [],
+        status: 'streaming',
+        startedAt: Date.now(),
+      }
+      newState = {
+        ...terminalState,
+        currentMessage: newMessage,
+        isActive: true,
+        isWaitingForResponse: false,
+        error: undefined,
+      }
+      break
+    }
+
+    case 'agent-text-delta': {
+      const data = event.data as AgentTextDeltaData
+      if (!terminalState.currentMessage) {
+        newState = terminalState
+        break
+      }
+
+      const { blocks } = terminalState.currentMessage
+      const blockIndex = data.blockIndex
+
+      let newBlocks: ContentBlock[]
+      if (blockIndex >= blocks.length) {
+        newBlocks = [
+          ...blocks,
+          { type: 'text', content: data.text },
+        ]
+      } else {
+        newBlocks = updateBlock(blocks, blockIndex, (block) => ({
+          ...block,
+          content: block.content + data.text,
+        }))
+      }
+
+      newState = {
+        ...terminalState,
+        currentMessage: {
+          ...terminalState.currentMessage,
+          blocks: newBlocks,
+        },
+      }
+      break
+    }
+
+    case 'agent-thinking-delta': {
+      const data = event.data as AgentThinkingDeltaData
+      if (!terminalState.currentMessage) {
+        newState = terminalState
+        break
+      }
+
+      const { blocks } = terminalState.currentMessage
+      const blockIndex = data.blockIndex
+
+      let newBlocks: ContentBlock[]
+      if (blockIndex >= blocks.length) {
+        newBlocks = [
+          ...blocks,
+          { type: 'thinking', content: data.text },
+        ]
+      } else {
+        newBlocks = updateBlock(blocks, blockIndex, (block) => ({
+          ...block,
+          content: block.content + data.text,
+        }))
+      }
+
+      newState = {
+        ...terminalState,
+        currentMessage: {
+          ...terminalState.currentMessage,
+          blocks: newBlocks,
+        },
+      }
+      break
+    }
+
+    case 'agent-tool-start': {
+      const data = event.data as AgentToolStartData
+      if (!terminalState.currentMessage) {
+        newState = terminalState
+        break
+      }
+
+      const existingBlock = terminalState.currentMessage.blocks.find(
+        (b) => b.type === 'tool_use' && b.toolId === data.toolId
+      )
+      if (existingBlock) {
+        newState = terminalState
+        break
+      }
+
+      const newBlock: ContentBlock = {
+        type: 'tool_use',
+        content: '',
+        toolId: data.toolId,
+        toolName: data.name,
+        toolInput: '',
+      }
+
+      newState = {
+        ...terminalState,
+        currentMessage: {
+          ...terminalState.currentMessage,
+          blocks: [...terminalState.currentMessage.blocks, newBlock],
+        },
+        ...(data.name === 'AskUserQuestion' ? { isWaitingForQuestion: true } : {}),
+      }
+      break
+    }
+
+    case 'agent-tool-input-delta': {
+      const data = event.data as AgentToolInputDeltaData
+      if (!terminalState.currentMessage) {
+        newState = terminalState
+        break
+      }
+
+      const { blocks } = terminalState.currentMessage
+      const blockIndex = data.blockIndex
+
+      if (blockIndex >= blocks.length) {
+        newState = terminalState
+        break
+      }
+
+      newState = {
+        ...terminalState,
+        currentMessage: {
+          ...terminalState.currentMessage,
+          blocks: updateBlock(blocks, blockIndex, (block) => ({
+            ...block,
+            toolInput: (block.toolInput || '') + data.partialJson,
+          })),
+        },
+      }
+      break
+    }
+
+    case 'agent-tool-end':
+    case 'agent-block-end': {
+      const data = event.data as AgentToolEndData
+      if (!terminalState.currentMessage) {
+        newState = terminalState
+        break
+      }
+
+      const { blocks } = terminalState.currentMessage
+      const blockIndex = data.blockIndex
+
+      if (blockIndex >= blocks.length) {
+        newState = terminalState
+        break
+      }
+
+      newState = {
+        ...terminalState,
+        currentMessage: {
+          ...terminalState.currentMessage,
+          blocks: updateBlock(blocks, blockIndex, (block) => ({
+            ...block,
+            isComplete: true,
+          })),
+        },
+      }
+      break
+    }
+
+    case 'agent-message-end': {
+      const data = event.data as AgentMessageEndData
+
+      const stillActive = data.stopReason === 'tool_use'
+        ? true
+        : data.stopReason === 'end_turn'
+          ? false
+          : terminalState.isActive
+
+      if (!terminalState.currentMessage) {
+        newState = {
+          ...terminalState,
+          isActive: stillActive,
+        }
+        break
+      }
+
+      const completedBlocks = terminalState.currentMessage.blocks.map((block) => ({
+        ...block,
+        isComplete: true,
+      }))
+
+      const completedMessage: AgentMessage = {
+        ...terminalState.currentMessage,
+        blocks: completedBlocks,
+        status: 'completed',
+        stopReason: data.stopReason,
+        usage: data.usage,
+        completedAt: Date.now(),
+      }
+
+      newState = {
+        ...terminalState,
+        currentMessage: null,
+        messages: [...terminalState.messages, completedMessage],
+        isActive: stillActive,
+      }
+      break
+    }
+
+    case 'agent-error': {
+      const data = event.data as AgentErrorData
+      if (terminalState.currentMessage) {
+        const errorMessage: AgentMessage = {
+          ...terminalState.currentMessage,
+          status: 'error',
+          completedAt: Date.now(),
+        }
+        newState = {
+          ...terminalState,
+          currentMessage: null,
+          messages: [...terminalState.messages, errorMessage],
+          isActive: false,
+          error: `${data.errorType}: ${data.message}`,
+        }
+      } else {
+        newState = {
+          ...terminalState,
+          isActive: false,
+          error: `${data.errorType}: ${data.message}`,
+        }
+      }
+      break
+    }
+
+    default:
+      newState = terminalState
+  }
+
+  // Skip debug event tracking for high-frequency delta events to reduce overhead
+  if (!DELTA_EVENT_TYPES.has(event.type)) {
+    newState = {
+      ...newState,
+      debugEvents: appendDebugEvent(
+        newState.debugEvents,
+        event.type,
+        event.data,
+        newState.isActive,
+        newState.processExited,
+      ),
+    }
+  }
+
+  return newState
 }
 
 // Promise resolver for waiting on rehydration
@@ -277,311 +560,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         set((state) => {
           const terminals = new Map(state.terminals)
           const terminalState = getOrCreateTerminalState(terminals, terminalId)
-
-          let newState: TerminalAgentState
-
-          switch (event.type) {
-            case 'agent-message-start': {
-              const data = event.data as AgentMessageStartData
-              console.log('[AgentStreamStore] agent-message-start:', data.messageId, 'terminalId:', terminalId)
-
-              // Dedup: if a completed message with this ID already exists, skip creating a new currentMessage.
-              // This prevents the `assistant` print-mode event from re-creating a message that the
-              // streaming path (message_start -> message_stop) already finalized.
-              if (data.messageId && terminalState.messages.some((m) => m.id === data.messageId)) {
-                console.log('[AgentStreamStore] Skipping duplicate message-start for:', data.messageId)
-                newState = terminalState
-                break
-              }
-
-              const newMessage: AgentMessage = {
-                id: data.messageId,
-                model: data.model,
-                blocks: [],
-                status: 'streaming',
-                startedAt: Date.now(),
-              }
-              newState = {
-                ...terminalState,
-                currentMessage: newMessage,
-                isActive: true,
-                isWaitingForResponse: false,
-                error: undefined,
-              }
-              break
-            }
-
-            case 'agent-text-delta': {
-              const data = event.data as AgentTextDeltaData
-              console.log('[AgentStreamStore] agent-text-delta:', data.text?.substring(0, 50), 'terminalId:', terminalId)
-              if (!terminalState.currentMessage) {
-                console.warn('[AgentStreamStore] No currentMessage for text delta! terminalId:', terminalId)
-                newState = terminalState
-                break
-              }
-
-              const { blocks } = terminalState.currentMessage
-              const blockIndex = data.blockIndex
-
-              // If block doesn't exist at this index, create it
-              let newBlocks: ContentBlock[]
-              if (blockIndex >= blocks.length) {
-                // Create new text block
-                newBlocks = [
-                  ...blocks,
-                  {
-                    type: 'text',
-                    content: data.text,
-                  },
-                ]
-              } else {
-                // Append to existing block
-                newBlocks = updateBlock(blocks, blockIndex, (block) => ({
-                  ...block,
-                  content: block.content + data.text,
-                }))
-              }
-
-              newState = {
-                ...terminalState,
-                currentMessage: {
-                  ...terminalState.currentMessage,
-                  blocks: newBlocks,
-                },
-              }
-              break
-            }
-
-            case 'agent-thinking-delta': {
-              const data = event.data as AgentThinkingDeltaData
-              if (!terminalState.currentMessage) {
-                newState = terminalState
-                break
-              }
-
-              const { blocks } = terminalState.currentMessage
-              const blockIndex = data.blockIndex
-
-              let newBlocks: ContentBlock[]
-              if (blockIndex >= blocks.length) {
-                // Create new thinking block
-                newBlocks = [
-                  ...blocks,
-                  {
-                    type: 'thinking',
-                    content: data.text,
-                  },
-                ]
-              } else {
-                // Append to existing block
-                newBlocks = updateBlock(blocks, blockIndex, (block) => ({
-                  ...block,
-                  content: block.content + data.text,
-                }))
-              }
-
-              newState = {
-                ...terminalState,
-                currentMessage: {
-                  ...terminalState.currentMessage,
-                  blocks: newBlocks,
-                },
-              }
-              break
-            }
-
-            case 'agent-tool-start': {
-              const data = event.data as AgentToolStartData
-              if (!terminalState.currentMessage) {
-                newState = terminalState
-                break
-              }
-
-              // Deduplicate: skip if a block with this toolId already exists
-              const existingBlock = terminalState.currentMessage.blocks.find(
-                (b) => b.type === 'tool_use' && b.toolId === data.toolId
-              )
-              if (existingBlock) {
-                newState = terminalState
-                break
-              }
-
-              // Create new tool_use block
-              const newBlock: ContentBlock = {
-                type: 'tool_use',
-                content: '', // Tool input JSON will be accumulated in toolInput
-                toolId: data.toolId,
-                toolName: data.name,
-                toolInput: '',
-              }
-
-              newState = {
-                ...terminalState,
-                currentMessage: {
-                  ...terminalState.currentMessage,
-                  blocks: [...terminalState.currentMessage.blocks, newBlock],
-                },
-                // Mark waiting for question when AskUserQuestion is used.
-                // The PreToolUse hook denies this tool so the CLI won't auto-resolve it;
-                // the app renders a QuestionCard and delivers the answer via --resume.
-                ...(data.name === 'AskUserQuestion' ? { isWaitingForQuestion: true } : {}),
-              }
-              break
-            }
-
-            case 'agent-tool-input-delta': {
-              const data = event.data as AgentToolInputDeltaData
-              if (!terminalState.currentMessage) {
-                newState = terminalState
-                break
-              }
-
-              const { blocks } = terminalState.currentMessage
-              const blockIndex = data.blockIndex
-
-              if (blockIndex >= blocks.length) {
-                // Block doesn't exist, ignore
-                newState = terminalState
-                break
-              }
-
-              newState = {
-                ...terminalState,
-                currentMessage: {
-                  ...terminalState.currentMessage,
-                  blocks: updateBlock(blocks, blockIndex, (block) => ({
-                    ...block,
-                    toolInput: (block.toolInput || '') + data.partialJson,
-                  })),
-                },
-              }
-              break
-            }
-
-            // agent-tool-end comes from the AgentProcessManager path;
-            // agent-block-end comes from the PTY/detector path (content_block_stop).
-            // Both carry { blockIndex } and mean the same thing: mark the block complete.
-            case 'agent-tool-end':
-            case 'agent-block-end': {
-              const data = event.data as AgentToolEndData
-              if (!terminalState.currentMessage) {
-                newState = terminalState
-                break
-              }
-
-              const { blocks } = terminalState.currentMessage
-              const blockIndex = data.blockIndex
-
-              if (blockIndex >= blocks.length) {
-                newState = terminalState
-                break
-              }
-
-              newState = {
-                ...terminalState,
-                currentMessage: {
-                  ...terminalState.currentMessage,
-                  blocks: updateBlock(blocks, blockIndex, (block) => ({
-                    ...block,
-                    isComplete: true,
-                  })),
-                },
-              }
-              break
-            }
-
-            case 'agent-message-end': {
-              const data = event.data as AgentMessageEndData
-              console.log('[AgentStreamStore] agent-message-end received, currentMessage:', !!terminalState.currentMessage, 'stopReason:', data.stopReason)
-
-              // Determine whether the agent is still active after this message ends.
-              //
-              // Only an EXPLICIT `end_turn` means the agent is done for this turn.
-              // `tool_use` means the agent will continue after executing a tool.
-              // `null` / missing stopReason comes from sub-agent messages leaking through
-              // the PTY — these are noise and should NOT change isActive.
-              const stillActive = data.stopReason === 'tool_use'
-                ? true
-                : data.stopReason === 'end_turn'
-                  ? false
-                  : terminalState.isActive // preserve current state for null/unknown
-
-              if (!terminalState.currentMessage) {
-                // No message to complete - duplicate event. Respect stopReason for isActive.
-                newState = {
-                  ...terminalState,
-                  isActive: stillActive,
-                }
-                break
-              }
-
-              // Mark all blocks as complete
-              const completedBlocks = terminalState.currentMessage.blocks.map((block) => ({
-                ...block,
-                isComplete: true,
-              }))
-
-              const completedMessage: AgentMessage = {
-                ...terminalState.currentMessage,
-                blocks: completedBlocks,
-                status: 'completed',
-                stopReason: data.stopReason,
-                usage: data.usage,
-                completedAt: Date.now(),
-              }
-
-              newState = {
-                ...terminalState,
-                currentMessage: null,
-                messages: [...terminalState.messages, completedMessage],
-                isActive: stillActive,
-              }
-              break
-            }
-
-            case 'agent-error': {
-              const data = event.data as AgentErrorData
-              if (terminalState.currentMessage) {
-                // Mark current message as error
-                const errorMessage: AgentMessage = {
-                  ...terminalState.currentMessage,
-                  status: 'error',
-                  completedAt: Date.now(),
-                }
-                newState = {
-                  ...terminalState,
-                  currentMessage: null,
-                  messages: [...terminalState.messages, errorMessage],
-                  isActive: false,
-                  error: `${data.errorType}: ${data.message}`,
-                }
-              } else {
-                newState = {
-                  ...terminalState,
-                  isActive: false,
-                  error: `${data.errorType}: ${data.message}`,
-                }
-              }
-              break
-            }
-
-            default:
-              // Unknown event type, no state change
-              newState = terminalState
-          }
-
-          // Append debug event entry with post-processing state
-          newState = {
-            ...newState,
-            debugEvents: appendDebugEvent(
-              newState.debugEvents,
-              event.type,
-              event.data,
-              newState.isActive,
-              newState.processExited,
-            ),
-          }
-
+          const newState = applyAgentEvent(terminalState, event)
           terminals.set(terminalId, newState)
           return { terminals }
         })
@@ -590,15 +569,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         if (event.type === 'agent-message-end') {
           get().persistSession(terminalId)
 
-          // Emit notification based on stopReason:
-          // - end_turn + isWaitingForQuestion: agent asked user a question → 'needs-attention'
-          // - end_turn: agent is done → 'done'
-          // - tool_use: agent is executing a tool, still working → no notification
-          // - null/missing: sub-agent noise → don't notify
           const endData = event.data as { stopReason?: string }
-          // When isWaitingForQuestion is set, the agent ended its turn after the
-          // PreToolUse hook denied AskUserQuestion. Emit 'needs-attention' instead of
-          // 'done' so the user knows to answer the question.
           const termStateAfter = get().terminals.get(terminalId)
           if (endData.stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
             emitAgentNotification(terminalId, 'needs-attention')
@@ -610,8 +581,6 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               return { notifiedTerminals }
             })
           }
-          // tool_use means the agent called a tool and will continue working
-          // after the tool result — no notification needed.
         }
       },
 
@@ -881,33 +850,150 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         if (listenerSetup) return () => {}
         listenerSetup = true
 
-        // Subscribe to detector events via IPC
-        if (window.electron?.detector?.onEvent) {
-          console.log('[AgentStreamStore] Subscribing to detector events')
-          unsubscribe = window.electron.detector.onEvent((event) => {
-            console.log('[AgentStreamStore] Received detector event:', event.type, event.terminalId)
+        // Prefer batched event channel (50ms batches from main process).
+        // Falls back to individual events if batch channel isn't available.
+        const hasBatch = !!window.electron?.detector?.onEventBatch
+        const hasIndividual = !!window.electron?.detector?.onEvent
 
-            // Handle session init event — capture and persist the session_id
-            if (event.type === 'agent-session-init' && event.data?.sessionId) {
-              const sessionId = event.data.sessionId as string
-              console.log('[AgentStreamStore] Captured session_id from detector:', sessionId, 'for terminal:', event.terminalId)
-              get().setTerminalSession(event.terminalId, sessionId)
-              useTerminalStore.getState().updateConfigSessionId(event.terminalId, sessionId)
-              // Record in debug log
+        if (hasBatch) {
+          console.log('[AgentStreamStore] Subscribing to batched detector events')
+          unsubscribe = window.electron!.detector.onEventBatch((events) => {
+            // Collect agent events to process in a single set() call
+            const agentEvents: Array<{ terminalId: string; event: AgentStreamEvent }> = []
+            // Collect terminal IDs that need post-set() work (persist, notify)
+            const messageEndTerminals: Array<{ terminalId: string; stopReason?: string }> = []
+            const processExitTerminals: string[] = []
+
+            for (const event of events) {
+              // Handle session init
+              if (event.type === 'agent-session-init' && event.data?.sessionId) {
+                const sessionId = event.data.sessionId as string
+                get().setTerminalSession(event.terminalId, sessionId)
+                useTerminalStore.getState().updateConfigSessionId(event.terminalId, sessionId)
+                continue
+              }
+
+              // Handle Codex approval requests
+              if (event.type === 'codex-approval-request' && event.data) {
+                const sessionId = get().terminalToSession.get(event.terminalId) ?? event.terminalId
+                const data = event.data as {
+                  jsonRpcId: number
+                  method: string
+                  toolName: string
+                  toolInput: Record<string, unknown>
+                }
+                const permissionId = `codex:${event.terminalId}:${data.jsonRpcId}`
+                usePermissionStore.getState().addRequest({
+                  id: permissionId,
+                  sessionId,
+                  toolName: data.toolName,
+                  toolInput: data.toolInput,
+                  receivedAt: event.timestamp,
+                })
+                continue
+              }
+
+              // Handle process exit — collect for batch processing
+              if (event.type === 'agent-process-exit') {
+                processExitTerminals.push(event.terminalId)
+                continue
+              }
+
+              // Collect agent-* events for batch state update
+              if (event.type.startsWith('agent-')) {
+                const agentEvent = { type: event.type, data: event.data } as AgentStreamEvent
+                agentEvents.push({ terminalId: event.terminalId, event: agentEvent })
+                if (event.type === 'agent-message-end') {
+                  messageEndTerminals.push({
+                    terminalId: event.terminalId,
+                    stopReason: (event.data as { stopReason?: string })?.stopReason,
+                  })
+                }
+              }
+            }
+
+            // Process ALL agent events in a SINGLE set() call.
+            // This is the critical optimization: instead of N set() calls (one per event),
+            // we clone the terminals Map once, apply all mutations, then return.
+            if (agentEvents.length > 0 || processExitTerminals.length > 0) {
               set((state) => {
                 const terminals = new Map(state.terminals)
-                const ts = getOrCreateTerminalState(terminals, event.terminalId)
-                terminals.set(event.terminalId, {
-                  ...ts,
-                  debugEvents: appendDebugEvent(ts.debugEvents, event.type, event.data, ts.isActive, ts.processExited),
-                })
+
+                // Apply agent events
+                for (const { terminalId, event } of agentEvents) {
+                  const terminalState = getOrCreateTerminalState(terminals, terminalId)
+                  terminals.set(terminalId, applyAgentEvent(terminalState, event))
+                }
+
+                // Apply process exit events
+                for (const terminalId of processExitTerminals) {
+                  const termState = terminals.get(terminalId)
+                  if (!termState) continue
+
+                  const baseState = termState.currentMessage
+                    ? {
+                        ...termState,
+                        messages: [...termState.messages, { ...termState.currentMessage, status: 'completed' as const, completedAt: Date.now() }],
+                        currentMessage: null,
+                        isActive: false,
+                        isWaitingForResponse: false,
+                        processExited: true,
+                      }
+                    : {
+                        ...termState,
+                        isActive: false,
+                        isWaitingForResponse: false,
+                        processExited: true,
+                      }
+                  terminals.set(terminalId, {
+                    ...baseState,
+                    debugEvents: appendDebugEvent(baseState.debugEvents, 'agent-process-exit', null, false, true),
+                  })
+                }
+
                 return { terminals }
               })
+            }
+
+            // Post-processing: persist sessions and emit notifications (outside set())
+            for (const { terminalId, stopReason } of messageEndTerminals) {
+              get().persistSession(terminalId)
+              const termStateAfter = get().terminals.get(terminalId)
+              if (stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
+                emitAgentNotification(terminalId, 'needs-attention')
+              } else if (stopReason === 'end_turn') {
+                emitAgentNotification(terminalId, 'done')
+                set((state) => {
+                  const notifiedTerminals = new Set(state.notifiedTerminals)
+                  notifiedTerminals.add(terminalId)
+                  return { notifiedTerminals }
+                })
+              }
+            }
+
+            for (const terminalId of processExitTerminals) {
+              get().persistSession(terminalId)
+              if (!get().notifiedTerminals.has(terminalId)) {
+                emitAgentNotification(terminalId, 'done')
+              }
+              set((state) => {
+                const notifiedTerminals = new Set(state.notifiedTerminals)
+                notifiedTerminals.delete(terminalId)
+                return { notifiedTerminals }
+              })
+            }
+          })
+        } else if (hasIndividual) {
+          // Fallback: individual event processing (pre-batch main process)
+          console.log('[AgentStreamStore] Subscribing to individual detector events (no batch support)')
+          unsubscribe = window.electron!.detector.onEvent((event) => {
+            if (event.type === 'agent-session-init' && event.data?.sessionId) {
+              const sessionId = event.data.sessionId as string
+              get().setTerminalSession(event.terminalId, sessionId)
+              useTerminalStore.getState().updateConfigSessionId(event.terminalId, sessionId)
               return
             }
 
-            // Handle Codex approval requests — route to the permission store
-            // so PermissionModal can show the approval dialog.
             if (event.type === 'codex-approval-request' && event.data) {
               const sessionId = get().terminalToSession.get(event.terminalId) ?? event.terminalId
               const data = event.data as {
@@ -916,8 +1002,6 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 toolName: string
                 toolInput: Record<string, unknown>
               }
-              // Use a composite ID that encodes terminalId + jsonRpcId so the
-              // response handler can route the reply back to the right PTY.
               const permissionId = `codex:${event.terminalId}:${data.jsonRpcId}`
               usePermissionStore.getState().addRequest({
                 id: permissionId,
@@ -926,14 +1010,10 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 toolInput: data.toolInput,
                 receivedAt: event.timestamp,
               })
-              console.log('[AgentStreamStore] Codex approval request queued:', permissionId, data.toolName)
               return
             }
 
-            // Handle process exit — clear activity flags and persist session.
-            // This is the authoritative "done" signal for PTY-based agents.
             if (event.type === 'agent-process-exit') {
-              console.log('[AgentStreamStore] Process exit for terminal:', event.terminalId)
               set((state) => {
                 const termState = state.terminals.get(event.terminalId)
                 if (!termState) return state
@@ -954,7 +1034,6 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                       isWaitingForResponse: false,
                       processExited: true,
                     }
-                // Append debug event
                 terminals.set(event.terminalId, {
                   ...baseState,
                   debugEvents: appendDebugEvent(baseState.debugEvents, event.type, event.data, false, true),
@@ -962,11 +1041,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 return { terminals }
               })
               get().persistSession(event.terminalId)
-              // Only notify on process exit if we didn't already notify on end_turn
               if (!get().notifiedTerminals.has(event.terminalId)) {
                 emitAgentNotification(event.terminalId, 'done')
               }
-              // Clean up the tracking set
               set((state) => {
                 const notifiedTerminals = new Set(state.notifiedTerminals)
                 notifiedTerminals.delete(event.terminalId)
@@ -975,19 +1052,13 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               return
             }
 
-            // Filter for agent-* events and convert to AgentStreamEvent
             if (event.type.startsWith('agent-')) {
-              console.log('[AgentStreamStore] Processing agent event:', event.type)
-              const agentEvent = {
-                type: event.type,
-                data: event.data,
-              } as AgentStreamEvent
+              const agentEvent = { type: event.type, data: event.data } as AgentStreamEvent
               get().processEvent(event.terminalId, agentEvent)
             }
           })
         } else {
-          // IPC not available (e.g., in development or tests)
-          console.warn('[AgentStreamStore] window.electron.detector.onEvent not available')
+          console.warn('[AgentStreamStore] window.electron.detector not available')
         }
 
         return () => {
@@ -1113,7 +1184,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 // Auto-subscribe to detector events when the store is created
 // This ensures the listener is set up BEFORE any component mounts,
 // preventing race conditions where events fire before subscription
-if (typeof window !== 'undefined' && window.electron?.detector?.onEvent) {
+if (typeof window !== 'undefined' && (window.electron?.detector?.onEventBatch || window.electron?.detector?.onEvent)) {
   // Defer subscription to next tick to ensure window.electron is fully initialized
   setTimeout(() => {
     useAgentStreamStore.getState().subscribeToEvents()

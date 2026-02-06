@@ -165,6 +165,7 @@ export interface CliToolDetectionResult {
   path?: string
   error?: string
   installMethod?: 'npm' | 'native' | 'brew' | 'unknown'
+  defaultModel?: string
 }
 
 export interface AllCliToolsResult {
@@ -225,6 +226,7 @@ export interface ElectronAPI {
   }
   detector: {
     onEvent: (callback: (event: DetectorEvent) => void) => () => void
+    onEventBatch: (callback: (events: DetectorEvent[]) => void) => () => void
   }
   system: {
     getShells: (projectPath?: string) => Promise<ShellInfo[]>
