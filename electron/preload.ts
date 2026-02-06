@@ -459,6 +459,26 @@ const electronAPI = {
       return () => ipcRenderer.removeListener('permission:expired', handler)
     },
   },
+  skill: {
+    listInstalled: (): Promise<{ success: boolean; skills: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('skill:list-installed'),
+    listAvailable: (): Promise<{ success: boolean; skills: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('skill:list-available'),
+    searchVercel: (query: string, limit?: number): Promise<{ success: boolean; skills: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('skill:search-vercel', query, limit),
+    install: (pluginId: string, source: 'anthropic' | 'vercel'): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('skill:install', pluginId, source),
+    uninstall: (pluginId: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('skill:uninstall', pluginId),
+    toggleEnabled: (pluginId: string, enabled: boolean): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('skill:toggle-enabled', pluginId, enabled),
+  },
+  log: {
+    openLogsFolder: () => ipcRenderer.invoke('log:open-folder'),
+    getLogPath: () => ipcRenderer.invoke('log:get-path') as Promise<string>,
+    reportRendererError: (errorData: { message: string; stack?: string; componentStack?: string }) =>
+      ipcRenderer.invoke('log:report-renderer-error', errorData),
+  },
 }
 
 contextBridge.exposeInMainWorld('electron', electronAPI)

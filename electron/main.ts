@@ -47,8 +47,17 @@ import { PermissionServer } from './services/permission-server.js'
 import { serviceManager } from './services/service-manager.js'
 import { dockerComposeHandler } from './services/docker/docker-compose-handler.js'
 import { ptyServiceHandler, setPtyManager } from './services/pty/pty-service-handler.js'
+import { logger, getLogPath } from './utils/logger.js'
 
+// Global crash handlers - must be set up early
+process.on('uncaughtException', (error) => {
+  logger.error('Main', 'Uncaught exception:', error)
+  // Don't exit on render process errors forwarded to main
+})
 
+process.on('unhandledRejection', (reason) => {
+  logger.error('Main', 'Unhandled rejection:', reason as any)
+})
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -266,11 +275,8 @@ function createMenu() {
   const isMac = process.platform === 'darwin'
   const isWindows = process.platform === 'win32'
 
-  // On Windows, use custom TitleBar menus instead of native menu
-  if (isWindows) {
-    Menu.setApplicationMenu(null)
-    return
-  }
+  // Windows gets the same native menu as other platforms
+  // (custom TitleBar is no longer used)
 
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only)
@@ -335,6 +341,14 @@ function createMenu() {
     {
       label: 'Help',
       submenu: [
+        {
+          label: 'Open Log File',
+          click: async () => {
+            const logPath = getLogPath()
+            shell.showItemInFolder(logPath)
+          },
+        },
+        { type: 'separator' },
         {
           label: 'Check for Updates...',
           click: async () => {
@@ -1313,6 +1327,21 @@ ipcMain.handle('app:get-version', async () => {
   return app.getVersion()
 })
 
+// Log file IPC handlers
+ipcMain.handle('log:open-folder', async () => {
+  const logPath = getLogPath()
+  const logDir = path.dirname(logPath)
+  await shell.openPath(logDir)
+})
+
+ipcMain.handle('log:get-path', () => {
+  return getLogPath()
+})
+
+ipcMain.handle('log:report-renderer-error', (_event, errorData: { message: string; stack?: string; componentStack?: string }) => {
+  logger.error('Renderer', `${errorData.message}${errorData.stack ? '\n' + errorData.stack : ''}${errorData.componentStack ? '\nComponent Stack:\n' + errorData.componentStack : ''}`)
+})
+
 // ============================================================================
 // Service Manager IPC Handlers
 // ============================================================================
@@ -1400,6 +1429,106 @@ ipcMain.handle('docker:getLogs', async (_event, serviceId: string, tail?: number
   } catch (error: unknown) {
     console.error('[Docker] Get logs failed:', error)
     return { success: false, logs: '', error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+// ─── Skill/Plugin Management IPC ──────────────────────────────────
+
+ipcMain.handle('skill:list-installed', async () => {
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const { stdout } = await execFileAsync('claude', ['plugin', 'list', '--json'], { shell: true })
+    const skills = JSON.parse(stdout)
+    return { success: true, skills: Array.isArray(skills) ? skills : [] }
+  } catch (error: unknown) {
+    console.error('[Skills] List installed failed:', error)
+    return { success: true, skills: [], error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('skill:list-available', async () => {
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const { stdout } = await execFileAsync('claude', ['plugin', 'list', '--available', '--json'], { shell: true })
+    const parsed = JSON.parse(stdout)
+    // The --available flag returns { installed: [...], available: [...] }
+    const available = parsed.available || parsed || []
+    return { success: true, skills: Array.isArray(available) ? available : [] }
+  } catch (error: unknown) {
+    console.error('[Skills] List available failed:', error)
+    return { success: true, skills: [], error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('skill:install', async (_event, pluginId: string, source: 'anthropic' | 'vercel') => {
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+
+    if (source === 'anthropic') {
+      // Extract name from pluginId (e.g., "code-review@claude-plugins-official" -> "code-review")
+      const name = pluginId.split('@')[0] || pluginId
+      await execFileAsync('claude', ['plugin', 'install', name], { shell: true })
+    } else {
+      // Vercel skills use npx skills CLI
+      await execFileAsync('npx', ['skills', 'add', pluginId, '--agent', 'claude-code', '--yes'], { shell: true })
+    }
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Skills] Install failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('skill:uninstall', async (_event, pluginId: string) => {
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const name = pluginId.split('@')[0] || pluginId
+    await execFileAsync('claude', ['plugin', 'uninstall', name], { shell: true })
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Skills] Uninstall failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('skill:search-vercel', async (_event, query: string, limit?: number) => {
+  try {
+    if (!query || query.trim().length === 0) {
+      return { success: true, skills: [] }
+    }
+    const url = `https://skills.sh/api/search?q=${encodeURIComponent(query)}&limit=${limit || 20}`
+    const response = await fetch(url)
+    if (!response.ok) {
+      return { success: false, skills: [], error: `Skills.sh API returned ${response.status}` }
+    }
+    const data = await response.json() as { skills?: Array<{ id: string; skillId: string; name: string; installs: number; source: string }> }
+    return { success: true, skills: data.skills || [] }
+  } catch (error: unknown) {
+    console.error('[Skills] Vercel search failed:', error)
+    return { success: true, skills: [], error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('skill:toggle-enabled', async (_event, pluginId: string, enabled: boolean) => {
+  try {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execFileAsync = promisify(execFile)
+    const name = pluginId.split('@')[0] || pluginId
+    const action = enabled ? 'enable' : 'disable'
+    await execFileAsync('claude', ['plugin', action, name], { shell: true })
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Skills] Toggle failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 })
 

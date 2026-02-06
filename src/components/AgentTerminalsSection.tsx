@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Bot, Code, Gem, GripVertical, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
+import { Bot, Code, Gem, GripVertical, Package, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import { useTerminalStore, type TerminalSession } from '../stores/terminal-store'
 import { useViewStore } from '../stores/view-store'
 import { useProjectStore } from '../stores/project-store'
@@ -17,6 +17,7 @@ import { DraggableTerminalItem } from './DraggableTerminalItem'
 import { AgentLauncher } from './AgentLauncher'
 import { AgentContextEditor } from './AgentContextEditor'
 import AgentContextManager from './AgentContextManager'
+import { SkillBrowser, type InstalledSkill, type MarketplaceSkill } from './skills/SkillBrowser'
 import { cn } from '../lib/utils'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -240,7 +241,65 @@ export function AgentTerminalsSection({
   const [showLauncher, setShowLauncher] = useState(false)
   const [showContextEditor, setShowContextEditor] = useState(false)
   const [showContextManager, setShowContextManager] = useState(false)
+  const [showSkillBrowser, setShowSkillBrowser] = useState(false)
   const [editingContextId, setEditingContextId] = useState<string | undefined>()
+
+  // Skills state
+  const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([])
+  const [marketplaceSkills, setMarketplaceSkills] = useState<MarketplaceSkill[]>([])
+  const [skillsLoading, setSkillsLoading] = useState(false)
+
+  // Load skills when browser opens
+  const loadSkills = useCallback(async () => {
+    if (!window.electron?.skill) return
+    setSkillsLoading(true)
+    try {
+      const [installedRes, availableRes] = await Promise.all([
+        window.electron.skill.listInstalled(),
+        window.electron.skill.listAvailable(),
+      ])
+
+      if (installedRes.success && installedRes.skills) {
+        setInstalledSkills(
+          installedRes.skills.map((s: Record<string, unknown>) => ({
+            id: String(s.id ?? ''),
+            name: String(s.id ?? '').split('@')[0],
+            version: String(s.version ?? ''),
+            scope: (s.scope as InstalledSkill['scope']) ?? 'user',
+            enabled: s.enabled !== false,
+            installPath: String(s.installPath ?? ''),
+            installedAt: String(s.installedAt ?? ''),
+            lastUpdated: String(s.lastUpdated ?? ''),
+            projectPath: s.projectPath as string | undefined,
+            marketplace: String(s.id ?? '').split('@')[1],
+          }))
+        )
+      }
+
+      if (availableRes.success && availableRes.skills) {
+        setMarketplaceSkills(
+          availableRes.skills.map((s: Record<string, unknown>) => ({
+            id: String(s.pluginId ?? s.name ?? ''),
+            name: String(s.name ?? String(s.pluginId ?? '').split('@')[0]),
+            description: String(s.description ?? ''),
+            source: 'anthropic' as const,
+            category: s.category as MarketplaceSkill['category'],
+            version: s.version as string | undefined,
+            installCount: s.installCount as number | undefined,
+            homepage: s.homepage as string | undefined,
+          }))
+        )
+      }
+    } catch (err) {
+      console.error('[Skills] Failed to load:', err)
+    } finally {
+      setSkillsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (showSkillBrowser) loadSkills()
+  }, [showSkillBrowser, loadSkills])
 
   // Derive project name from store
   const projectName = projects.find((p) => p.id === projectId)?.name || 'Unknown Project'
@@ -327,6 +386,15 @@ export function AgentTerminalsSection({
                 title="New session"
               >
                 <Plus className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setShowSkillBrowser(true)}
+                className="text-muted-foreground hover:text-foreground"
+                title="Browse skills"
+              >
+                <Package className="w-4 h-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -453,6 +521,42 @@ export function AgentTerminalsSection({
         onClose={() => setShowContextManager(false)}
         projectId={projectId}
         projectName={projectName}
+      />
+
+      {/* Skill Browser Modal */}
+      <SkillBrowser
+        open={showSkillBrowser}
+        onClose={() => setShowSkillBrowser(false)}
+        installedSkills={installedSkills}
+        marketplaceSkills={marketplaceSkills}
+        onInstall={async (skill) => {
+          if (!window.electron?.skill) return
+          const res = await window.electron.skill.install(skill.id, skill.source)
+          if (res.success) await loadSkills()
+        }}
+        onUninstall={async (skill) => {
+          if (!window.electron?.skill) return
+          const res = await window.electron.skill.uninstall(skill.id)
+          if (res.success) await loadSkills()
+        }}
+        onToggleEnabled={async (skill, enabled) => {
+          if (!window.electron?.skill) return
+          const res = await window.electron.skill.toggleEnabled(skill.id, enabled)
+          if (res.success) await loadSkills()
+        }}
+        onSearchVercel={async (query) => {
+          if (!window.electron?.skill) return []
+          const res = await window.electron.skill.searchVercel(query, 20)
+          if (!res.success || !res.skills) return []
+          return res.skills.map((s: Record<string, unknown>) => ({
+            id: String(s.source ?? '') + '/' + String(s.skillId ?? ''),
+            name: String(s.name ?? s.skillId ?? ''),
+            description: `From ${String(s.source ?? 'unknown')}`,
+            source: 'vercel' as const,
+            installCount: (s.installs as number) ?? undefined,
+          }))
+        }}
+        isLoading={skillsLoading}
       />
     </>
   )

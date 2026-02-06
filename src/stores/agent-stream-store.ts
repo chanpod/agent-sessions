@@ -75,6 +75,7 @@ interface AgentStreamStore {
   isMessageComplete(terminalId: string): boolean
   clearTerminal(terminalId: string): void
   markWaitingForResponse(terminalId: string): void
+  clearWaitingForQuestion(terminalId: string): void
   resetTerminalActivity(terminalId: string): void
 
   // Conversation state actions (survive component unmount/remount)
@@ -116,6 +117,7 @@ function getOrCreateTerminalState(
     messages: [],
     isActive: false,
     isWaitingForResponse: false,
+    isWaitingForQuestion: false,
     processExited: false,
   }
 }
@@ -419,6 +421,10 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                   ...terminalState.currentMessage,
                   blocks: [...terminalState.currentMessage.blocks, newBlock],
                 },
+                // Mark waiting for question when AskUserQuestion is used.
+                // The PreToolUse hook denies this tool so the CLI won't auto-resolve it;
+                // the app renders a QuestionCard and delivers the answer via --resume.
+                ...(data.name === 'AskUserQuestion' ? { isWaitingForQuestion: true } : {}),
               }
               break
             }
@@ -589,7 +595,13 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           // - tool_use: agent is waiting for user input → 'needs-attention'
           // - null/missing: sub-agent noise → don't notify
           const endData = event.data as { stopReason?: string }
-          if (endData.stopReason === 'end_turn') {
+          // When isWaitingForQuestion is set, the agent ended its turn after the
+          // PreToolUse hook denied AskUserQuestion. Emit 'needs-attention' instead of
+          // 'done' so the user knows to answer the question.
+          const termStateAfter = get().terminals.get(terminalId)
+          if (endData.stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
+            emitAgentNotification(terminalId, 'needs-attention')
+          } else if (endData.stopReason === 'end_turn') {
             emitAgentNotification(terminalId, 'done')
             set((state) => {
               const notifiedTerminals = new Set(state.notifiedTerminals)
@@ -630,6 +642,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           terminals.set(terminalId, {
             ...terminalState,
             isWaitingForResponse: true,
+          })
+          return { terminals }
+        })
+      },
+
+      clearWaitingForQuestion: (terminalId: string) => {
+        set((state) => {
+          const terminals = new Map(state.terminals)
+          const terminalState = terminals.get(terminalId)
+          if (!terminalState) return state
+          terminals.set(terminalId, {
+            ...terminalState,
+            isWaitingForQuestion: false,
           })
           return { terminals }
         })
@@ -738,6 +763,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             messages: sessionData.messages,
             isActive: false,
             isWaitingForResponse: false,
+            isWaitingForQuestion: false,
             processExited: true,
           })
 
@@ -1041,7 +1067,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             const termState = state.terminals.get(id)
             const terminals = new Map(state.terminals)
             terminals.set(id, {
-              ...(termState || { currentMessage: null, messages: [], isActive: false, isWaitingForResponse: false, processExited: false }),
+              ...(termState || { currentMessage: null, messages: [], isActive: false, isWaitingForResponse: false, isWaitingForQuestion: false, processExited: false }),
               error,
             })
             return { terminals }

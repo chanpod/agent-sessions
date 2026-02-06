@@ -294,35 +294,71 @@ export function AgentWorkspace({
   )
 
   const handleAnswerQuestion = useCallback(
-    (toolId: string, answers: Record<string, string>) => {
-      // Get the latest active process ID to send the answer to
-      const processIds = Array.from(activeProcessIds)
-      const latestProcessId = processIds[processIds.length - 1] ?? initialProcessId
+    async (_toolId: string, answers: Record<string, string>) => {
+      if (!window.electron?.agent) return
 
-      // Format the answer as a JSON string with the selected answers
-      const answerContent = JSON.stringify({ answers })
+      // Format the answer as a readable message for the --resume turn
+      const answerLines = Object.entries(answers)
+        .map(([question, answer]) => `- ${question}: ${answer}`)
+        .join('\n')
+      const messageText = `Here are my answers to your questions:\n\n${answerLines}`
 
-      // Mark as waiting so the sidebar badge transitions from "thinking" to "responding".
-      // This clears the amber badge immediately after the user submits their answer.
-      useAgentStreamStore.getState().markWaitingForResponse(latestProcessId)
+      const store = useAgentStreamStore.getState()
 
-      // Send as a tool_result so Claude CLI recognizes it as a response to AskUserQuestion.
-      // The stream-json input format expects: { type, message: { role, content: [{ type, tool_use_id, content }] } }
-      window.electron?.agent.sendMessage(latestProcessId, {
-        type: 'tool_result',
-        message: {
-          role: 'user',
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: toolId,
-              content: answerContent,
-            },
-          ],
-        },
+      // Clear the waiting-for-question flag on all processes in this conversation
+      for (const pid of activeProcessIds) {
+        store.clearWaitingForQuestion(pid)
+      }
+
+      // Add user message to the store (persists across session switching)
+      store.addConversationUserMessage(initialProcessId, {
+        id: `user_${Date.now()}`,
+        content: messageText,
+        timestamp: Date.now(),
+        agentType,
       })
+      setIsProcessing(true)
+
+      try {
+        if (sessionId) {
+          // Spawn a new --resume process with the user's answer, same as handleSend
+          const result = await window.electron.agent.spawn({
+            agentType,
+            cwd,
+            resumeSessionId: sessionId,
+            ...(allowedTools ? { allowedTools } : {}),
+          })
+          if (result.success && result.process) {
+            store.addConversationProcessId(initialProcessId, result.process.id)
+            store.markWaitingForResponse(result.process.id)
+            await window.electron.agent.sendMessage(result.process.id, {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: messageText,
+              },
+            })
+          } else {
+            console.error('[AgentWorkspace] Resume spawn for question answer failed:', result)
+            setIsProcessing(false)
+          }
+        } else {
+          // No session yet (unlikely for AskUserQuestion, but handle gracefully)
+          store.markWaitingForResponse(initialProcessId)
+          await window.electron.agent.sendMessage(initialProcessId, {
+            type: 'user',
+            message: {
+              role: 'user',
+              content: messageText,
+            },
+          })
+        }
+      } catch (err) {
+        console.error('[AgentWorkspace] handleAnswerQuestion failed:', err)
+        setIsProcessing(false)
+      }
     },
-    [activeProcessIds, initialProcessId]
+    [activeProcessIds, initialProcessId, agentType, cwd, sessionId, allowedTools]
   )
 
   // Get state from all active processes in this conversation

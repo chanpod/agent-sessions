@@ -20,10 +20,17 @@ const SAFE_TOOLS = new Set([
   'WebFetch',
   'Task',
   'TodoWrite',
-  'AskUserQuestion',
   'EnterPlanMode',
   'ExitPlanMode',
   'Skill',
+])
+
+// Tools that must be denied so the host application can handle them.
+// AskUserQuestion: The CLI auto-resolves this in -p mode without waiting for user input.
+// We deny it so the host app can render the question UI, collect the user's answer,
+// and deliver it as a follow-up --resume message.
+const HOST_HANDLED_TOOLS = new Set([
+  'AskUserQuestion',
 ])
 
 function toCliResponse(decision, reason) {
@@ -136,6 +143,19 @@ async function main() {
     const parsed = JSON.parse(input)
     toolName = parsed.tool_name
   } catch {}
+
+  // Gate 2a: Deny host-handled tools so the embedding app can manage them.
+  // The tool_use block is still emitted in the stream (PreToolUse fires after streaming),
+  // so the app can capture the tool input and render custom UI.
+  if (toolName && HOST_HANDLED_TOOLS.has(toolName)) {
+    debug(`Tool "${toolName}" is host-handled, denying so app can manage it`)
+    process.stdout.write(toCliResponse('deny',
+      'This tool is handled by the host application. ' +
+      'The user will see your question and their answer will be delivered in the next message. ' +
+      'Do NOT repeat the question or try this tool again. Wait for the user\'s response.'
+    ))
+    return
+  }
 
   if (toolName && SAFE_TOOLS.has(toolName)) {
     debug(`Tool "${toolName}" is in safe list, auto-allowing`)

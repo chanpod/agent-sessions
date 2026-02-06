@@ -1,11 +1,4 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(npx tsc:*)"
-    ],
-    "deny": [],
-    "ask": []
-  },
   "hooks": {
     "PreToolUse": [
       {

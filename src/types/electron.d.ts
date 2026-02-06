@@ -339,6 +339,50 @@ export interface ElectronAPI {
     onRequest: (callback: (request: PermissionRequestForUI) => void) => () => void
     onExpired: (callback: (id: string) => void) => () => void
   }
+  skill: {
+    listInstalled: () => Promise<{ success: boolean; skills: SkillInstalledInfo[]; error?: string }>
+    listAvailable: () => Promise<{ success: boolean; skills: SkillAvailableInfo[]; error?: string }>
+    searchVercel: (query: string, limit?: number) => Promise<{ success: boolean; skills: VercelSkillInfo[]; error?: string }>
+    install: (pluginId: string, source: 'anthropic' | 'vercel') => Promise<{ success: boolean; error?: string }>
+    uninstall: (pluginId: string) => Promise<{ success: boolean; error?: string }>
+    toggleEnabled: (pluginId: string, enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  }
+  log: {
+    openLogsFolder: () => Promise<void>
+    getLogPath: () => Promise<string>
+    reportRendererError: (errorData: { message: string; stack?: string; componentStack?: string }) => Promise<void>
+  }
+}
+
+export interface SkillInstalledInfo {
+  id: string
+  version: string
+  scope: 'user' | 'project' | 'local'
+  enabled: boolean
+  installPath: string
+  installedAt: string
+  lastUpdated: string
+  projectPath?: string
+}
+
+export interface SkillAvailableInfo {
+  pluginId: string
+  name: string
+  description: string
+  marketplaceName: string
+  version?: string
+  source: string | { source: string; url: string }
+  installCount?: number
+  category?: string
+  homepage?: string
+}
+
+export interface VercelSkillInfo {
+  id: string
+  skillId: string
+  name: string
+  installs: number
+  source: string
 }
 
 declare global {
