@@ -1,5 +1,7 @@
 [
   "Bash",
   "Edit",
-  "Write"
+  "Write",
+  "TaskOutput",
+  "TaskStop"
 ]

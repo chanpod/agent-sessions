@@ -3,13 +3,13 @@
  */
 
 import { useState, useMemo } from 'react'
-import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle, Zap } from 'lucide-react'
+import { X, Sparkles, Gem, Code, Bot, ChevronDown, Edit3, FileText, ShieldCheck, AlertTriangle, Zap, Download } from 'lucide-react'
 import { cn, formatModelDisplayName } from '../lib/utils'
 import { useAgentContextStore, type AgentContext } from '../stores/agent-context-store'
 import { useGlobalRulesStore } from '../stores/global-rules-store'
 import { usePermissionStore } from '@/stores/permission-store'
 import { Button } from './ui/button'
-import type { CliToolDetectionResult } from '../types/electron'
+import type { CliToolDetectionResult, UpdateCheckResult } from '../types/electron'
 
 interface AgentLauncherProps {
   projectId: string
@@ -19,6 +19,8 @@ interface AgentLauncherProps {
   onLaunch: (agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => void
   onClose: () => void
   onEditContext?: (contextId?: string) => void
+  updateInfo?: Record<string, UpdateCheckResult>
+  onUpdateAgent?: (agent: CliToolDetectionResult) => void
 }
 
 // =============================================================================
@@ -292,6 +294,8 @@ export function AgentLauncher({
   onLaunch,
   onClose,
   onEditContext,
+  updateInfo,
+  onUpdateAgent,
 }: AgentLauncherProps) {
   const { contexts, getActiveContext } = useAgentContextStore()
   const { getEnabledRules } = useGlobalRulesStore()
@@ -426,6 +430,28 @@ export function AgentLauncher({
               </div>
             )}
           </div>
+
+          {/* Update banner */}
+          {selectedAgentId && updateInfo?.[selectedAgentId]?.updateAvailable && (
+            <button
+              onClick={() => {
+                const agent = availableAgents.find(a => a.id === selectedAgentId)
+                if (agent && onUpdateAgent) onUpdateAgent(agent)
+              }}
+              className={cn(
+                'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all',
+                'border border-amber-500/25 bg-amber-500/[0.06] hover:bg-amber-500/[0.10]'
+              )}
+            >
+              <Download className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-medium text-amber-300">
+                  Update available: v{updateInfo[selectedAgentId]!.latestVersion}
+                </div>
+                <div className="text-[10px] text-amber-300/50">Click to update</div>
+              </div>
+            </button>
+          )}
 
           {/* Model selector (Claude & Codex) */}
           {(selectedAgentId === 'claude' || selectedAgentId === 'codex') && (

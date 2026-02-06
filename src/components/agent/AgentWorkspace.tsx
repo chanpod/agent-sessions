@@ -1,13 +1,13 @@
-import { useEffect, useCallback, useState, useMemo } from 'react'
+import { useEffect, useCallback, useState, useMemo, useRef } from 'react'
 import { Pencil, PencilOff } from 'lucide-react'
-import { IconSparkles } from '@tabler/icons-react'
+import { IconSparkles, IconBug } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
 import { useTerminalStore, type SavedTerminalConfig } from '@/stores/terminal-store'
 import { AgentMessageView } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
-import { DebugEventLog } from './DebugEventLog'
+import { DebugEventSheet } from './DebugEventLog'
 import { cn, formatModelDisplayName } from '@/lib/utils'
 import type {
   AgentConversation,
@@ -142,6 +142,7 @@ export function AgentWorkspace({
   // This provides immediate feedback while waiting for the agent to start
   const [isProcessing, setIsProcessing] = useState(false)
   const [editsEnabled, setEditsEnabled] = useState(true)
+  const [debugSheetOpen, setDebugSheetOpen] = useState(false)
 
   // Get the configured model from the terminal store (set at launch time)
   const configuredModel = useTerminalStore(
@@ -498,9 +499,7 @@ export function AgentWorkspace({
   // Determine placeholder text and thinking indicator state
   const isStreaming = conversation.status === 'streaming'
   const showThinkingIndicator = isStreaming && !conversation.currentMessage
-  const placeholder = isStreaming
-    ? 'Agent is responding...'
-    : `Send a message to ${agentType}...`
+  const placeholder = `Send a message to ${agentType}...`
 
   // Stop handler - kill all active processes and reset UI state
   const handleStop = useCallback(async () => {
@@ -512,8 +511,64 @@ export function AgentWorkspace({
     setIsProcessing(false)
   }, [activeProcessIds])
 
+  // Queue a message to be sent after the agent finishes
+  const handleQueue = useCallback((message: string) => {
+    useAgentStreamStore.getState().enqueueMessage(initialProcessId, message)
+  }, [initialProcessId])
+
+  // Force send: stop the agent, then send the message
+  const handleForceSend = useCallback(async (message: string) => {
+    if (!window.electron?.agent) return
+    // Stop all active processes first
+    for (const pid of activeProcessIds) {
+      await window.electron.agent.kill(pid)
+      useAgentStreamStore.getState().resetTerminalActivity(pid)
+    }
+    // Clear any previously queued messages since we're force-sending
+    useAgentStreamStore.getState().clearQueue(initialProcessId)
+    // Small delay to let process exit events settle
+    await new Promise((r) => setTimeout(r, 100))
+    // Now send the message through the normal flow
+    handleSend(message)
+  }, [activeProcessIds, initialProcessId, handleSend])
+
+  // Auto-send queued messages when agent finishes
+  const prevAnyActive = useRef(anyActive)
+  useEffect(() => {
+    // Detect transition from active -> idle (agent just finished)
+    if (prevAnyActive.current && !anyActive && !isProcessing) {
+      const store = useAgentStreamStore.getState()
+      const nextMessage = store.dequeueMessage(initialProcessId)
+      if (nextMessage) {
+        // Send the next queued message
+        handleSend(nextMessage)
+      }
+    }
+    prevAnyActive.current = anyActive
+  }, [anyActive, isProcessing, initialProcessId, handleSend])
+
+  // Read queue count reactively for the UI
+  const queueCount = useAgentStreamStore(
+    (s) => s.queuedMessages.get(initialProcessId)?.length ?? 0
+  )
+
   return (
     <div className={cn('flex flex-col h-full relative', className)}>
+      {/* Debug button - top left corner */}
+      <button
+        onClick={() => setDebugSheetOpen(true)}
+        className={cn(
+          'absolute top-2 left-2 z-10',
+          'flex items-center gap-1.5 rounded-md px-2 py-1',
+          'text-xs font-medium text-muted-foreground/40',
+          'hover:text-muted-foreground hover:bg-muted/30',
+          'transition-colors',
+        )}
+        title="Debug Events"
+      >
+        <IconBug className="size-3.5" />
+      </button>
+
       {/* Message View - Flex grow, scrollable */}
       <div className="flex-1 overflow-hidden">
         <AgentMessageView
@@ -548,8 +603,12 @@ export function AgentWorkspace({
         </div>
       </div>
 
-      {/* Debug Event Log - collapsible panel above input */}
-      <DebugEventLog processIds={activeProcessIds} />
+      {/* Debug Events Sheet */}
+      <DebugEventSheet
+        open={debugSheetOpen}
+        onOpenChange={setDebugSheetOpen}
+        processIds={activeProcessIds}
+      />
 
       {/* Input Area - Floating at bottom */}
       <div className="px-4 pb-4 pt-2">
@@ -589,8 +648,12 @@ export function AgentWorkspace({
             processId={initialProcessId}
             onSend={handleSend}
             onStop={handleStop}
+            onForceSend={handleForceSend}
+            onQueue={handleQueue}
             isStreaming={isStreaming}
             placeholder={placeholder}
+            autoFocus={!resumeSessionId}
+            queueCount={queueCount}
           />
         </div>
       </div>

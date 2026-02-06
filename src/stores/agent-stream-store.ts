@@ -69,6 +69,13 @@ interface AgentStreamStore {
   // Runtime-only: tracks terminals that have already been notified (prevents duplicate notifications)
   notifiedTerminals: Set<string>
 
+  // Runtime-only: draft input text per session (survives component unmount, not app restart)
+  draftInputs: Map<string, string>
+
+  // Runtime-only: queued messages per conversation (initialProcessId -> messages)
+  // When the agent finishes, queued messages are sent automatically
+  queuedMessages: Map<string, string[]>
+
   // Actions
   processEvent(terminalId: string, event: AgentStreamEvent): void
   getTerminalState(terminalId: string): TerminalAgentState | undefined
@@ -93,6 +100,17 @@ interface AgentStreamStore {
   // Title generation tracking (runtime only)
   markTitleGenerated(sessionId: string): void
   hasTitleBeenGenerated(sessionId: string): boolean
+
+  // Draft input management (survives session switching)
+  setDraftInput(sessionKey: string, text: string): void
+  getDraftInput(sessionKey: string): string
+  clearDraftInput(sessionKey: string): void
+
+  // Message queue management
+  enqueueMessage(initialProcessId: string, message: string): void
+  dequeueMessage(initialProcessId: string): string | undefined
+  peekQueue(initialProcessId: string): string[]
+  clearQueue(initialProcessId: string): void
 
   // IPC subscription
   subscribeToEvents(): () => void // returns unsubscribe function (for PTY-based detector events)
@@ -555,6 +573,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       hasRehydrated: false,
       titleGeneratedSessions: new Set(),
       notifiedTerminals: new Set(),
+      draftInputs: new Map(),
+      queuedMessages: new Map(),
 
       processEvent: (terminalId: string, event: AgentStreamEvent) => {
         set((state) => {
@@ -844,6 +864,67 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
       hasTitleBeenGenerated: (sessionId: string) => {
         return get().titleGeneratedSessions.has(sessionId)
+      },
+
+      setDraftInput: (sessionKey: string, text: string) => {
+        set((state) => {
+          const draftInputs = new Map(state.draftInputs)
+          if (text) {
+            draftInputs.set(sessionKey, text)
+          } else {
+            draftInputs.delete(sessionKey)
+          }
+          return { draftInputs }
+        })
+      },
+
+      getDraftInput: (sessionKey: string) => {
+        return get().draftInputs.get(sessionKey) ?? ''
+      },
+
+      clearDraftInput: (sessionKey: string) => {
+        set((state) => {
+          const draftInputs = new Map(state.draftInputs)
+          draftInputs.delete(sessionKey)
+          return { draftInputs }
+        })
+      },
+
+      enqueueMessage: (initialProcessId: string, message: string) => {
+        set((state) => {
+          const queuedMessages = new Map(state.queuedMessages)
+          const existing = queuedMessages.get(initialProcessId) ?? []
+          queuedMessages.set(initialProcessId, [...existing, message])
+          return { queuedMessages }
+        })
+      },
+
+      dequeueMessage: (initialProcessId: string) => {
+        const queue = get().queuedMessages.get(initialProcessId)
+        if (!queue || queue.length === 0) return undefined
+        const [first, ...rest] = queue
+        set((state) => {
+          const queuedMessages = new Map(state.queuedMessages)
+          if (rest.length > 0) {
+            queuedMessages.set(initialProcessId, rest)
+          } else {
+            queuedMessages.delete(initialProcessId)
+          }
+          return { queuedMessages }
+        })
+        return first
+      },
+
+      peekQueue: (initialProcessId: string) => {
+        return get().queuedMessages.get(initialProcessId) ?? []
+      },
+
+      clearQueue: (initialProcessId: string) => {
+        set((state) => {
+          const queuedMessages = new Map(state.queuedMessages)
+          queuedMessages.delete(initialProcessId)
+          return { queuedMessages }
+        })
       },
 
       subscribeToEvents: () => {
@@ -1169,6 +1250,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           state.sessionToInitialProcess = new Map()
           state.titleGeneratedSessions = new Set()
           state.notifiedTerminals = new Set()
+          state.draftInputs = new Map()
+          state.queuedMessages = new Map()
           state.hasRehydrated = true
           console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
           // Resolve the rehydration promise so waitForRehydration() callers can proceed

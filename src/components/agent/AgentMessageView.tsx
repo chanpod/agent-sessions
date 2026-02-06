@@ -11,6 +11,10 @@ import {
   IconChevronDown,
   IconChecklist,
   IconMap,
+  IconCopy,
+  IconCheck,
+  IconMarkdown,
+  IconTxt,
 } from '@tabler/icons-react'
 
 import type {
@@ -640,7 +644,7 @@ function AssistantTurnRenderer({
 
       {/* Response Box - text, code, images, errors */}
       {hasResponse && (
-        <div className="flex flex-col gap-2">
+        <div className="group/msg flex flex-col gap-2">
           {/* Response header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -654,13 +658,18 @@ function AssistantTurnRenderer({
                 <IconLoader2 className="size-3 animate-spin text-muted-foreground" />
               )}
             </div>
-            {showContextUsage && (
-              <ContextUsageIndicator
-                model={turn.latestModel!}
-                usage={turn.cumulativeUsage}
-                showTokens={true}
-              />
-            )}
+            <div className="flex items-center gap-2">
+              {!turn.isStreaming && (
+                <MessageCopyMenu blocks={turn.responseBlocks} />
+              )}
+              {showContextUsage && (
+                <ContextUsageIndicator
+                  model={turn.latestModel!}
+                  usage={turn.cumulativeUsage}
+                  showTokens={true}
+                />
+              )}
+            </div>
           </div>
 
           {/* Response content */}
@@ -721,7 +730,17 @@ function StandaloneMessageRenderer({
     >
       {isUser ? (
         // User message - bubble style, right-aligned
-        <div className="max-w-[85%]">
+        <div className="group/msg max-w-[85%]">
+          {/* Header row with label + copy */}
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-2">
+              <div className="flex size-6 items-center justify-center rounded-full bg-muted/30">
+                <IconUser className="size-3.5 text-muted-foreground" />
+              </div>
+              <span className="text-sm font-medium text-muted-foreground">You</span>
+            </div>
+            <MessageCopyMenu blocks={message.blocks} />
+          </div>
           <div
             className={cn(
               'rounded-2xl rounded-br-md',
@@ -852,6 +871,126 @@ function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMess
       </div>
       {showContextUsage && (
         <ContextUsageIndicator model={model} usage={cumulativeUsage} showTokens={true} />
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
+// Message Copy Button
+// =============================================================================
+
+/**
+ * Extract copyable text from content blocks.
+ * - Plain text: strips markdown formatting into readable text
+ * - Markdown: preserves original markdown source with code blocks
+ */
+function extractBlocksContent(blocks: ContentBlock[]): { plain: string; markdown: string } {
+  const parts: string[] = []
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      parts.push((block as TextBlock).content)
+    } else if (block.type === 'code') {
+      const code = block as CodeBlock
+      parts.push(`\`\`\`${code.language ?? ''}\n${code.content}\n\`\`\``)
+    }
+  }
+  const markdown = parts.join('\n\n')
+  // Plain text: strip markdown syntax
+  const plain = markdown
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```$/g, '').trim())
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[-*+]\s+/gm, '  - ')
+    .replace(/^\d+\.\s+/gm, (m) => `  ${m}`)
+  return { plain, markdown }
+}
+
+type CopyFormat = 'text' | 'markdown'
+
+function MessageCopyMenu({ blocks }: { blocks: ContentBlock[] }) {
+  const [copied, setCopied] = useState<CopyFormat | null>(null)
+  const [open, setOpen] = useState(false)
+
+  const handleCopy = useCallback(async (format: CopyFormat) => {
+    const { plain, markdown } = extractBlocksContent(blocks)
+    try {
+      await navigator.clipboard.writeText(format === 'markdown' ? markdown : plain)
+      setCopied(format)
+      setOpen(false)
+      setTimeout(() => setCopied(null), 2000)
+    } catch (err) {
+      console.error('Failed to copy:', err)
+    }
+  }, [blocks])
+
+  if (copied) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-md px-2 py-1 text-green-400">
+        <IconCheck className="size-4" />
+        <span className="text-xs font-medium">Copied</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className={cn(
+          'flex items-center gap-1.5 rounded-md px-2 py-1',
+          'text-xs font-medium text-muted-foreground/50',
+          'hover:text-muted-foreground hover:bg-muted/30',
+          'opacity-0 group-hover/msg:opacity-100 transition-opacity',
+        )}
+        aria-label="Copy message"
+      >
+        <IconCopy className="size-4" />
+        <span>Copy</span>
+      </button>
+      {open && (
+        <div
+          className={cn(
+            'absolute right-0 top-full z-50 mt-1',
+            'flex flex-col gap-0.5',
+            'rounded-lg border border-border/40 bg-popover p-1',
+            'shadow-lg shadow-black/20',
+            'min-w-[150px]',
+            'animate-in fade-in-0 zoom-in-95 duration-100',
+          )}
+        >
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => handleCopy('text')}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left',
+              'text-xs text-popover-foreground hover:bg-muted/50',
+              'transition-colors',
+            )}
+          >
+            <IconTxt className="size-4 text-muted-foreground" />
+            Copy as text
+          </button>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => handleCopy('markdown')}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left',
+              'text-xs text-popover-foreground hover:bg-muted/50',
+              'transition-colors',
+            )}
+          >
+            <IconMarkdown className="size-4 text-muted-foreground" />
+            Copy as markdown
+          </button>
+        </div>
       )}
     </div>
   )

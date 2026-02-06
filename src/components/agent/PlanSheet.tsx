@@ -4,6 +4,7 @@ import {
   IconLoader2,
   IconCheck,
   IconShieldCheck,
+  IconX,
 } from '@tabler/icons-react'
 
 import {
@@ -80,20 +81,30 @@ export function PlanSheet({ open, onOpenChange, conversation }: PlanSheetProps) 
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="left" className="flex flex-col w-96">
+      <SheetContent side="left" showCloseButton={false} className="flex flex-col w-96">
         <SheetHeader>
-          <SheetTitle className="flex items-center gap-2">
-            <div className="flex size-6 items-center justify-center rounded-full bg-blue-500/15">
-              <IconMap className="size-3.5 text-blue-400" />
-            </div>
-            Plan
-            {plan && !isComplete && (
-              <IconLoader2 className="size-3 animate-spin text-blue-400/60" />
-            )}
-            {plan && isComplete && plan.status !== 'error' && (
-              <IconCheck className="size-3.5 text-blue-400/60" />
-            )}
-          </SheetTitle>
+          <div className="flex items-center justify-between">
+            <SheetTitle className="flex items-center gap-2">
+              <div className="flex size-6 items-center justify-center rounded-full bg-blue-500/15">
+                <IconMap className="size-3.5 text-blue-400" />
+              </div>
+              Plan
+              {plan && !isComplete && (
+                <IconLoader2 className="size-3 animate-spin text-blue-400/60" />
+              )}
+              {plan && isComplete && plan.status !== 'error' && (
+                <IconCheck className="size-3.5 text-blue-400/60" />
+              )}
+            </SheetTitle>
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="size-9 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              aria-label="Close"
+            >
+              <IconX className="size-4" />
+            </button>
+          </div>
           <SheetDescription>
             {!plan
               ? 'No plan yet'

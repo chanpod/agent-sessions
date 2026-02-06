@@ -370,6 +370,8 @@ export function AgentsSection({ projectPath, projectId, onLaunchAgent }: AgentsS
           onLaunch={handleLaunch}
           onClose={() => setShowLauncher(false)}
           onEditContext={handleEditContext}
+          updateInfo={updateAvailable}
+          onUpdateAgent={handleUpdateClick}
         />
       )}
 

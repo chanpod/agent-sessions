@@ -1,11 +1,20 @@
 import { useRef, useEffect, useState, useMemo } from 'react'
-import { IconBug, IconChevronDown, IconChevronUp, IconTrash } from '@tabler/icons-react'
+import { IconBug, IconTrash, IconX } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import type { DebugEventEntry } from '@/types/stream-json'
 
-interface DebugEventLogProps {
+interface DebugEventSheetProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   /** All process IDs for this conversation */
   processIds: Set<string>
 }
@@ -61,14 +70,11 @@ function EventRow({ entry }: { entry: DebugEventEntry }) {
   )
 }
 
-export function DebugEventLog({ processIds }: DebugEventLogProps) {
-  const [isOpen, setIsOpen] = useState(false)
+export function DebugEventSheet({ open, onOpenChange, processIds }: DebugEventSheetProps) {
   const [showDeltas, setShowDeltas] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Gather debug events from all active processes.
-  // Use useShallow so the selector only triggers re-renders when the per-terminal
-  // debugEvents arrays actually change (shallow compare of the collected arrays).
   const perProcessEvents = useAgentStreamStore(
     useShallow((store) => {
       const result: (DebugEventEntry[] | undefined)[] = []
@@ -98,20 +104,10 @@ export function DebugEventLog({ processIds }: DebugEventLogProps) {
 
   // Auto-scroll to bottom on new events
   useEffect(() => {
-    if (isOpen && scrollRef.current) {
+    if (open && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [filteredEvents.length, isOpen])
-
-  // Summary counts for the collapsed header
-  const summary = useMemo(() => {
-    const counts: Record<string, number> = {}
-    for (const e of allDebugEvents) {
-      const label = EVENT_SHORT[e.type] ?? e.type
-      counts[label] = (counts[label] ?? 0) + 1
-    }
-    return counts
-  }, [allDebugEvents])
+  }, [filteredEvents.length, open])
 
   const handleClear = () => {
     useAgentStreamStore.setState((state) => {
@@ -126,74 +122,77 @@ export function DebugEventLog({ processIds }: DebugEventLogProps) {
     })
   }
 
-  if (allDebugEvents.length === 0 && !isOpen) return null
-
   return (
-    <div className="border-t border-zinc-800">
-      {/* Toggle header */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 w-full px-4 py-1.5 text-xs text-zinc-500 hover:bg-zinc-800/50 transition-colors"
-      >
-        <IconBug className="size-3.5" />
-        <span className="font-medium">Debug Events</span>
-        <span className="text-zinc-600">({allDebugEvents.length})</span>
-
-        {/* Mini summary when collapsed */}
-        {!isOpen && (
-          <span className="flex gap-2 ml-2 text-[10px] text-zinc-600">
-            {Object.entries(summary).map(([label, count]) => (
-              <span key={label}>{label}:{count}</span>
-            ))}
-          </span>
-        )}
-
-        <span className="ml-auto">
-          {isOpen ? <IconChevronDown className="size-3.5" /> : <IconChevronUp className="size-3.5" />}
-        </span>
-      </button>
-
-      {/* Event list */}
-      {isOpen && (
-        <div className="border-t border-zinc-800/50">
-          {/* Controls bar */}
-          <div className="flex items-center gap-3 px-4 py-1 text-[10px] text-zinc-600 border-b border-zinc-800/50">
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showDeltas}
-                onChange={(e) => setShowDeltas(e.target.checked)}
-                className="size-3"
-              />
-              Show deltas ({deltaCount})
-            </label>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="left" showCloseButton={false} className="flex flex-col w-[480px] p-0">
+        <SheetHeader className="px-4 pt-4 pb-3 border-b border-border/30">
+          <div className="flex items-center justify-between">
+            <SheetTitle className="flex items-center gap-2">
+              <div className="flex size-6 items-center justify-center rounded-full bg-orange-500/15">
+                <IconBug className="size-3.5 text-orange-400" />
+              </div>
+              Debug Events
+              <span className="text-xs font-normal text-muted-foreground">
+                ({allDebugEvents.length})
+              </span>
+            </SheetTitle>
             <button
-              onClick={handleClear}
-              className="flex items-center gap-1 hover:text-zinc-400 transition-colors"
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className={cn(
+                'size-9 inline-flex items-center justify-center rounded-md',
+                'text-muted-foreground hover:text-foreground hover:bg-accent',
+                'transition-colors cursor-pointer',
+              )}
+              aria-label="Close"
             >
-              <IconTrash className="size-3" />
-              Clear
+              <IconX className="size-4" />
             </button>
-            <span className="ml-auto text-zinc-700">
-              {filteredEvents.length} events
-            </span>
           </div>
+          <SheetDescription>
+            Raw event stream from the agent process
+          </SheetDescription>
+        </SheetHeader>
 
-          {/* Scrollable event rows */}
-          <div
-            ref={scrollRef}
-            className="max-h-48 overflow-y-auto bg-zinc-950/50"
+        {/* Controls bar */}
+        <div className="flex items-center gap-3 px-4 py-2 text-[11px] text-muted-foreground border-b border-border/30">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showDeltas}
+              onChange={(e) => setShowDeltas(e.target.checked)}
+              className="size-3"
+            />
+            Show deltas ({deltaCount})
+          </label>
+          <button
+            onClick={handleClear}
+            className="flex items-center gap-1 hover:text-foreground transition-colors"
           >
-            {filteredEvents.length === 0 ? (
-              <div className="px-4 py-3 text-xs text-zinc-600 italic">No events yet</div>
-            ) : (
-              filteredEvents.map((entry) => (
-                <EventRow key={entry.index} entry={entry} />
-              ))
-            )}
-          </div>
+            <IconTrash className="size-3" />
+            Clear
+          </button>
+          <span className="ml-auto text-muted-foreground/60">
+            {filteredEvents.length} events
+          </span>
         </div>
-      )}
-    </div>
+
+        {/* Scrollable event rows */}
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto bg-zinc-950/50"
+        >
+          {filteredEvents.length === 0 ? (
+            <div className="px-4 py-8 text-xs text-muted-foreground/60 italic text-center">
+              No events yet
+            </div>
+          ) : (
+            filteredEvents.map((entry) => (
+              <EventRow key={entry.index} entry={entry} />
+            ))
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }
