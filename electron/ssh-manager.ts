@@ -578,6 +578,86 @@ export class SSHManager extends EventEmitter {
 
 
   /**
+   * Build SSH command for running an agent CLI on a remote host.
+   * Unlike buildSSHCommand() which starts an interactive shell, this wraps a
+   * specific command (e.g. `cat | claude -p ...`) for non-interactive execution
+   * with TTY allocation so stdin piping works through SSH.
+   */
+  buildSSHCommandForAgent(projectId: string, remoteCwd: string, agentCommand: string): { shell: string; args: string[] } | null {
+    const master = this.projectMasterConnections.get(projectId)
+
+    console.log(`[SSHManager] buildSSHCommandForAgent for ${projectId}:`, {
+      hasMaster: !!master,
+      connected: master?.connected,
+      remoteCwd,
+    })
+
+    if (!master || !master.connected) {
+      console.error('[SSHManager] No connected project master for agent spawn')
+      return null
+    }
+
+    const sshConnection = this.connections.get(master.sshConnectionId)
+    if (!sshConnection) {
+      console.error('[SSHManager] SSH connection not found:', master.sshConnectionId)
+      return null
+    }
+
+    // Build SSH args using ControlMaster (slave mode — reuses existing tunnel)
+    const args = this.buildSSHArgs(sshConnection.config, sshConnection.controlPath, false)
+
+    // Force TTY allocation (-tt) so that stdin piping (cat | claude) works through SSH
+    args.push('-tt')
+
+    // Build the remote command: cd to the project dir and execute the agent command
+    const remoteCommand = `cd ${remoteCwd} && ${agentCommand}`
+
+    if (process.platform === 'win32') {
+      // On Windows, base64-encode the remote command to avoid quoting issues
+      const base64Command = Buffer.from(remoteCommand).toString('base64')
+      const wrappedRemote = `echo ${base64Command} | base64 -d | bash`
+
+      const sshCommand = `ssh ${args.map(arg => {
+        if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('$')) {
+          return `"${arg.replace(/"/g, '\\"')}"`
+        }
+        return arg
+      }).join(' ')} "${wrappedRemote}"`
+
+      return {
+        shell: 'bash.exe',
+        args: ['-c', sshCommand]
+      }
+    }
+
+    // On Unix, append the remote command directly
+    args.push(remoteCommand)
+    return {
+      shell: 'ssh',
+      args
+    }
+  }
+
+  /**
+   * Detect if a CLI tool is available on the remote host via the project's SSH connection.
+   * Returns availability and optional version string.
+   */
+  async detectRemoteCli(projectId: string, toolName: string): Promise<{ available: boolean; version?: string; error?: string }> {
+    try {
+      const output = await this.execViaProjectMaster(projectId, `which ${toolName} 2>/dev/null && ${toolName} --version 2>/dev/null || echo '__NOT_FOUND__'`)
+      if (output.includes('__NOT_FOUND__')) {
+        return { available: false, error: `${toolName} not found on remote host` }
+      }
+      // The output contains the path on the first line and version on the second
+      const lines = output.trim().split('\n')
+      const version = lines.length > 1 ? lines[lines.length - 1].trim() : undefined
+      return { available: true, version }
+    } catch (error: any) {
+      return { available: false, error: error.message }
+    }
+  }
+
+  /**
    * Cleanup all connections
    */
   async disposeAll() {

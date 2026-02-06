@@ -710,7 +710,7 @@ function App() {
     if (!window.electron?.agent?.spawn) return null
 
     try {
-      const result = await window.electron.agent.spawn({ agentType, cwd, ...(model ? { model } : {}) })
+      const result = await window.electron.agent.spawn({ agentType, cwd, projectId, ...(model ? { model } : {}) })
       if (result.success && result.process) {
         // Track the agent process
         setAgentProcesses(prev => {
@@ -813,15 +813,18 @@ function App() {
     const globalRulesText = getEnabledRulesText()
     const combinedContext = [globalRulesText, contextContent].filter(Boolean).join('\n\n') || null
 
+    // For SSH projects, use the remote path as the working directory
+    const agentCwd = (project.isSSHProject && project.remotePath) ? project.remotePath : project.path
+
     // For Claude and Codex, use the AgentProcessManager with JSON streaming
     // This provides structured streaming and better message handling
     if ((agentId === 'claude' || agentId === 'codex') && window.electron.agent?.spawn !== undefined) {
-      console.log(`[App] Using AgentProcessManager for ${agentId} (JSON streaming)`)
+      console.log(`[App] Using AgentProcessManager for ${agentId} (JSON streaming)`, project.isSSHProject ? `(SSH → ${agentCwd})` : '')
 
       const processId = await handleSpawnAgentProcess(
         projectId,
         agentId as 'claude' | 'codex' | 'gemini',
-        project.path,
+        agentCwd,
         combinedContext,
         model
       )
@@ -1641,6 +1644,7 @@ function App() {
                     agentType={activeAgentProcess.agentType as 'claude' | 'codex' | 'gemini'}
                     cwd={activeAgentProcess.cwd}
                     resumeSessionId={activeAgentResumeSessionId}
+                    projectId={activeProjectId ?? undefined}
                     className="h-full"
                   />
                 ) : isAgentTerminal && agentConversation ? (

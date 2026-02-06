@@ -1106,11 +1106,11 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 })
 
 // Agent Process handlers (PTY-based for true streaming support)
-ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[] }) => {
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[], projectId?: string }) => {
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
-  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools } = options
-  console.log(`[Agent] Spawning PTY-based agent: ${agentType} in ${cwd}`, resumeSessionId ? `(resuming ${resumeSessionId})` : '')
+  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools, projectId } = options
+  console.log(`[Agent] Spawning PTY-based agent: ${agentType} in ${cwd}`, resumeSessionId ? `(resuming ${resumeSessionId})` : '', projectId ? `(project ${projectId})` : '')
 
   // Build the CLI command based on agent type
   let command: string
@@ -1172,13 +1172,40 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       throw new Error(`Unknown agent type: ${agentType}`)
   }
 
-  // Create a hidden PTY terminal for the agent
-  const terminalInfo = ptyManager.createTerminal({
-    cwd,
-    initialCommand: command,
-    hidden: true, // Don't show in regular terminal list
-    title: agentType,
-  })
+  // Check if this is an SSH project — if so, run the agent command on the remote host
+  // through the existing ControlMaster tunnel. The NDJSON output streams back through
+  // SSH to our local PTY where StreamJsonDetector parses it unchanged.
+  let terminalInfo: import('./pty-manager.js').TerminalInfo
+  if (projectId && sshManager) {
+    const sshCmd = sshManager.buildSSHCommandForAgent(projectId, cwd, command)
+    if (sshCmd) {
+      console.log(`[Agent] Routing agent through SSH tunnel for project ${projectId}`)
+      terminalInfo = ptyManager.createTerminalWithCommand(
+        sshCmd.shell,
+        sshCmd.args,
+        cwd,       // display cwd (remote path)
+        undefined, // auto-generate id
+        true       // hidden
+      )
+    } else {
+      // SSH project but tunnel not available — fall through to local spawn
+      console.warn(`[Agent] SSH tunnel not available for project ${projectId}, spawning locally`)
+      terminalInfo = ptyManager.createTerminal({
+        cwd,
+        initialCommand: command,
+        hidden: true,
+        title: agentType,
+      })
+    }
+  } else {
+    // Local project — spawn directly
+    terminalInfo = ptyManager.createTerminal({
+      cwd,
+      initialCommand: command,
+      hidden: true,
+      title: agentType,
+    })
+  }
 
   // Track the agent terminal
   const agentInfo: AgentTerminalInfo = {

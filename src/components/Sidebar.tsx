@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Archive } from 'lucide-react'
+import { Archive, Wifi, WifiOff, AlertCircle, Loader2, X, Unplug } from 'lucide-react'
 import { AgentTerminalsSection } from './AgentTerminalsSection'
 import { ArchivedSessionsSheet } from './ArchivedSessionsSheet'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { ServicesSection } from '@/components/ServicesSection'
+import { PasswordDialog } from './PasswordDialog'
 import { useProjectStore } from '../stores/project-store'
 import { useTerminalStore } from '../stores/terminal-store'
+import { useSSHStore } from '../stores/ssh-store'
+import { useGitStore } from '../stores/git-store'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -32,14 +35,109 @@ const DEFAULT_WIDTH = 280
 
 export function Sidebar(props: SidebarProps) {
   const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal, onRestoreArchivedSession, onPermanentDeleteArchivedSession, onStartServer, onStopServer, onDeleteServer, onCreateProject, onEditProject, onDeleteProject } = props
-  const { projects, activeProjectId } = useProjectStore()
+  const { projects, activeProjectId, connectProject, setProjectConnectionStatus, disconnectProject } = useProjectStore()
   const activeProject = projects.find(p => p.id === activeProjectId)
+  const { getConnection } = useSSHStore()
+  const { refreshGitInfo } = useGitStore()
   const archivedConfigs = useTerminalStore((s) => s.archivedConfigs)
   const projectArchivedConfigs = archivedConfigs.filter(
     (a) => a.config.projectId === activeProjectId
   )
   const [showArchived, setShowArchived] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
+
+  // SSH connection state
+  const [showPasswordDialog, setShowPasswordDialog] = useState(false)
+  const [masterTerminalId, setMasterTerminalId] = useState<string | null>(null)
+  const [sshConnectionName, setSSHConnectionName] = useState('')
+
+  const isSSHProject = activeProject?.isSSHProject ?? false
+  const connectionStatus = activeProject?.connectionStatus || 'disconnected'
+  const isSSHConnected = isSSHProject ? connectionStatus === 'connected' : true
+
+  const handleSSHConnect = async () => {
+    if (!activeProject?.sshConnectionId || !window.electron) return
+
+    const sshConnection = getConnection(activeProject.sshConnectionId)
+    if (!sshConnection) {
+      console.error('[Sidebar] SSH connection not found')
+      return
+    }
+
+    await window.electron.ssh.connect(sshConnection)
+
+    const result = await connectProject(activeProject.id)
+    if (!result) return
+
+    if (!result.success) {
+      if (result.requiresInteractive) {
+        const masterCmd = await window.electron.ssh.getInteractiveMasterCommand(activeProject.id)
+        if (!masterCmd) {
+          handleSSHCancelConnect()
+          return
+        }
+
+        const terminalInfo = await window.electron.pty.createWithCommand(
+          masterCmd.shell,
+          masterCmd.args,
+          'SSH Connection Setup',
+          true
+        )
+
+        setMasterTerminalId(terminalInfo.id)
+        setSSHConnectionName(sshConnection.name)
+        setShowPasswordDialog(true)
+        return
+      }
+
+      handleSSHCancelConnect()
+      return
+    }
+
+    setProjectConnectionStatus(activeProject.id, 'connected')
+    const gitPath = activeProject.remotePath || activeProject.path
+    refreshGitInfo(activeProject.id, gitPath)
+  }
+
+  const handlePasswordSubmit = async (password: string) => {
+    if (!masterTerminalId || !window.electron || !activeProject) return
+
+    await window.electron.pty.write(masterTerminalId, password + '\n')
+    setShowPasswordDialog(false)
+
+    setTimeout(async () => {
+      if (window.electron && activeProject) {
+        await window.electron.ssh.markProjectConnected(activeProject.id)
+        const { setProjectConnectionStatus } = useProjectStore.getState()
+        setProjectConnectionStatus(activeProject.id, 'connected')
+
+        const gitPath = activeProject.remotePath || activeProject.path
+        refreshGitInfo(activeProject.id, gitPath)
+      }
+    }, 2000)
+  }
+
+  const handlePasswordCancel = () => {
+    setShowPasswordDialog(false)
+    if (masterTerminalId && window.electron) {
+      window.electron.pty.kill(masterTerminalId)
+      setMasterTerminalId(null)
+    }
+    handleSSHCancelConnect()
+  }
+
+  const handleSSHCancelConnect = () => {
+    if (activeProject) {
+      setProjectConnectionStatus(activeProject.id, 'disconnected')
+    }
+  }
+
+  const handleSSHDisconnect = async () => {
+    if (activeProject) {
+      await disconnectProject(activeProject.id)
+    }
+  }
+
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem('sidebar-width')
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH
@@ -114,11 +212,29 @@ export function Sidebar(props: SidebarProps) {
             <div className="text-xs text-muted-foreground">
               Select a project to view sessions and servers.
             </div>
+          ) : isSSHProject && !isSSHConnected ? (
+            /* SSH project not connected — show connection prompt */
+            <SSHConnectionGate
+              project={activeProject}
+              onConnect={handleSSHConnect}
+              onCancel={handleSSHCancelConnect}
+            />
           ) : (
             <>
+              {/* Disconnect button for connected SSH projects */}
+              {isSSHProject && (
+                <button
+                  onClick={handleSSHDisconnect}
+                  className="flex items-center gap-1.5 w-full px-2 py-1.5 mb-2 text-xs text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
+                >
+                  <Unplug className="w-3.5 h-3.5" />
+                  Disconnect SSH
+                </button>
+              )}
+
               <AgentTerminalsSection
                 projectId={activeProject.id}
-                projectPath={activeProject.path}
+                projectPath={activeProject.isSSHProject && activeProject.remotePath ? activeProject.remotePath : activeProject.path}
                 onCloseTerminal={onCloseTerminal}
                 onReconnectTerminal={onReconnectTerminal}
                 onLaunchAgent={onCreateAgentTerminal}
@@ -127,7 +243,7 @@ export function Sidebar(props: SidebarProps) {
               <Separator className="my-2 bg-border/60" />
               <ServicesSection
                 projectId={activeProject.id}
-                projectPath={activeProject.path}
+                projectPath={activeProject.isSSHProject && activeProject.remotePath ? activeProject.remotePath : activeProject.path}
                 onStartServer={onStartServer}
                 onStopServer={onStopServer}
                 onDeleteServer={onDeleteServer}
@@ -178,6 +294,96 @@ export function Sidebar(props: SidebarProps) {
         />
       </aside>
 
+
+      {/* Password dialog for SSH password authentication */}
+      <PasswordDialog
+        isOpen={showPasswordDialog}
+        title="SSH Password Required"
+        message={`Enter password for ${sshConnectionName}`}
+        onSubmit={handlePasswordSubmit}
+        onCancel={handlePasswordCancel}
+      />
     </>
+  )
+}
+
+// =============================================================================
+// SSH Connection Gate — compact sidebar variant
+// =============================================================================
+
+function SSHConnectionGate({
+  project,
+  onConnect,
+  onCancel,
+}: {
+  project: import('../stores/project-store').Project
+  onConnect: () => void
+  onCancel: () => void
+}) {
+  const { getConnection } = useSSHStore()
+  const sshConnection = project.sshConnectionId ? getConnection(project.sshConnectionId) : null
+
+  const status = project.connectionStatus || 'disconnected'
+  const isConnecting = status === 'connecting'
+  const isError = status === 'error'
+
+  return (
+    <div className="flex flex-col items-center py-8 px-2 text-center">
+      <div className={cn(
+        'mb-3 p-3 rounded-full',
+        isError ? 'bg-destructive/10' : isConnecting ? 'bg-blue-500/10' : 'bg-muted'
+      )}>
+        {isConnecting ? (
+          <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
+        ) : isError ? (
+          <AlertCircle className="w-6 h-6 text-destructive" />
+        ) : (
+          <WifiOff className="w-6 h-6 text-muted-foreground" />
+        )}
+      </div>
+
+      <h4 className="text-sm font-medium text-foreground mb-1">
+        {isConnecting ? 'Connecting...' : isError ? 'Connection Failed' : 'Not Connected'}
+      </h4>
+
+      {sshConnection && (
+        <p className="text-xs text-muted-foreground font-mono mb-1">
+          {sshConnection.username}@{sshConnection.host}
+        </p>
+      )}
+      {project.remotePath && (
+        <p className="text-xs text-muted-foreground/70 mb-3 truncate max-w-full">
+          {project.remotePath}
+        </p>
+      )}
+
+      {isError && project.connectionError && (
+        <div className="mb-3 w-full p-2 bg-destructive/10 border border-destructive/20 rounded text-xs text-destructive">
+          {project.connectionError}
+        </div>
+      )}
+
+      {!isConnecting && (
+        <Button
+          size="sm"
+          onClick={onConnect}
+          disabled={!sshConnection}
+          className="gap-1.5"
+        >
+          <Wifi className="w-3.5 h-3.5" />
+          {isError ? 'Retry' : 'Connect'}
+        </Button>
+      )}
+
+      {isConnecting && (
+        <button
+          onClick={onCancel}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
+        >
+          <X className="w-3.5 h-3.5" />
+          Cancel
+        </button>
+      )}
+    </div>
   )
 }

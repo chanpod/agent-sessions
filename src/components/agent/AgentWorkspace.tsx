@@ -30,6 +30,7 @@ interface AgentWorkspaceProps {
   cwd: string
   className?: string
   resumeSessionId?: string
+  projectId?: string
 }
 
 // =============================================================================
@@ -137,6 +138,7 @@ export function AgentWorkspace({
   cwd,
   className,
   resumeSessionId,
+  projectId,
 }: AgentWorkspaceProps) {
   const messageViewRef = useRef<AgentMessageViewHandle>(null)
 
@@ -257,6 +259,7 @@ export function AgentWorkspace({
             prompt: message,
             ...(configuredModel ? { model: configuredModel } : {}),
             ...(allowedTools ? { allowedTools } : {}),
+            ...(projectId ? { projectId } : {}),
           })
           if (result.success && result.process) {
             store.addConversationProcessId(initialProcessId, result.process.id)
@@ -277,6 +280,7 @@ export function AgentWorkspace({
             cwd,
             resumeSessionId: sessionId,
             ...(allowedTools ? { allowedTools } : {}),
+            ...(projectId ? { projectId } : {}),
           })
           if (result.success && result.process) {
             // Track the new process ID in the store
@@ -354,6 +358,7 @@ export function AgentWorkspace({
             cwd,
             resumeSessionId: sessionId,
             ...(allowedTools ? { allowedTools } : {}),
+            ...(projectId ? { projectId } : {}),
           })
           if (result.success && result.process) {
             store.addConversationProcessId(initialProcessId, result.process.id)
