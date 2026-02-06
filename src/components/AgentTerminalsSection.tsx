@@ -318,16 +318,20 @@ export function AgentTerminalsSection({
   }, [projectId, loadContexts])
 
   // Detect agents
-  const detectAgents = useCallback(async () => {
+  const [detectingAgents, setDetectingAgents] = useState(false)
+  const detectAgents = useCallback(async (forceRefresh = false) => {
     if (!window.electron?.cli) return
 
+    if (forceRefresh) setDetectingAgents(true)
     try {
-      const result = await window.electron.cli.detectAll(projectPath, projectId)
+      const result = await window.electron.cli.detectAll(projectPath, projectId, forceRefresh)
       if (result.success || result.tools) {
         setAgents(result.tools)
       }
     } catch (err) {
       console.error('Agent detection failed:', err)
+    } finally {
+      setDetectingAgents(false)
     }
   }, [projectPath, projectId])
 
@@ -441,15 +445,19 @@ export function AgentTerminalsSection({
             >
               Gemini
             </Badge>
-            {activeContext ? (
+            {activeContext && (
               <Badge variant="outline" className="border-emerald-400/30 text-emerald-200/80">
                 Context: {activeContext.name}
               </Badge>
-            ) : (
-              <Badge variant="outline" className="border-border/60 text-muted-foreground">
-                No context
-              </Badge>
             )}
+            <button
+              onClick={() => detectAgents(true)}
+              disabled={detectingAgents}
+              className="inline-flex items-center justify-center rounded-md px-1.5 py-0.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              title="Refresh agent detection"
+            >
+              <RefreshCw className={cn('w-3 h-3', detectingAgents && 'animate-spin')} />
+            </button>
           </div>
           <div className="flex items-center justify-between">
             <div className="text-xs font-semibold uppercase tracking-[0.3em] text-muted-foreground">

@@ -275,8 +275,23 @@ export class PtyManager {
     // If we have an initial command, wrap it in a shell
     // This is used for agent terminals (claude, gemini, codex) and any other command execution
     if (options.initialCommand) {
-      if (process.platform === 'win32') {
-        // Use bash.exe (Git Bash) with -l -i for login interactive shell
+      if (process.platform === 'win32' && PathService.isWslPath(originalCwd)) {
+        // WSL project — spawn inside WSL so the agent runs in the correct Linux environment
+        const env = PathService.getEnvironment()
+        if (!env.wslAvailable) {
+          throw new Error('WSL is not available. Please ensure Windows Subsystem for Linux is installed and enabled.')
+        }
+        const distro = env.defaultWslDistro
+        if (!distro) {
+          throw new Error('No WSL distribution found. Please install a Linux distribution from the Microsoft Store.')
+        }
+        const linuxPath = PathService.toWslLinuxPath(originalCwd)
+        shellExecutable = 'wsl.exe'
+        shellArgs = ['-d', distro, '--cd', linuxPath, '--', 'bash', '-l', '-i', '-c', options.initialCommand]
+        const uncPath = PathService.toWslUncPath(linuxPath, distro)
+        effectiveCwd = uncPath || process.cwd()
+      } else if (process.platform === 'win32') {
+        // Windows project — use bash.exe (Git Bash) with -l -i for login interactive shell
         // -i is needed to properly load PATH for npm-installed tools like codex (which need node)
         shellExecutable = 'bash.exe'
         shellArgs = ['-l', '-i', '-c', options.initialCommand]
