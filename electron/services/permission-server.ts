@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import {
   PERMISSION_REQUEST_TIMEOUT_MS,
@@ -235,7 +235,7 @@ export class PermissionServer {
         const wslDir = winToWsl(ipcDir)
         const wslExe = 'C:\\Windows\\System32\\wsl.exe'
         try {
-          execSync(`"${wslExe}" bash -c 'rm -f "${wslDir}"/*'`, { timeout: 5000 })
+          execFileSync(wslExe, ['bash', '-c', `rm -f "${wslDir}"/*`], { timeout: 5000 })
           return
         } catch {
           // Fall through to per-file cleanup
@@ -449,7 +449,9 @@ function writeFileForWsl(windowsPath: string, content: string): void {
     try {
       // Remove existing file first to clear any broken NTFS metadata
       // that prevents WSL from reading files written by Windows APIs
-      execSync(`"${wslExe}" bash -c 'rm -f "${wslPath}" && cat > "${wslPath}"'`, {
+      // Use execFileSync to bypass cmd.exe — execSync passes through cmd.exe
+      // which interprets &&, >, and other shell metacharacters before WSL sees them
+      execFileSync(wslExe, ['bash', '-c', `rm -f "${wslPath}" && cat > "${wslPath}"`], {
         input: content,
         timeout: 10000,
       })
@@ -471,7 +473,7 @@ function mkdirForWsl(windowsPath: string): void {
     const wslPath = winToWsl(windowsPath)
     const wslExe = 'C:\\Windows\\System32\\wsl.exe'
     try {
-      execSync(`"${wslExe}" bash -c 'mkdir -p "${wslPath}"'`, { timeout: 10000 })
+      execFileSync(wslExe, ['bash', '-c', `mkdir -p "${wslPath}"`], { timeout: 10000 })
       return
     } catch {
       // Fall back to native fs
@@ -489,7 +491,7 @@ function unlinkForWsl(windowsPath: string): void {
     const wslPath = winToWsl(windowsPath)
     const wslExe = 'C:\\Windows\\System32\\wsl.exe'
     try {
-      execSync(`"${wslExe}" bash -c 'rm -f "${wslPath}"'`, { timeout: 5000 })
+      execFileSync(wslExe, ['bash', '-c', `rm -f "${wslPath}"`], { timeout: 5000 })
       return
     } catch {
       // Fall back to native fs
@@ -507,7 +509,7 @@ function readFileFromWsl(windowsPath: string): string {
     const wslPath = winToWsl(windowsPath)
     const wslExe = 'C:\\Windows\\System32\\wsl.exe'
     try {
-      return execSync(`"${wslExe}" bash -c 'cat "${wslPath}"'`, {
+      return execFileSync(wslExe, ['bash', '-c', `cat "${wslPath}"`], {
         timeout: 5000,
         encoding: 'utf8',
       })
