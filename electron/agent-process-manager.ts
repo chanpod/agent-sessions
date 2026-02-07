@@ -249,7 +249,7 @@ export class AgentProcessManager {
 
     // Spawn the process using Git Bash on Windows for proper PATH resolution
     // Note: We must use the full path to Git Bash, not just 'bash.exe', because
-    // WSL's bash.exe may be found first in PATH and it can't resolve Windows node
+    // the system bash.exe may not resolve Windows node tools correctly
     const isWindows = process.platform === 'win32'
     const shell = isWindows ? (getGitBashPath() || 'bash.exe') : '/bin/bash'
     const shellArgs = ['-l', '-c', command] // -l for login shell to load PATH properly

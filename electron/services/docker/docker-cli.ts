@@ -1,17 +1,15 @@
-import { exec, execFile } from 'child_process'
+import { exec } from 'child_process'
 import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
 import {
   toFsPath,
-  toWslLinuxPath,
   analyzePath,
   getExecutionContextSync,
   dirname as pathServiceDirname,
   basename as pathServiceBasename,
   join as pathServiceJoin,
 } from '../../utils/path-service.js'
-import { buildWslCommand } from '../../utils/wsl-utils.js'
 
 const execAsync = promisify(exec)
 
@@ -92,13 +90,12 @@ export class DockerCli {
   /**
    * Get the appropriate paths for running docker compose commands.
    *
-   * Docker running inside WSL expects Linux paths, not Windows UNC paths.
    * This method returns:
-   * - `cwd`: The path Node.js should use for the working directory (may be UNC on Windows)
+   * - `cwd`: The path Node.js should use for the working directory
    * - `dockerDir`: The path to pass to docker for the -f flag directory context
    * - `file`: The compose filename
-   * - `context`: The execution context ('wsl', 'local-windows', or 'local-unix')
-   * - `pathInfo`: The analyzed path information (for WSL distro, etc.)
+   * - `context`: The execution context ('local-windows' or 'local-unix')
+   * - `pathInfo`: The analyzed path information
    *
    * @param composePath - The full path to the compose file
    * @returns Object with cwd, dockerDir, file, context, and pathInfo
@@ -119,25 +116,14 @@ export class DockerCli {
     // For Node.js cwd, we need the filesystem-accessible path
     const cwd = toFsPath(pathServiceDirname(composePath))
 
-    // For docker commands, determine the right path format
-    let dockerDir: string
-
-    if (context === 'wsl' || pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux') {
-      // Docker inside WSL needs Linux paths
-      dockerDir = toWslLinuxPath(pathServiceDirname(composePath))
-    } else {
-      // Local Windows or Unix - use the directory as-is
-      dockerDir = pathServiceDirname(composePath)
-    }
+    // For docker commands, use the directory as-is
+    const dockerDir = pathServiceDirname(composePath)
 
     return { cwd, dockerDir, file, context, pathInfo }
   }
 
   /**
    * Execute a docker command in the appropriate context.
-   *
-   * When the execution context is WSL, the command is run through WSL bash
-   * to avoid CMD.EXE's UNC path issues. Otherwise, it runs directly.
    *
    * @param cmd - The docker command to execute
    * @param execInfo - Execution info from getComposePathsForExecution
@@ -152,32 +138,9 @@ export class DockerCli {
       pathInfo: ReturnType<typeof analyzePath>;
     }
   ): Promise<{ stdout: string; stderr: string }> {
-    const { cwd, dockerDir, context, pathInfo } = execInfo
+    const { cwd } = execInfo
 
-    if (context === 'wsl') {
-      // Run through WSL to avoid CMD.EXE UNC path issues
-      const wslCommand = buildWslCommand(cmd, dockerDir, {
-        isWslPath: true,
-        linuxPath: pathInfo.linuxPath,
-        distro: pathInfo.wslDistro
-      })
-
-      return new Promise((resolve, reject) => {
-        exec(wslCommand.cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-          if (error) {
-            // Attach stdout and stderr to error for callers that check them
-            const execError = error as Error & { stdout?: string; stderr?: string }
-            execError.stdout = stdout
-            execError.stderr = stderr
-            reject(execError)
-          } else {
-            resolve({ stdout, stderr })
-          }
-        })
-      })
-    }
-
-    // Local Windows or Unix - execute directly with cwd
+    // Execute directly with cwd
     return execAsync(cmd, { cwd })
   }
 
@@ -198,7 +161,7 @@ export class DockerCli {
    * Checks for: docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml
    *
    * Handles cross-platform paths:
-   * - WSL UNC paths (\\wsl$\Ubuntu\...) are converted for Node.js fs operations
+   * - Paths are converted for Node.js fs operations
    * - Returns the path in the original format for consistency
    */
   async findComposeFile(projectPath: string): Promise<string | null> {
@@ -217,7 +180,7 @@ export class DockerCli {
       const checkPath = pathServiceJoin(fsPath, candidate)
       try {
         await fs.promises.access(checkPath, fs.constants.F_OK)
-        // Return the path in original format (preserving WSL UNC if that's what was passed)
+        // Return the path in original format for consistency
         return pathServiceJoin(projectPath, candidate)
       } catch {
         // File doesn't exist, try next

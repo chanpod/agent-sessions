@@ -2,7 +2,7 @@
  * Package Scripts Service
  *
  * Extracted from main.ts to handle package.json script discovery.
- * Supports local, WSL, and SSH remote execution.
+ * Supports local and SSH remote execution.
  */
 
 import * as fs from 'fs'
@@ -209,9 +209,9 @@ try {
 }
 
 /**
- * Get package scripts from a local or WSL filesystem
+ * Get package scripts from a local filesystem
  *
- * @param fsPath - The filesystem path (already resolved for WSL if needed)
+ * @param fsPath - The filesystem path
  * @param originalProjectPath - The original project path (for display/project name)
  * @returns Package script result
  */

@@ -2,7 +2,7 @@
  * CLI Detector Service
  *
  * Detects if various AI CLI tools (Claude Code, Gemini CLI, OpenAI Codex) are installed.
- * Supports Windows, WSL, and SSH execution contexts.
+ * Supports Windows and SSH execution contexts.
  *
  * Implements a two-tier caching strategy:
  * - L1: In-memory cache for fast lookups within the same session
@@ -14,7 +14,6 @@ import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
 import { PathService, getGitBashPath, type ExecutionContext, type SSHManagerLike } from '../utils/path-service.js'
-import { buildWslCommand } from '../utils/wsl-utils.js'
 import { isNewerVersion } from '../utils/version-utils.js'
 import type { ToolChainDB, CachedCliDetectionResult } from '../database.js'
 import {
@@ -85,7 +84,7 @@ function isCacheStale(timestamp: number): boolean {
  * Get cached detection result from L1 (memory) or L2 (database)
  *
  * @param projectPath - The project path
- * @param executionContext - The execution context (local-windows, local-unix, wsl, ssh-remote)
+ * @param executionContext - The execution context (local-windows, local-unix, ssh-remote)
  * @returns Cached result and staleness status, or null if no cache
  */
 function getCachedDetectionResult(
@@ -266,7 +265,7 @@ export interface AllCliToolsResult {
 // ============================================================================
 
 /**
- * Execute a command in the appropriate context (local, WSL, or SSH)
+ * Execute a command in the appropriate context (local or SSH)
  */
 async function execInContextAsync(
   command: string,
@@ -294,41 +293,6 @@ async function execInContextAsync(
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         throw new Error(`SSH command failed: ${errorMessage}`)
-      }
-    }
-
-    case 'wsl': {
-      // Use wsl.exe for WSL paths
-      const pathInfo = PathService.analyzePath(projectPath)
-      const wslCommand = buildWslCommand(command, projectPath, {
-        isWslPath: true,
-        linuxPath: pathInfo.linuxPath,
-        distro: pathInfo.wslDistro,
-      })
-
-      try {
-        const result = await execAsync(wslCommand.cmd, {
-          encoding: 'utf-8',
-          timeout: 10000,
-        })
-        return { stdout: result.stdout, stderr: result.stderr }
-      } catch (error: unknown) {
-        // exec throws on non-zero exit codes, but the command may have still produced output
-        const execError = error as { stdout?: string; stderr?: string; message?: string }
-        const stdout = execError.stdout || ''
-        const stderr = execError.stderr || ''
-
-        // If we got any output, return it even if the command "failed"
-        if (stdout || stderr) {
-          return { stdout, stderr }
-        }
-
-        // Command not found in WSL is not an error for detection purposes
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        if (errorMessage.includes('not found') || errorMessage.includes('command not found')) {
-          return { stdout: '', stderr: errorMessage }
-        }
-        throw error
       }
     }
 
@@ -480,7 +444,6 @@ function getPathCommands(tool: CliToolDefinition, context: ExecutionContext): st
     case 'local-windows':
       return tool.pathCommands.windows
     case 'local-unix':
-    case 'wsl':
     case 'ssh-remote':
       return tool.pathCommands.unix
     default:

@@ -1,11 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import fs from 'fs'
-import { exec } from 'child_process'
-import { promisify } from 'util'
-import { PathService, type ExecutionContext } from '../utils/path-service.js'
+import { PathService } from '../utils/path-service.js'
 import type { SSHManager } from '../ssh-manager.js'
-
-const execAsync = promisify(exec)
 
 /**
  * Check if the git directory exists for a given project path.
@@ -40,7 +36,6 @@ async function checkGitDirExists(
       }
     }
 
-    case 'wsl':
     case 'local-windows':
     case 'local-unix': {
       const fsPath = PathService.toFsPath(projectPath)
@@ -56,13 +51,13 @@ async function checkGitDirExists(
 }
 
 interface GitWatcherSet {
-  watcher: fs.FSWatcher | null  // null for WSL projects using polling
+  watcher: fs.FSWatcher | null  // null when using polling
   debounceTimer: NodeJS.Timeout | null
-  pollingInterval?: NodeJS.Timeout  // Optional: only for WSL projects
+  pollingInterval?: NodeJS.Timeout  // Optional polling interval
   lastHeadContent: string
   lastIndexMtime: number
   lastLogsHeadMtime: number
-  lastGitStatus?: string  // For WSL polling: output of git status --porcelain
+  lastGitStatus?: string  // For polling: output of git status --porcelain
 }
 
 const gitWatchers = new Map<string, GitWatcherSet>()
@@ -72,7 +67,7 @@ const GIT_DEBOUNCE_MS = 500 // Debounce rapid changes (increased to allow git op
  * Register all git-related IPC handlers
  * @param mainWindow The main BrowserWindow instance
  * @param sshManager The SSHManager instance
- * @param execInContextAsync Function to execute commands in the appropriate context (local, WSL, or SSH)
+ * @param execInContextAsync Function to execute commands in the appropriate context (local or SSH)
  */
 export function registerGitHandlers(
   mainWindow: BrowserWindow | null,
@@ -272,9 +267,6 @@ export function registerGitHandlers(
       return { success: false, error: 'Git watching is not supported for SSH projects. Use git:get-info to poll for changes.' }
     }
 
-    // Check if this is a WSL path using PathService
-    const pathAnalysis = PathService.analyzePath(projectPath)
-
     // Don't double-watch
     if (gitWatchers.has(projectPath)) {
       return { success: true }
@@ -316,107 +308,6 @@ export function registerGitHandlers(
       } catch {
         // logs/HEAD might not exist yet
       }
-
-      // Check if this is a WSL path - fs.watch doesn't work reliably with WSL paths on Windows
-      // Use polling fallback instead with git status --porcelain to detect ALL changes
-      const isWslPath = PathService.isWslPath(projectPath)
-      if (isWslPath) {
-        // Get initial git status for comparison
-        // For WSL paths, we need to run git through wsl.exe with the Linux path
-        // because Windows CMD doesn't support UNC paths as cwd
-        let initialGitStatus = ''
-        try {
-          const linuxPath = pathAnalysis.linuxPath || PathService.toWslLinuxPath(projectPath)
-          const distro = pathAnalysis.wslDistro || PathService.getEnvironment().defaultWslDistro || 'Ubuntu'
-          const { stdout } = await execAsync(`wsl.exe -d ${distro} -e git -C "${linuxPath}" status --porcelain`, {
-            timeout: 5000,
-          })
-          initialGitStatus = stdout
-        } catch {
-          // Continue anyway, will compare against empty string
-        }
-
-        // CRITICAL: Store the watcher in the Map FIRST, before setting up the polling interval
-        // This ensures the polling callback can find and update the watcher values
-        const watcherSet: GitWatcherSet = {
-          watcher: null, // No fs.watch for WSL
-          debounceTimer: null,
-          pollingInterval: null, // Will be set after
-          lastHeadContent,
-          lastIndexMtime,
-          lastLogsHeadMtime,
-          lastGitStatus: initialGitStatus,
-        }
-        gitWatchers.set(projectPath, watcherSet)
-
-        const GIT_WATCHER_DEBUG = false // Set to true to enable verbose git-watcher polling logs
-        // Set up polling interval for WSL projects
-        // Uses git status --porcelain to detect ALL changes (staged, unstaged, untracked)
-        watcherSet.pollingInterval = setInterval(async () => {
-          if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] ----------------------------------------`)
-          if (GIT_WATCHER_DEBUG) console.log(`[git-watcher] Polling for: "${projectPath}"`)
-
-          try {
-            // Get the current watcher from the Map (not from closure)
-            const storedWatcher = gitWatchers.get(projectPath)
-            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   storedWatcher exists: ${!!storedWatcher}`)
-            if (!storedWatcher) {
-              // Watcher was removed, clean up this interval
-              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   WARNING: Watcher not found in Map, clearing interval`)
-              if (watcherSet.pollingInterval) {
-                clearInterval(watcherSet.pollingInterval)
-              }
-              return
-            }
-
-            // Use git status --porcelain to detect ALL changes (staged, unstaged, untracked)
-            // Run git through wsl.exe with the Linux path (Windows CMD doesn't support UNC paths as cwd)
-            let hasChanged = false
-
-            try {
-              const linuxPath = pathAnalysis.linuxPath || PathService.toWslLinuxPath(projectPath)
-              const distro = pathAnalysis.wslDistro || PathService.getEnvironment().defaultWslDistro || 'Ubuntu'
-              const { stdout: currentStatus } = await execAsync(`wsl.exe -d ${distro} -e git -C "${linuxPath}" status --porcelain`, {
-                timeout: 5000,
-              })
-              const previousStatus = storedWatcher.lastGitStatus || ''
-              const currentChangedFiles = currentStatus.split('\n').filter(l => l).length
-              const previousChangedFiles = previousStatus.split('\n').filter(l => l).length
-
-              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   git status - previous: ${previousChangedFiles} files | current: ${currentChangedFiles} files`)
-
-              if (currentStatus !== previousStatus) {
-                if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   GIT STATUS CHANGED!`)
-                if (GIT_WATCHER_DEBUG && currentStatus.trim()) {
-                  console.log(`[git-watcher]   Current changes:\n${currentStatus.split('\n').slice(0, 5).join('\n')}${currentStatus.split('\n').length > 5 ? '\n    ... and more' : ''}`)
-                }
-                storedWatcher.lastGitStatus = currentStatus
-                hasChanged = true
-              }
-            } catch {
-              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   Error running git status`)
-              // Ignore errors - repo might be in the middle of an operation
-            }
-
-            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   hasChanged: ${hasChanged}`)
-            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   mainWindow exists: ${!!mainWindow}`)
-            if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   mainWindow.isDestroyed(): ${mainWindow?.isDestroyed()}`)
-
-            if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
-              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   >>> EMITTING git:changed event for: "${projectPath}"`)
-              mainWindow.webContents.send('git:changed', projectPath)
-            } else if (hasChanged) {
-              if (GIT_WATCHER_DEBUG) console.log(`[git-watcher]   WARNING: hasChanged is true but cannot emit (mainWindow issue)`)
-            }
-          } catch (err) {
-            console.error('[git-watcher] CRITICAL ERROR in polling body:', err)
-          }
-        }, 3000) // Poll every 3 seconds
-
-        return { success: true, isPolling: true }
-      }
-
-      // Non-WSL path: use fs.watch
 
       // Notify function with debouncing
       const notifyChange = () => {
@@ -716,7 +607,6 @@ export function registerGitHandlers(
               break
             }
 
-            case 'wsl':
             case 'local-windows':
             case 'local-unix': {
               const fsPath = PathService.toFsPath(projectPath)

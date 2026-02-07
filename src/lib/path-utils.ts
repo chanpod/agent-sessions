@@ -6,15 +6,9 @@
 
 /**
  * Normalize path separators to forward slashes.
- * IMPORTANT: Preserves WSL UNC paths as-is (they must keep backslashes)
  */
 export function normalize(inputPath: string): string {
   if (!inputPath) return ''
-
-  // WSL UNC paths must keep their backslash format - don't normalize them
-  if (/^\\\\wsl[\$\.]/i.test(inputPath)) {
-    return inputPath
-  }
 
   return inputPath.replace(/\\/g, '/').replace(/\/+/g, '/')
 }
@@ -98,13 +92,6 @@ export function isSamePath(path1: string, path2: string): boolean {
   return normalize(path1) === normalize(path2)
 }
 
-/**
- * Detect if path is WSL UNC format
- */
-export function isWslUncPath(inputPath: string): boolean {
-  return /^\\\\wsl[\$\.]/.test(inputPath) || /^\/\/wsl[\$\.]/.test(inputPath)
-}
-
 export const PathUtils = {
   normalize,
   join,
@@ -113,6 +100,5 @@ export const PathUtils = {
   extname,
   isAbsolute,
   relative,
-  isSamePath,
-  isWslUncPath
+  isSamePath
 }

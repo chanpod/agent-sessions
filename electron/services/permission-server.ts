@@ -1,14 +1,11 @@
 import fs from 'fs'
 import path from 'path'
-import path_posix from 'path/posix'
-import { execFileSync } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import {
   PERMISSION_REQUEST_TIMEOUT_MS,
   PERMISSION_HOOK_FILENAME,
   PERMISSION_ALLOWLIST_FILENAME,
 } from '../constants.js'
-import { PathService } from '../utils/path-service.js'
 import type {
   PermissionRequest,
   PermissionResponse,
@@ -19,56 +16,6 @@ import type {
 const IPC_DIR_NAME = '.permission-ipc'
 const HEARTBEAT_FILENAME = '.active'
 const HEARTBEAT_INTERVAL_MS = 3000
-
-/**
- * Check if a path is a Linux-style path (starts with /).
- * On Windows, this means the path lives inside WSL and needs special handling:
- * - posix path.join (not Windows backslash join)
- * - UNC conversion for Windows fs APIs
- * - Pass-through for wsl.exe commands
- * Note: UNC WSL paths (\\wsl$\...) work with normal Windows path.join.
- */
-function isLinuxPath(p: string): boolean {
-  return p.startsWith('/')
-}
-
-/**
- * Join path segments using the correct separator.
- * Linux paths (WSL projects) use posix join; Windows paths use win32 join.
- */
-function joinPath(...segments: string[]): string {
-  if (segments.length > 0 && isLinuxPath(segments[0])) {
-    return path_posix.join(...segments)
-  }
-  return path.join(...segments)
-}
-
-/**
- * Get the parent directory using the correct separator.
- */
-function dirnamePath(p: string): string {
-  if (isLinuxPath(p)) {
-    return path_posix.dirname(p)
-  }
-  return path.dirname(p)
-}
-
-/**
- * Convert a path to a form that Windows fs APIs can access.
- * - Windows paths (C:\...) are returned as-is.
- * - Linux paths (/home/...) are converted to WSL UNC paths (\\wsl$\Distro\...).
- */
-function toAccessiblePath(inputPath: string): string {
-  if (process.platform !== 'win32' || !isLinuxPath(inputPath)) {
-    return inputPath
-  }
-  // Convert Linux path to UNC so Windows fs APIs can access WSL filesystem
-  const env = PathService.getEnvironment()
-  if (env.wslAvailable && env.defaultWslDistro) {
-    return PathService.toWslUncPath(inputPath, env.defaultWslDistro)
-  }
-  return inputPath
-}
 
 export class PermissionServer {
   private pending = new Map<string, PendingPermission>()
@@ -93,12 +40,12 @@ export class PermissionServer {
       console.warn('[PermissionServer] watchProject called with empty path, skipping')
       return
     }
-    const ipcDir = joinPath(projectPath, '.claude', IPC_DIR_NAME)
+    const ipcDir = path.join(projectPath, '.claude', IPC_DIR_NAME)
 
     if (this.watchedDirs.has(ipcDir)) return
 
-    if (!fs.existsSync(toAccessiblePath(ipcDir))) {
-      mkdirForWsl(ipcDir)
+    if (!fs.existsSync(ipcDir)) {
+      fs.mkdirSync(ipcDir, { recursive: true })
     }
 
     this.cleanIpcDir(ipcDir)
@@ -138,7 +85,7 @@ export class PermissionServer {
     if (!pending) return false
 
     if (alwaysAllow && response.decision === 'allow') {
-      const projectPath = dirnamePath(dirnamePath(pending.ipcDir))
+      const projectPath = path.dirname(path.dirname(pending.ipcDir))
       PermissionServer.addToAllowlist(projectPath, pending.request.tool_name)
     }
 
@@ -158,7 +105,7 @@ export class PermissionServer {
   private scanDirectory(ipcDir: string): void {
     let files: string[]
     try {
-      files = fs.readdirSync(toAccessiblePath(ipcDir))
+      files = fs.readdirSync(ipcDir)
     } catch {
       return
     }
@@ -169,23 +116,21 @@ export class PermissionServer {
       const id = file.replace('.request', '')
       if (this.pending.has(id)) continue
 
-      const requestPath = joinPath(ipcDir, file)
+      const requestPath = path.join(ipcDir, file)
       try {
         // Skip and clean up stale request files that outlived the timeout.
         // These are orphans from crashed hooks or failed cleanup that would
         // otherwise be re-queued every 200ms, causing an infinite permission loop.
-        const stat = fs.statSync(toAccessiblePath(requestPath))
+        const stat = fs.statSync(requestPath)
         const ageMs = Date.now() - stat.mtimeMs
         if (ageMs > PERMISSION_REQUEST_TIMEOUT_MS + 5000) {
-          try { unlinkForWsl(requestPath) } catch {}
-          try { unlinkForWsl(joinPath(ipcDir, `${id}.response`)) } catch {}
+          try { fs.unlinkSync(requestPath) } catch {}
+          try { fs.unlinkSync(path.join(ipcDir, `${id}.response`)) } catch {}
           console.log(`[PermissionServer] Cleaned up stale request ${id} (age: ${Math.round(ageMs / 1000)}s)`)
           continue
         }
 
-        // Request files are written by the hook running in WSL/Git Bash.
-        // Read via WSL to avoid NTFS/ext4 metadata cross-boundary issues.
-        const raw = readFileFromWsl(requestPath)
+        const raw = fs.readFileSync(requestPath, 'utf8')
         const request: PermissionRequest = JSON.parse(raw)
         this.handleRequest(id, request, ipcDir)
       } catch (err) {
@@ -196,7 +141,7 @@ export class PermissionServer {
 
   private handleRequest(id: string, request: PermissionRequest, ipcDir: string): void {
     // Check allowlist — auto-resolve without showing UI
-    const projectPath = dirnamePath(dirnamePath(ipcDir))
+    const projectPath = path.dirname(path.dirname(ipcDir))
     if (PermissionServer.isToolAllowed(projectPath, request.tool_name)) {
       this.writeResponse(ipcDir, id, { decision: 'allow', reason: 'Always allowed' })
       console.log(`[PermissionServer] Auto-allowed ${id}: ${request.tool_name} (allowlisted)`)
@@ -239,13 +184,10 @@ export class PermissionServer {
   }
 
   private writeResponse(ipcDir: string, id: string, response: PermissionResponse): void {
-    const responsePath = joinPath(ipcDir, `${id}.response`)
-    const requestPath = joinPath(ipcDir, `${id}.request`)
+    const responsePath = path.join(ipcDir, `${id}.response`)
+    const requestPath = path.join(ipcDir, `${id}.request`)
     try {
-      // Must use writeFileForWsl so the hook script (running in WSL/Git Bash)
-      // can read the response. fs.writeFileSync creates NTFS metadata that WSL
-      // cannot read, causing permission requests to time out.
-      writeFileForWsl(responsePath, JSON.stringify(response))
+      fs.writeFileSync(responsePath, JSON.stringify(response), 'utf8')
     } catch (err) {
       console.error(`[PermissionServer] Failed to write response ${id}:`, err)
     }
@@ -253,8 +195,8 @@ export class PermissionServer {
     // The hook also tries to delete both files, but if it crashes or
     // fails to clean up, this prevents an infinite permission loop.
     try {
-      if (fs.existsSync(toAccessiblePath(requestPath))) {
-        unlinkForWsl(requestPath)
+      if (fs.existsSync(requestPath)) {
+        fs.unlinkSync(requestPath)
       }
     } catch {
       // Best-effort; hook cleanup is the secondary safeguard
@@ -263,9 +205,9 @@ export class PermissionServer {
 
   private writeHeartbeats(): void {
     for (const ipcDir of this.watchedDirs) {
-      const heartbeatPath = joinPath(ipcDir, HEARTBEAT_FILENAME)
+      const heartbeatPath = path.join(ipcDir, HEARTBEAT_FILENAME)
       try {
-        writeFileForWsl(heartbeatPath, String(Date.now()))
+        fs.writeFileSync(heartbeatPath, String(Date.now()), 'utf8')
       } catch (err) {
         console.error(`[PermissionServer] Failed to write heartbeat to ${ipcDir}:`, err)
       }
@@ -273,33 +215,21 @@ export class PermissionServer {
   }
 
   private removeHeartbeat(ipcDir: string): void {
-    const heartbeatPath = joinPath(ipcDir, HEARTBEAT_FILENAME)
+    const heartbeatPath = path.join(ipcDir, HEARTBEAT_FILENAME)
     try {
-      if (fs.existsSync(toAccessiblePath(heartbeatPath))) {
-        unlinkForWsl(heartbeatPath)
+      if (fs.existsSync(heartbeatPath)) {
+        fs.unlinkSync(heartbeatPath)
       }
     } catch {}
   }
 
   private cleanIpcDir(ipcDir: string): void {
-    const accessibleDir = toAccessiblePath(ipcDir)
-    if (!fs.existsSync(accessibleDir)) return
+    if (!fs.existsSync(ipcDir)) return
     try {
-      const files = fs.readdirSync(accessibleDir)
+      const files = fs.readdirSync(ipcDir)
       if (files.length === 0) return
-      // Batch-delete all files in one WSL call to avoid N subprocess spawns
-      if (process.platform === 'win32') {
-        const wslDir = toWslPath(ipcDir)
-        const wslExe = 'C:\\Windows\\System32\\wsl.exe'
-        try {
-          execFileSync(wslExe, ['bash', '-c', `rm -f "${wslDir}"/*`], { timeout: 5000 })
-          return
-        } catch {
-          // Fall through to per-file cleanup
-        }
-      }
       for (const file of files) {
-        try { fs.unlinkSync(joinPath(accessibleDir, file)) } catch {}
+        try { fs.unlinkSync(path.join(ipcDir, file)) } catch {}
       }
     } catch {}
   }
@@ -320,19 +250,19 @@ export class PermissionServer {
   }
 
   static getIpcDirPath(projectPath: string): string {
-    return joinPath(projectPath, '.claude', IPC_DIR_NAME)
+    return path.join(projectPath, '.claude', IPC_DIR_NAME)
   }
 
   static isHookInstalled(projectPath: string): boolean {
     if (!projectPath) return false
     // Check both local (preferred) and repo-level settings
-    const localSettingsPath = joinPath(projectPath, '.claude', 'settings.local.json')
-    const repoSettingsPath = joinPath(projectPath, '.claude', 'settings.json')
+    const localSettingsPath = path.join(projectPath, '.claude', 'settings.local.json')
+    const repoSettingsPath = path.join(projectPath, '.claude', 'settings.json')
 
     for (const settingsPath of [localSettingsPath, repoSettingsPath]) {
-      if (!fs.existsSync(toAccessiblePath(settingsPath))) continue
+      if (!fs.existsSync(settingsPath)) continue
       try {
-        const settings = JSON.parse(readFileFromWsl(settingsPath))
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
         const matcherGroups = settings.hooks?.PreToolUse
         if (!Array.isArray(matcherGroups)) continue
         if (matcherGroups.some((group: { hooks?: Array<{ command?: string }> }) =>
@@ -348,9 +278,9 @@ export class PermissionServer {
   }
 
   static readAllowlist(projectPath: string): string[] {
-    const allowlistPath = joinPath(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
     try {
-      const data = JSON.parse(readFileFromWsl(allowlistPath))
+      const data = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'))
       return Array.isArray(data) ? data : []
     } catch {
       return []
@@ -365,8 +295,8 @@ export class PermissionServer {
     const allowlist = PermissionServer.readAllowlist(projectPath)
     if (allowlist.includes(toolName)) return
     allowlist.push(toolName)
-    const allowlistPath = joinPath(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
-    writeFileForWsl(allowlistPath, JSON.stringify(allowlist, null, 2))
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    fs.writeFileSync(allowlistPath, JSON.stringify(allowlist, null, 2), 'utf8')
     console.log(`[PermissionServer] Added "${toolName}" to allowlist for ${projectPath}`)
   }
 
@@ -379,34 +309,34 @@ export class PermissionServer {
       return { success: false, error: `Hook script not found: ${bundledScriptPath}` }
     }
 
-    const claudeDir = joinPath(projectPath, '.claude')
-    const hooksDir = joinPath(claudeDir, 'hooks')
-    const settingsPath = joinPath(claudeDir, 'settings.local.json')
-    const repoSettingsPath = joinPath(claudeDir, 'settings.json')
-    const ipcDir = joinPath(claudeDir, IPC_DIR_NAME)
-    const installedScriptPath = joinPath(hooksDir, PERMISSION_HOOK_FILENAME)
+    const claudeDir = path.join(projectPath, '.claude')
+    const hooksDir = path.join(claudeDir, 'hooks')
+    const settingsPath = path.join(claudeDir, 'settings.local.json')
+    const repoSettingsPath = path.join(claudeDir, 'settings.json')
+    const ipcDir = path.join(claudeDir, IPC_DIR_NAME)
+    const installedScriptPath = path.join(hooksDir, PERMISSION_HOOK_FILENAME)
 
-    // Ensure directories exist (use WSL-aware creation so permissions are correct)
+    // Ensure directories exist
     for (const dir of [claudeDir, hooksDir, ipcDir]) {
-      if (!fs.existsSync(toAccessiblePath(dir))) {
-        mkdirForWsl(dir)
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
       }
     }
 
     // Copy hook script into the project's .claude/hooks/ directory
     const scriptContent = fs.readFileSync(bundledScriptPath, 'utf8')
-    writeFileForWsl(installedScriptPath, scriptContent)
+    fs.writeFileSync(installedScriptPath, scriptContent, 'utf8')
 
-    // Use relative paths so the command works in both Git Bash and WSL
+    // Use relative paths so the command works across environments
     const relativeScript = `.claude/hooks/${PERMISSION_HOOK_FILENAME}`
     const relativeIpcDir = `.claude/${IPC_DIR_NAME}`
     const expectedCommand = `node "${relativeScript}" "${relativeIpcDir}"`
 
     // Read existing local settings or start fresh
     let settings: Record<string, unknown> = {}
-    if (fs.existsSync(toAccessiblePath(settingsPath))) {
+    if (fs.existsSync(settingsPath)) {
       try {
-        settings = JSON.parse(readFileFromWsl(settingsPath))
+        settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
       } catch {
         // Corrupted file - start fresh
       }
@@ -449,7 +379,7 @@ export class PermissionServer {
     filtered.push(matcherGroup)
     hooks.PreToolUse = filtered
 
-    writeFileForWsl(settingsPath, JSON.stringify(settings, null, 2))
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8')
 
     // Migrate: remove hook from repo-level settings.json if present
     PermissionServer.removeHookFromSettings(repoSettingsPath)
@@ -463,10 +393,10 @@ export class PermissionServer {
    * Used to migrate hooks from repo-level settings.json to local settings.
    */
   private static removeHookFromSettings(settingsPath: string): void {
-    if (!fs.existsSync(toAccessiblePath(settingsPath))) return
+    if (!fs.existsSync(settingsPath)) return
 
     try {
-      const settings = JSON.parse(readFileFromWsl(settingsPath))
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
       const matcherGroups = settings.hooks?.PreToolUse
       if (!Array.isArray(matcherGroups)) return
 
@@ -488,115 +418,10 @@ export class PermissionServer {
         delete settings.hooks
       }
 
-      writeFileForWsl(settingsPath, JSON.stringify(settings, null, 2))
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8')
       console.log(`[PermissionServer] Removed hook from ${settingsPath} (migrated to local)`)
     } catch {
       // Best-effort cleanup
     }
   }
-}
-
-/**
- * Convert any path to a form usable inside WSL's bash.
- * - Linux paths (/home/...) are already valid — return as-is.
- * - WSL UNC paths (\\wsl$\Distro\...) are converted to their Linux path.
- * - Windows paths (C:\...) are converted to /mnt/c/... form.
- */
-function toWslPath(inputPath: string): string {
-  if (isLinuxPath(inputPath)) {
-    return inputPath
-  }
-  // WSL UNC path → extract the Linux portion
-  const uncMatch = inputPath.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i)
-  if (uncMatch) {
-    return (uncMatch[1] || '/').replace(/\\/g, '/')
-  }
-  // Windows drive path → /mnt/<drive>/...
-  const drive = inputPath[0].toLowerCase()
-  return `/mnt/${drive}/${inputPath.slice(3).replace(/\\/g, '/')}`
-}
-
-/**
- * On Windows, files written by Electron's fs.writeFileSync get NTFS metadata
- * that WSL2 cannot read (shows as ??????? permissions). Since the Claude CLI
- * runs inside WSL, it must be able to read settings.json.
- * Write via wsl.exe so the file is created from the WSL context with proper permissions.
- */
-function writeFileForWsl(inputPath: string, content: string): void {
-  if (process.platform === 'win32') {
-    const wslPath = toWslPath(inputPath)
-    // Use full path to wsl.exe - GUI apps don't inherit terminal PATH
-    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
-    try {
-      // Remove existing file first to clear any broken NTFS metadata
-      // that prevents WSL from reading files written by Windows APIs
-      // Use execFileSync to bypass cmd.exe — execSync passes through cmd.exe
-      // which interprets &&, >, and other shell metacharacters before WSL sees them
-      execFileSync(wslExe, ['bash', '-c', `rm -f "${wslPath}" && cat > "${wslPath}"`], {
-        input: content,
-        timeout: 10000,
-      })
-      return
-    } catch (err) {
-      console.warn('[PermissionServer] WSL write failed, falling back to fs:', err)
-    }
-  }
-  fs.writeFileSync(inputPath, content, 'utf8')
-}
-
-/**
- * Create a directory via WSL so it has proper Linux permissions.
- * Directories created by Windows fs.mkdirSync get NTFS metadata
- * that can cause WSL permission issues.
- */
-function mkdirForWsl(inputPath: string): void {
-  if (process.platform === 'win32') {
-    const wslPath = toWslPath(inputPath)
-    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
-    try {
-      execFileSync(wslExe, ['bash', '-c', `mkdir -p "${wslPath}"`], { timeout: 10000 })
-      return
-    } catch {
-      // Fall back to native fs
-    }
-  }
-  fs.mkdirSync(inputPath, { recursive: true })
-}
-
-/**
- * Delete a file via WSL. Files created by WSL may have metadata
- * that Windows fs.unlinkSync can't handle cleanly.
- */
-function unlinkForWsl(inputPath: string): void {
-  if (process.platform === 'win32') {
-    const wslPath = toWslPath(inputPath)
-    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
-    try {
-      execFileSync(wslExe, ['bash', '-c', `rm -f "${wslPath}"`], { timeout: 5000 })
-      return
-    } catch {
-      // Fall back to native fs
-    }
-  }
-  try { fs.unlinkSync(inputPath) } catch {}
-}
-
-/**
- * Read a file via WSL. Files written by WSL processes may have ext4 metadata
- * that Windows fs.readFileSync can't read cleanly across the boundary.
- */
-function readFileFromWsl(inputPath: string): string {
-  if (process.platform === 'win32') {
-    const wslPath = toWslPath(inputPath)
-    const wslExe = 'C:\\Windows\\System32\\wsl.exe'
-    try {
-      return execFileSync(wslExe, ['bash', '-c', `cat "${wslPath}"`], {
-        timeout: 5000,
-        encoding: 'utf8',
-      })
-    } catch {
-      // Fall back to native fs
-    }
-  }
-  return fs.readFileSync(inputPath, 'utf8')
 }

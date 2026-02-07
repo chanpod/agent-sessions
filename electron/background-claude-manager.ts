@@ -5,7 +5,6 @@
  */
 
 import { PtyManager } from './pty-manager.js'
-import { PathService } from './utils/path-service.js'
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
@@ -332,7 +331,6 @@ export class BackgroundClaudeManager {
     const shellLower = shell.toLowerCase()
     const isCmd = shellLower.includes('cmd.exe')
     const isPowerShell = shellLower.includes('powershell') || shellLower.includes('pwsh')
-    const isWsl = shellLower.includes('wsl')
 
     const stderrFile = outputFile.replace('-output.json', '-stderr.txt')
     let claudeArgs = skipPermissions ? '-p --dangerously-skip-permissions' : ''
@@ -345,12 +343,6 @@ export class BackgroundClaudeManager {
     } else if (isPowerShell) {
       // PowerShell: redirect stderr
       return `Get-Content "${promptFile}" | claude ${claudeArgs} > "${outputFile}" 2> "${stderrFile}"\r\n`
-    } else if (isWsl) {
-      // Convert Windows paths to WSL paths
-      const wslPrompt = PathService.toWslLinuxPath(promptFile)
-      const wslOutput = PathService.toWslLinuxPath(outputFile)
-      const wslStderr = PathService.toWslLinuxPath(stderrFile)
-      return `cat "${wslPrompt}" | claude ${claudeArgs} > "${wslOutput}" 2> "${wslStderr}"\n`
     } else {
       // Unix/Mac/Git Bash
       return `cat "${promptFile}" | claude ${claudeArgs} > "${outputFile}" 2> "${stderrFile}"\n`

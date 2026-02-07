@@ -380,7 +380,7 @@ const electronAPI = {
       ipcRenderer.invoke('cli:detect', toolId, projectPath, projectId),
     install: (agentId: string, method: 'npm' | 'native' | 'brew'): Promise<{success: boolean; output: string; error?: string}> =>
       ipcRenderer.invoke('cli:install', agentId, method),
-    getPlatform: (): Promise<'windows' | 'wsl' | 'macos' | 'linux'> =>
+    getPlatform: (): Promise<'windows' | 'macos' | 'linux'> =>
       ipcRenderer.invoke('cli:get-platform'),
     checkUpdate: (agentId: string, currentVersion: string | null): Promise<UpdateCheckResult> =>
       ipcRenderer.invoke('cli:check-update', agentId, currentVersion),

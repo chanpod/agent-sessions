@@ -5,7 +5,7 @@ interface AgentInstallModalProps {
   isOpen: boolean;
   onClose: () => void;
   uninstalledAgents: Array<{ id: string; name: string }>;
-  platform: 'windows' | 'wsl' | 'macos' | 'linux';
+  platform: 'windows' | 'macos' | 'linux';
   onInstallComplete: () => void;
   onInstall: (agentId: string, method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>;
 }
@@ -29,7 +29,7 @@ const AGENT_ICONS: Record<string, React.ReactNode> = {
 
 const getInstallMethods = (
   agentId: string,
-  platform: 'windows' | 'wsl' | 'macos' | 'linux'
+  platform: 'windows' | 'macos' | 'linux'
 ): InstallMethod[] => {
   const isMac = platform === 'macos';
 

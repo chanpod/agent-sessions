@@ -8,7 +8,7 @@ interface AgentUpdateDialogProps {
   agent: CliToolDetectionResult;
   updateInfo: UpdateCheckResult | null;
   isCheckingUpdate: boolean;
-  platform: 'windows' | 'wsl' | 'macos' | 'linux';
+  platform: 'windows' | 'macos' | 'linux';
   onRefresh: () => Promise<void>;
   onInstall: (method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>;
   onInstallComplete: () => void;
@@ -50,7 +50,7 @@ function getMethodBadgeClass(method: 'npm' | 'native' | 'brew' | 'unknown'): str
 function getUpdateMethods(
   agentId: string,
   currentMethod: 'npm' | 'native' | 'brew' | 'unknown',
-  platform: 'windows' | 'wsl' | 'macos' | 'linux'
+  platform: 'windows' | 'macos' | 'linux'
 ): Array<{ id: 'npm' | 'native' | 'brew'; label: string; command: string; recommended: boolean; warning?: string }> {
   const methods: Array<{ id: 'npm' | 'native' | 'brew'; label: string; command: string; recommended: boolean; warning?: string }> = [];
 

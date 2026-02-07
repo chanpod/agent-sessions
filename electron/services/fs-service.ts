@@ -1,17 +1,13 @@
 import { ipcMain } from 'electron'
 import fs from 'fs'
-import { exec } from 'child_process'
-import { promisify } from 'util'
 import type { SSHManager } from '../ssh-manager.js'
 import { execInContextAsync } from '../main.js'
 import { PathService } from '../utils/path-service.js'
 
-const execAsync = promisify(exec)
-
 /**
  * Project type for search operations
  */
-type ProjectType = 'ssh' | 'wsl' | 'windows-local'
+type ProjectType = 'ssh' | 'local'
 
 /**
  * Determine the project type based on path and SSH connection status
@@ -25,13 +21,8 @@ async function getProjectType(projectPath: string, projectId: string | undefined
     }
   }
 
-  // Check WSL
-  if (PathService.isWslPath(projectPath)) {
-    return 'wsl'
-  }
-
-  // Default to Windows local
-  return 'windows-local'
+  // Default to local
+  return 'local'
 }
 
 /** Default directories to exclude from search */
@@ -243,7 +234,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         }
       }
 
-      // Local file system path (local-windows, local-unix, or wsl)
+      // Local file system path (local-windows or local-unix)
       const fsPath = PathService.toFsPath(filePath)
       console.log('[fs:readFile] Resolved path:', fsPath)
       console.log('[fs:readFile] Path exists:', fs.existsSync(fsPath))
@@ -314,7 +305,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         }
       }
 
-      // Local file system path (local-windows, local-unix, or wsl)
+      // Local file system path (local-windows or local-unix)
       const fsPath = PathService.toFsPath(filePath)
       console.log('[fs:writeFile] Resolved path:', fsPath)
       fs.writeFileSync(fsPath, content, 'utf-8')
@@ -387,7 +378,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         }
       }
 
-      // Local file system path (local-windows, local-unix, or wsl)
+      // Local file system path (local-windows or local-unix)
       const fsPath = PathService.toFsPath(dirPath)
       console.log('[fs:listDir] Resolved path:', fsPath)
 
@@ -425,7 +416,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
   })
 
   // Search files content (using grep, ripgrep, or Node.js fallback)
-  // Handles three project types: SSH, WSL, and Windows local
+  // Handles two project types: SSH and local
   ipcMain.handle('fs:searchContent', async (_event, projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean; userExclusions?: string[] }, projectId?: string) => {
     try {
       console.log('[fs:searchContent] Searching in:', projectPath, 'query:', query, 'options:', options)
@@ -437,34 +428,22 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
       const projectType = await getProjectType(projectPath, projectId, sshManager)
       console.log('[fs:searchContent] Project type:', projectType)
 
-      // For Windows local projects, use Node.js-based search (grep/rg not available)
-      if (projectType === 'windows-local') {
-        console.log('[fs:searchContent] Using Node.js search for Windows local project')
+      // For local projects, use Node.js-based search (grep/rg not available)
+      if (projectType === 'local') {
+        console.log('[fs:searchContent] Using Node.js search for local project')
         const results = await searchWithNodeJs(projectPath, query, options)
         console.log(`[fs:searchContent] Found ${results.length} results`)
         return { success: true, results }
       }
 
-      // For SSH and WSL projects, use grep/ripgrep via shell commands
+      // For SSH projects, use grep/ripgrep via shell commands
       const results: SearchResult[] = []
-
-      // Detect if this is a WSL path and convert to Linux format for ripgrep/grep
-      const pathInfo = PathService.analyzePath(projectPath)
-      const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
-      const searchPath = isWsl && pathInfo.linuxPath ? pathInfo.linuxPath : projectPath
-
-      console.log('[fs:searchContent] Path info:', pathInfo, 'searchPath:', searchPath)
 
       // Check if ripgrep is available (faster and better)
       let useRipgrep = false
       try {
         if (projectType === 'ssh' && projectId && sshManager) {
           await sshManager.execViaProjectMaster(projectId, 'which rg')
-          useRipgrep = true
-        } else if (projectType === 'wsl') {
-          // For WSL, check inside WSL environment
-          const distroArg = pathInfo.wslDistro ? `-d ${pathInfo.wslDistro} ` : ''
-          await execAsync(`wsl ${distroArg}which rg`)
           useRipgrep = true
         }
       } catch {
@@ -498,12 +477,9 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         // Escape query for shell (escapeForBash returns the string wrapped in single quotes)
         const escapedQuery = PathService.escapeForBash(query)
         // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
-        // Using double quotes around the path would get corrupted by execInContextAsync's quote escaping for WSL.
         grepCmd = `rg ${flags.join(' ')} ${escapedQuery} .`
       } else {
         // Fallback to grep
-        // Build exclude-dir flags separately to avoid brace expansion issues when command
-        // is passed through WSL bash -c "..." (braces get interpreted by bash)
         const excludeFlags = excludeDirList.map(dir => `--exclude-dir=${dir}`).join(' ')
         // Add user glob pattern exclusions (grep uses --exclude for file patterns)
         const excludePatternFlags = userExcludePatterns.map(p => `--exclude='${p}'`).join(' ')
@@ -517,7 +493,6 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         // Escape query for shell (escapeForBash returns the string wrapped in single quotes)
         const escapedQuery = PathService.escapeForBash(query)
         // Use '.' as the search path since execInContextAsync already cd's to the correct directory.
-        // Using double quotes around the path would get corrupted by execInContextAsync's quote escaping for WSL.
         grepCmd = `grep ${flags.join(' ')} ${escapedQuery} . || true`
       }
 
@@ -528,7 +503,7 @@ export function registerFsHandlers(sshManager: SSHManager | null) {
         projectId
       })
 
-      // Execute search command using execInContextAsync which handles SSH/WSL routing
+      // Execute search command using execInContextAsync which handles SSH routing
       let output = ''
       try {
         output = await execInContextAsync(grepCmd, projectPath, projectId)

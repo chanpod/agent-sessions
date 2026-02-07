@@ -294,7 +294,7 @@ export interface ElectronAPI {
   cli: {
     detectAll: (projectPath: string, projectId?: string, forceRefresh?: boolean) => Promise<AllCliToolsResult>
     detect: (toolId: string, projectPath: string, projectId?: string) => Promise<CliToolDetectionResult>
-    getPlatform: () => Promise<'windows' | 'wsl' | 'macos' | 'linux'>
+    getPlatform: () => Promise<'windows' | 'macos' | 'linux'>
     install: (agentId: string, method: 'npm' | 'native' | 'brew') => Promise<{ success: boolean; output: string }>
     checkUpdate: (agentId: string, currentVersion: string | null) => Promise<UpdateCheckResult>
     checkUpdates: (agents: Array<{ id: string; version: string | null }>) => Promise<UpdateCheckResult[]>

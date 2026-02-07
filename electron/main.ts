@@ -24,12 +24,7 @@ import {
   getErrorMessage,
   isExecError
 } from './types/index.js'
-import {
-  convertToWslUncPath,
-  getWslDistros,
-  buildWslCommand,
-  type WslPathInfo
-} from './utils/wsl-utils.js'
+
 import { PathService, getPlatformForInstall, type ExecutionContext } from './utils/path-service.js'
 import {
   detectCliTool,
@@ -68,20 +63,9 @@ interface ShellInfo {
 
 // ScriptInfo and PackageScripts interfaces moved to services/package-scripts.ts
 
-// Execute a command in the appropriate context (local, WSL, or SSH)
+// Execute a command in the appropriate context (local or SSH)
 // This is the main abstraction that routes commands correctly
 function execInContext(command: string, projectPath: string, options: { encoding: 'utf-8' } = { encoding: 'utf-8' }): string {
-  const pathInfo = PathService.analyzePath(projectPath)
-  const isWsl = pathInfo.type === 'wsl-unc' || pathInfo.type === 'wsl-linux'
-
-  if (process.platform === 'win32' && isWsl) {
-    const wslCommand = buildWslCommand(command, projectPath, { isWslPath: isWsl, linuxPath: pathInfo.linuxPath, distro: pathInfo.wslDistro })
-    return execSync(wslCommand.cmd, {
-      ...options,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-  }
-
   return execSync(command, {
     cwd: projectPath,
     ...options,
@@ -89,7 +73,7 @@ function execInContext(command: string, projectPath: string, options: { encoding
   })
 }
 
-// Execute a command asynchronously in the appropriate context (local, WSL, or SSH)
+// Execute a command asynchronously in the appropriate context (local or SSH)
 // This automatically detects and routes to the correct execution method using PathService
 export async function execInContextAsync(command: string, projectPath: string, projectId?: string): Promise<string> {
   // Determine execution context using PathService
@@ -114,28 +98,6 @@ export async function execInContextAsync(command: string, projectPath: string, p
         console.error(`[execInContextAsync] SSH command failed:`, error)
         throw new Error(`SSH command failed: ${getErrorMessage(error)}`)
       }
-    }
-
-    case 'wsl': {
-      // Use wsl.exe for WSL paths
-      return new Promise((resolve, reject) => {
-        const pathInfo = PathService.analyzePath(projectPath)
-        const wslCommand = buildWslCommand(command, projectPath, {
-          isWslPath: true,
-          linuxPath: pathInfo.linuxPath,
-          distro: pathInfo.wslDistro
-        })
-
-        exec(wslCommand.cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-          if (error) {
-            const execError = error as ExecError
-            console.error(`[execInContextAsync] WSL command failed: ${command.substring(0, 50)}...`, execError.message)
-            reject(error)
-          } else {
-            resolve(stdout)
-          }
-        })
-      })
     }
 
     case 'local-windows':
@@ -663,20 +625,6 @@ ipcMain.handle('system:get-shells', async (_event, projectPath?: string) => {
       }
     }
 
-    // WSL - list each distro separately
-    const distros = getWslDistros()
-    for (const distro of distros) {
-      shells.push({ name: `WSL (${distro})`, path: `wsl.exe -d ${distro}` })
-    }
-    // If no specific distros but WSL is available, add generic WSL option
-    if (distros.length === 0) {
-      try {
-        execSync('wsl --status', { stdio: 'ignore' })
-        shells.push({ name: 'WSL', path: 'wsl.exe' })
-      } catch {
-        // WSL not available
-      }
-    }
   } else {
     // Unix-like shells
     const unixShells: ShellInfo[] = [
@@ -695,11 +643,6 @@ ipcMain.handle('system:get-shells', async (_event, projectPath?: string) => {
         addedNames.add(shell.name)
       }
     }
-  }
-
-  // Filter shells for WSL projects - only show WSL shells
-  if (process.platform === 'win32' && PathService.isWslPath(projectPath)) {
-    return shells.filter(shell => shell.name.includes('WSL'))
   }
 
   return shells
@@ -747,7 +690,7 @@ ipcMain.handle('project:get-scripts', async (_event, projectPath: string, projec
       }
     }
 
-    // For local/WSL projects, use filesystem operations
+    // For local projects, use filesystem operations
     const fsPath = PathService.toFsPath(projectPath)
     return await getPackageScriptsLocal(fsPath, projectPath)
   } catch (err) {

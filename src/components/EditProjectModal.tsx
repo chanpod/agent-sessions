@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react'
-import { X, Folder } from 'lucide-react'
+import { X, Folder, Trash2 } from 'lucide-react'
 import { useProjectStore } from '../stores/project-store'
 import { useSSHStore } from '../stores/ssh-store'
 
 interface EditProjectModalProps {
   projectId: string
   onClose: () => void
+  onDelete?: (projectId: string) => void
 }
 
-export function EditProjectModal({ projectId, onClose }: EditProjectModalProps) {
+export function EditProjectModal({ projectId, onClose, onDelete }: EditProjectModalProps) {
   const { projects, updateProject } = useProjectStore()
   const { connections } = useSSHStore()
 
@@ -19,6 +20,7 @@ export function EditProjectModal({ projectId, onClose }: EditProjectModalProps) 
   const [isSSHProject, setIsSSHProject] = useState(project?.isSSHProject || false)
   const [sshConnectionId, setSshConnectionId] = useState(project?.sshConnectionId || '')
   const [remotePath, setRemotePath] = useState(project?.remotePath || '')
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Update state when project changes
   useEffect(() => {
@@ -185,6 +187,44 @@ export function EditProjectModal({ projectId, onClose }: EditProjectModalProps) 
                 </p>
               </div>
             </>
+          )}
+
+          {/* Delete Section */}
+          {onDelete && (
+            <div className="border-t border-zinc-800 pt-4">
+              {confirmingDelete ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-red-400">
+                    This will permanently remove the project and all its terminals. This cannot be undone.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { onDelete(projectId); onClose() }}
+                      className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-500 text-white rounded-md transition-colors"
+                    >
+                      Delete Project
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDelete(false)}
+                      className="px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  className="flex items-center gap-2 text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete Project
+                </button>
+              )}
+            </div>
           )}
 
           {/* Actions */}

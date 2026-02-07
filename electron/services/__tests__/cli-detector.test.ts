@@ -30,15 +30,9 @@ vi.mock('../../utils/path-service.js', () => ({
   },
 }))
 
-// Mock wsl-utils
-vi.mock('../../utils/wsl-utils.js', () => ({
-  buildWslCommand: vi.fn(),
-}))
-
 // Import mocked modules
 import { exec } from 'child_process'
 import { PathService } from '../../utils/path-service.js'
-import { buildWslCommand } from '../../utils/wsl-utils.js'
 
 // Type for exec mock
 type ExecCallback = (error: Error | null, result?: { stdout: string; stderr: string }) => void
@@ -285,69 +279,6 @@ describe('CLI Detector Service', () => {
         const result = await detectCliTool(CODEX_CLI, '/home/user/project')
 
         expect(result.installed).toBe(false)
-      })
-    })
-
-    describe('WSL context', () => {
-      beforeEach(() => {
-        setPlatform('win32')
-        vi.mocked(PathService.getExecutionContext).mockResolvedValue('wsl')
-        vi.mocked(PathService.analyzePath).mockReturnValue({
-          type: 'wsl-linux',
-          original: '/home/user/project',
-          normalized: '/home/user/project',
-          isAbsolute: true,
-          linuxPath: '/home/user/project',
-        })
-        vi.mocked(buildWslCommand).mockImplementation((cmd) => ({
-          cmd: `wsl bash -c "${cmd}"`,
-          cwd: undefined,
-        }))
-      })
-
-      it('should detect tool in WSL environment', async () => {
-        mockExecByCommand({
-          'wsl bash': { stdout: 'claude version 1.2.0\n' },
-        })
-
-        // Reset mock for specific WSL test
-        vi.mocked(buildWslCommand).mockImplementation((cmd) => ({
-          cmd: `wsl bash -c "${cmd}"`,
-          cwd: undefined,
-        }))
-
-        mockExecSuccess('claude version 1.2.0\n')
-
-        const result = await detectCliTool(CLAUDE_CLI, '/home/user/project')
-
-        expect(result.installed).toBe(true)
-        expect(result.version).toBe('1.2.0')
-      })
-
-      it('should use which command in WSL', async () => {
-        vi.mocked(buildWslCommand).mockImplementation((cmd) => ({
-          cmd: `wsl bash -c "${cmd}"`,
-          cwd: undefined,
-        }))
-
-        let callCount = 0
-        ;(exec as unknown as ExecMock).mockImplementation((cmd, _opts, callback) => {
-          if (typeof callback === 'function') {
-            callCount++
-            if (callCount === 1) {
-              // First call: version command fails
-              callback(new Error('command not found'))
-            } else {
-              // Second call: which succeeds
-              callback(null, { stdout: '/usr/local/bin/claude\n', stderr: '' })
-            }
-          }
-        })
-
-        const result = await detectCliTool(CLAUDE_CLI, '/home/user/project')
-
-        expect(result.installed).toBe(true)
-        expect(result.path).toBe('/usr/local/bin/claude')
       })
     })
 

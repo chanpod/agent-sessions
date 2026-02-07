@@ -38,7 +38,7 @@ export function AgentFooterToolbar({
   const [agents, setAgents] = useState<CliToolDetectionResult[]>([])
   const [loading, setLoading] = useState(false)
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false)
-  const [platform, setPlatform] = useState<'windows' | 'wsl' | 'macos' | 'linux'>('linux')
+  const [platform, setPlatform] = useState<'windows' | 'macos' | 'linux'>('linux')
   const [updateAvailable, setUpdateAvailable] = useState<Record<string, UpdateCheckResult>>({})
   const [checkingUpdate, setCheckingUpdate] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<CliToolDetectionResult | null>(null)

@@ -293,7 +293,7 @@ export function AgentTerminalsSection({
   const [updateAvailable, setUpdateAvailable] = useState<Record<string, UpdateCheckResult>>({})
   const [updateAgent, setUpdateAgent] = useState<CliToolDetectionResult | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState<string | null>(null)
-  const [platform, setPlatform] = useState<'windows' | 'wsl' | 'macos' | 'linux'>('linux')
+  const [platform, setPlatform] = useState<'windows' | 'macos' | 'linux'>('linux')
 
   // Modal state
   const [showLauncher, setShowLauncher] = useState(false)

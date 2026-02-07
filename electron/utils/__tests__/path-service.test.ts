@@ -8,8 +8,6 @@ import {
   analyzePath,
   toGitPath,
   toFsPath,
-  toWslUncPath,
-  toWslLinuxPath,
   toDisplayPath,
   toSshPath,
   join,
@@ -22,7 +20,6 @@ import {
   escapeForBash,
   escapeForCmd,
   escapeForPowerShell,
-  isWslPath,
   isWindowsPath,
   isAbsolutePath,
   isSamePath,
@@ -82,53 +79,6 @@ describe('path-service', () => {
       })
     })
 
-    describe('WSL UNC paths', () => {
-      it('detects \\\\wsl$ paths', () => {
-        const info = analyzePath('\\\\wsl$\\Ubuntu\\home\\user\\project')
-        expect(info.type).toBe('wsl-unc')
-        expect(info.wslDistro).toBe('Ubuntu')
-        expect(info.linuxPath).toBe('/home/user/project')
-        expect(info.normalized).toBe('/home/user/project')
-        expect(info.isAbsolute).toBe(true)
-      })
-
-      it('detects \\\\wsl.localhost paths', () => {
-        const info = analyzePath('\\\\wsl.localhost\\Debian\\home\\user')
-        expect(info.type).toBe('wsl-unc')
-        expect(info.wslDistro).toBe('Debian')
-        expect(info.linuxPath).toBe('/home/user')
-      })
-
-      it('handles root WSL paths', () => {
-        const info = analyzePath('\\\\wsl$\\Ubuntu')
-        expect(info.type).toBe('wsl-unc')
-        expect(info.wslDistro).toBe('Ubuntu')
-        expect(info.linuxPath).toBe('/')
-      })
-
-      it('detects mangled WSL paths with forward slashes (/wsl.localhost/...)', () => {
-        const info = analyzePath('/wsl.localhost/Ubuntu/home/user/project')
-        expect(info.type).toBe('wsl-unc')
-        expect(info.wslDistro).toBe('Ubuntu')
-        expect(info.linuxPath).toBe('/home/user/project')
-        expect(info.normalized).toBe('\\\\wsl$\\Ubuntu\\home\\user\\project')
-      })
-
-      it('detects mangled WSL paths with /wsl$/', () => {
-        const info = analyzePath('/wsl$/Debian/home/user')
-        expect(info.type).toBe('wsl-unc')
-        expect(info.wslDistro).toBe('Debian')
-        expect(info.linuxPath).toBe('/home/user')
-      })
-
-      it('handles mangled WSL root path', () => {
-        const info = analyzePath('/wsl.localhost/Ubuntu')
-        expect(info.type).toBe('wsl-unc')
-        expect(info.wslDistro).toBe('Ubuntu')
-        expect(info.linuxPath).toBe('/')
-      })
-    })
-
     describe('SSH remote paths', () => {
       it('detects user@host:path format', () => {
         const info = analyzePath('user@server:/home/user/project')
@@ -156,20 +106,12 @@ describe('path-service', () => {
     describe('Unix paths', () => {
       it('detects absolute Unix paths', () => {
         const info = analyzePath('/home/user/project')
-        // On Windows with WSL available, /home paths are detected as wsl-linux
-        // On Linux/macOS, they're detected as unix
-        const env = getEnvironment()
-        if (env.isWindows && env.wslAvailable) {
-          expect(info.type).toBe('wsl-linux')
-          expect(info.linuxPath).toBe('/home/user/project')
-        } else {
-          expect(info.type).toBe('unix')
-        }
+        expect(info.type).toBe('unix')
         expect(info.normalized).toBe('/home/user/project')
         expect(info.isAbsolute).toBe(true)
       })
 
-      it('does NOT treat macOS paths as WSL on any platform', () => {
+      it('detects macOS paths as unix', () => {
         const macPaths = [
           '/Users/foo/project',
           '/Applications/App.app',
@@ -181,7 +123,6 @@ describe('path-service', () => {
 
         for (const p of macPaths) {
           const info = analyzePath(p)
-          // Should be unix, not wsl-linux
           expect(info.type).toBe('unix')
           expect(info.isAbsolute).toBe(true)
         }
@@ -228,10 +169,6 @@ describe('path-service', () => {
       expect(toGitPath('src\\utils\\file.ts')).toBe('src/utils/file.ts')
     })
 
-    it('extracts Linux path from WSL UNC', () => {
-      expect(toGitPath('\\\\wsl$\\Ubuntu\\home\\user\\file.ts')).toBe('/home/user/file.ts')
-    })
-
     it('normalizes Windows paths', () => {
       expect(toGitPath('C:\\Users\\foo\\project\\src\\file.ts')).toBe('C:/Users/foo/project/src/file.ts')
     })
@@ -239,62 +176,16 @@ describe('path-service', () => {
     it('passes through Unix paths', () => {
       expect(toGitPath('/home/user/file.ts')).toBe('/home/user/file.ts')
     })
-
-    it('handles mangled WSL paths with forward slashes', () => {
-      expect(toGitPath('/wsl.localhost/Ubuntu/home/user/file.ts')).toBe('/home/user/file.ts')
-    })
   })
 
   describe('toFsPath', () => {
-    it('handles mangled WSL paths (forward slashes)', () => {
-      // This is the key bug fix - paths like /wsl.localhost/Ubuntu/... should convert to UNC
-      const result = toFsPath('/wsl.localhost/Ubuntu/home/user/project')
-      expect(result).toBe('\\\\wsl$\\Ubuntu\\home\\user\\project')
-    })
-
-    it('handles mangled WSL paths with /wsl$/', () => {
-      const result = toFsPath('/wsl$/Ubuntu/home/user/project')
-      expect(result).toBe('\\\\wsl$\\Ubuntu\\home\\user\\project')
-    })
-
-    it('passes through proper WSL UNC paths', () => {
-      const result = toFsPath('\\\\wsl$\\Ubuntu\\home\\user\\project')
-      expect(result).toBe('\\\\wsl$\\Ubuntu\\home\\user\\project')
-    })
-
     it('handles Windows paths', () => {
       const result = toFsPath('C:\\Users\\foo\\project')
       expect(result).toBe('C:\\Users\\foo\\project')
     })
   })
 
-  describe('toWslUncPath', () => {
-    it('converts Linux path to UNC', () => {
-      const result = toWslUncPath('/home/user/project', 'Ubuntu')
-      expect(result).toBe('\\\\wsl$\\Ubuntu\\home\\user\\project')
-    })
-
-    it('handles paths without leading slash', () => {
-      const result = toWslUncPath('home/user', 'Ubuntu')
-      expect(result).toBe('\\\\wsl$\\Ubuntu\\home\\user')
-    })
-  })
-
-  describe('toWslLinuxPath', () => {
-    it('extracts Linux path from UNC', () => {
-      expect(toWslLinuxPath('\\\\wsl$\\Ubuntu\\home\\user\\project')).toBe('/home/user/project')
-    })
-
-    it('passes through Linux paths', () => {
-      expect(toWslLinuxPath('/home/user/project')).toBe('/home/user/project')
-    })
-  })
-
   describe('toDisplayPath', () => {
-    it('formats WSL UNC paths nicely', () => {
-      expect(toDisplayPath('\\\\wsl$\\Ubuntu\\home\\user\\project')).toBe('WSL:Ubuntu:/home/user/project')
-    })
-
     it('formats SSH paths nicely', () => {
       expect(toDisplayPath('user@server:/home/user')).toBe('SSH:server:/home/user')
     })
@@ -323,11 +214,6 @@ describe('path-service', () => {
       it('gets directory from Unix path', () => {
         expect(dirname('/home/user/project/file.ts')).toBe('/home/user/project')
       })
-
-      it('gets directory from WSL UNC path', () => {
-        const result = dirname('\\\\wsl$\\Ubuntu\\home\\user\\file.ts')
-        expect(result).toBe('\\\\wsl$\\Ubuntu\\home\\user')
-      })
     })
 
     describe('basename', () => {
@@ -337,10 +223,6 @@ describe('path-service', () => {
 
       it('gets filename from Windows path', () => {
         expect(basename('C:\\Users\\foo\\document.pdf')).toBe('document.pdf')
-      })
-
-      it('gets filename from WSL UNC path', () => {
-        expect(basename('\\\\wsl$\\Ubuntu\\home\\user\\file.ts')).toBe('file.ts')
       })
     })
 
@@ -398,21 +280,6 @@ describe('path-service', () => {
   })
 
   describe('Validation', () => {
-    describe('isWslPath', () => {
-      it('returns true for WSL UNC paths', () => {
-        expect(isWslPath('\\\\wsl$\\Ubuntu\\home\\user')).toBe(true)
-        expect(isWslPath('\\\\wsl.localhost\\Debian\\home')).toBe(true)
-      })
-
-      it('returns false for Windows paths', () => {
-        expect(isWslPath('C:\\Users\\foo')).toBe(false)
-      })
-
-      it('returns false for macOS paths', () => {
-        expect(isWslPath('/Users/foo')).toBe(false)
-      })
-    })
-
     describe('isWindowsPath', () => {
       it('returns true for Windows drive paths', () => {
         expect(isWindowsPath('C:\\Users\\foo')).toBe(true)
@@ -428,7 +295,6 @@ describe('path-service', () => {
       it('returns true for absolute paths', () => {
         expect(isAbsolutePath('/home/user')).toBe(true)
         expect(isAbsolutePath('C:\\Users\\foo')).toBe(true)
-        expect(isAbsolutePath('\\\\wsl$\\Ubuntu\\home')).toBe(true)
       })
 
       it('returns false for relative paths', () => {
@@ -476,8 +342,6 @@ describe('path-service', () => {
       expect(PathService.analyzePath).toBe(analyzePath)
       expect(PathService.toGitPath).toBe(toGitPath)
       expect(PathService.toFsPath).toBe(toFsPath)
-      expect(PathService.toWslUncPath).toBe(toWslUncPath)
-      expect(PathService.toWslLinuxPath).toBe(toWslLinuxPath)
       expect(PathService.toDisplayPath).toBe(toDisplayPath)
       expect(PathService.toSshPath).toBe(toSshPath)
       expect(PathService.join).toBe(join)
@@ -490,7 +354,6 @@ describe('path-service', () => {
       expect(PathService.escapeForBash).toBe(escapeForBash)
       expect(PathService.escapeForCmd).toBe(escapeForCmd)
       expect(PathService.escapeForPowerShell).toBe(escapeForPowerShell)
-      expect(PathService.isWslPath).toBe(isWslPath)
       expect(PathService.isWindowsPath).toBe(isWindowsPath)
       expect(PathService.isAbsolutePath).toBe(isAbsolutePath)
       expect(PathService.isSamePath).toBe(isSamePath)

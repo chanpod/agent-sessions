@@ -55,7 +55,6 @@ export class SSHManager extends EventEmitter {
     super()
 
     // Resolve Git Bash path once on Windows — all SSH operations go through it.
-    // IMPORTANT: bash.exe in PATH resolves to WSL bash on most systems.
     // We must use Git Bash explicitly since SSH ControlMaster, /tmp paths,
     // and the overall environment must be consistent across all calls.
     if (process.platform === 'win32') {
@@ -251,9 +250,11 @@ export class SSHManager extends EventEmitter {
       args.push('-i', config.identityFile)
     } else if (config.authMethod === 'agent') {
       args.push('-A') // Agent forwarding
-    } else if (config.authMethod === 'password') {
-      // Skip publickey attempts — go straight to password/keyboard-interactive.
-      // This avoids "no such identity" warnings and speeds up the connection.
+    } else if (config.authMethod === 'password' && isControlMaster) {
+      // Only set PreferredAuthentications when establishing the ControlMaster.
+      // Slave connections reuse the existing tunnel and never need to authenticate,
+      // so adding this to slaves would cause SSH to try password auth if the socket
+      // is momentarily unreachable — producing endless password prompts.
       args.push('-o', 'PreferredAuthentications=keyboard-interactive,password')
     }
 
@@ -276,9 +277,14 @@ export class SSHManager extends EventEmitter {
           '-o', 'StrictHostKeyChecking=accept-new'
         )
       } else {
+        // Slave connections: reuse the ControlMaster socket.
+        // BatchMode=yes prevents SSH from ever prompting for a password
+        // if the ControlMaster socket is unavailable — it will just fail
+        // with an error instead of spamming password prompts.
         args.push(
           '-o', 'ControlMaster=no',
-          '-o', `ControlPath=${quotedControlPath}`
+          '-o', `ControlPath=${quotedControlPath}`,
+          '-o', 'BatchMode=yes'
         )
       }
     } else {
@@ -821,8 +827,7 @@ export class SSHManager extends EventEmitter {
 
     try {
       if (process.platform === 'win32') {
-        // Write the script via Git Bash so it lands in Git Bash's /tmp
-        // (which is NOT the same as WSL's /tmp).
+        // Write the script via Git Bash so it lands in Git Bash's /tmp.
         // The script decodes the base64 password at runtime.
         //
         // Strategy: use single quotes for the bash -c argument. cmd.exe does

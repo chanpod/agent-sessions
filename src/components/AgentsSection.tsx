@@ -124,7 +124,7 @@ export function AgentsSection({ projectPath, projectId, onLaunchAgent }: AgentsS
   const [agents, setAgents] = useState<CliToolDetectionResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [platform, setPlatform] = useState<'windows' | 'wsl' | 'macos' | 'linux'>('linux')
+  const [platform, setPlatform] = useState<'windows' | 'macos' | 'linux'>('linux')
 
   // Update state
   const [updateAvailable, setUpdateAvailable] = useState<Record<string, UpdateCheckResult>>({})

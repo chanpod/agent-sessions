@@ -8,7 +8,6 @@ import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
 import { StreamJsonDetector } from './output-monitors/stream-json-detector'
 import { CodexStreamDetector } from './output-monitors/codex-stream-detector'
-import { PathService } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
 
@@ -289,31 +288,12 @@ export class PtyManager {
     let effectiveCwd = originalCwd
     let shellArgs: string[] = []
 
-    // Parse shell if it contains arguments (e.g., "wsl.exe -d Ubuntu")
-    // This handles shells defined with embedded arguments like WSL distro-specific shells
-    // Only parse for WSL shells - Windows paths may contain spaces (e.g., "C:\Program Files\...")
     let shellExecutable = shell
-    let parsedShellArgs: string[] = []
 
     // If we have an initial command, wrap it in a shell
     // This is used for agent terminals (claude, gemini, codex) and any other command execution
     if (options.initialCommand) {
-      if (process.platform === 'win32' && PathService.isWslPath(originalCwd)) {
-        // WSL project — spawn inside WSL so the agent runs in the correct Linux environment
-        const env = PathService.getEnvironment()
-        if (!env.wslAvailable) {
-          throw new Error('WSL is not available. Please ensure Windows Subsystem for Linux is installed and enabled.')
-        }
-        const distro = env.defaultWslDistro
-        if (!distro) {
-          throw new Error('No WSL distribution found. Please install a Linux distribution from the Microsoft Store.')
-        }
-        const linuxPath = PathService.toWslLinuxPath(originalCwd)
-        shellExecutable = 'wsl.exe'
-        shellArgs = ['-d', distro, '--cd', linuxPath, '--', 'bash', '-l', '-i', '-c', options.initialCommand]
-        const uncPath = PathService.toWslUncPath(linuxPath, distro)
-        effectiveCwd = uncPath || process.cwd()
-      } else if (process.platform === 'win32') {
+      if (process.platform === 'win32') {
         // Windows project — use bash.exe (Git Bash) with -l -i for login interactive shell
         // -i is needed to properly load PATH for npm-installed tools like codex (which need node)
         shellExecutable = 'bash.exe'
@@ -323,40 +303,9 @@ export class PtyManager {
         shellExecutable = process.env.SHELL || '/bin/bash'
         shellArgs = ['-l', '-i', '-c', options.initialCommand]
       }
-    } else if (shell.toLowerCase().includes('wsl') && shell.includes(' ')) {
-      const parts = shell.split(' ')
-      shellExecutable = parts[0]
-      parsedShellArgs = parts.slice(1)
     }
 
-    // Handle WSL paths on Windows (only for non-command terminals)
-    if (!options.initialCommand && process.platform === 'win32' && originalCwd && PathService.isWslPath(originalCwd)) {
-      // Validate WSL is available before attempting to use it
-      if (!PathService.getEnvironment().wslAvailable) {
-        throw new Error('WSL is not available. Please ensure Windows Subsystem for Linux is installed and enabled.')
-      }
-
-      const distro = PathService.getEnvironment().defaultWslDistro
-      if (!distro) {
-        throw new Error('No WSL distribution found. Please install a Linux distribution from the Microsoft Store.')
-      }
-
-      const linuxPath = PathService.toWslLinuxPath(originalCwd)
-
-      // If shell executable is not already WSL, switch to WSL
-      // Check the executable name, not the full string with args
-      if (!shellExecutable.toLowerCase().includes('wsl')) {
-        shellExecutable = 'wsl.exe'
-        parsedShellArgs = [] // Clear any parsed args since we're switching to WSL
-        shellArgs = ['-d', distro, '--cd', linuxPath]
-      }
-      // Convert Linux path to UNC path for Windows to access WSL filesystem
-      const uncPath = PathService.toWslUncPath(linuxPath, distro)
-      effectiveCwd = uncPath || process.cwd()
-    }
-
-    // Combine parsed args with any existing shellArgs
-    const finalArgs = [...parsedShellArgs, ...shellArgs]
+    const finalArgs = [...shellArgs]
 
     // For agent/hidden terminals, use very wide terminal to prevent line wrapping
     // that corrupts JSON streaming output. Regular terminals use standard 80x24.

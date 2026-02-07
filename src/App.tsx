@@ -1746,6 +1746,7 @@ function App() {
         <EditProjectModal
           projectId={editingProjectId}
           onClose={() => setEditingProjectId(null)}
+          onDelete={(projectId) => { setEditingProjectId(null); handleDeleteProject(projectId) }}
         />
       )}
     </DndContext>

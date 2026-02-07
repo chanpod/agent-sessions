@@ -82,7 +82,7 @@ function buildInstallCommand(
           args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', nativeInstall.windows],
         }
       } else {
-        // macOS, Linux, WSL use the Unix installer
+        // macOS, Linux use the Unix installer
         if (!nativeInstall?.unix) {
           return { error: `Native installation is not available for ${agentId} on ${platform}` }
         }
@@ -162,7 +162,7 @@ function executeInstallCommand(installCommand: InstallCommand, platform: Install
       args = installCommand.args
       console.log(`[cli-installer] Executing via PowerShell: ${args.join(' ')}`)
     } else {
-      // Unix-like platforms (macOS, Linux, WSL) - run directly with shell
+      // Unix-like platforms (macOS, Linux) - run directly with shell
       command = installCommand.command
       args = installCommand.args
       console.log(`[cli-installer] Executing: ${command} ${args.join(' ')}`)
@@ -244,7 +244,7 @@ function executeInstallCommand(installCommand: InstallCommand, platform: Install
  *
  * @param agentId - The CLI tool to install ('claude', 'gemini', or 'codex')
  * @param method - Installation method ('npm', 'native', or 'brew')
- * @param platform - Target platform ('windows', 'wsl', 'macos', or 'linux')
+ * @param platform - Target platform ('windows', 'macos', or 'linux')
  * @param _cwd - Optional working directory (unused, kept for backward compatibility)
  * @returns Promise resolving to installation result
  *

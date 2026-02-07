@@ -60,6 +60,7 @@ export function ProjectSwitcherItem({
 }: ProjectSwitcherItemProps) {
   const [showContextMenu, setShowContextMenu] = useState(false)
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const contextMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -67,6 +68,7 @@ export function ProjectSwitcherItem({
     const handleClick = (e: MouseEvent) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
         setShowContextMenu(false)
+        setConfirmingDelete(false)
       }
     }
     document.addEventListener('mousedown', handleClick)
@@ -156,13 +158,35 @@ export function ProjectSwitcherItem({
             {project.isPinned ? 'Unpin Project' : 'Pin Project'}
           </button>
           <div className="border-t border-zinc-700 my-1" />
-          <button
-            onClick={() => { setShowContextMenu(false); onDelete() }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/20 hover:text-red-300 text-left"
-          >
-            <Trash2 className="w-3 h-3" />
-            Remove Project
-          </button>
+          {confirmingDelete ? (
+            <>
+              <div className="px-3 py-1.5 text-[11px] text-red-400">
+                Delete project and all terminals?
+              </div>
+              <div className="flex items-center gap-1 px-2 pb-1">
+                <button
+                  onClick={() => { setShowContextMenu(false); setConfirmingDelete(false); onDelete() }}
+                  className="flex-1 px-2 py-1 text-xs text-white bg-red-600 hover:bg-red-500 rounded transition-colors"
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setConfirmingDelete(false)}
+                  className="flex-1 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700 rounded transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              onClick={() => setConfirmingDelete(true)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/20 hover:text-red-300 text-left"
+            >
+              <Trash2 className="w-3 h-3" />
+              Remove Project
+            </button>
+          )}
         </div>
       )}
     </>
