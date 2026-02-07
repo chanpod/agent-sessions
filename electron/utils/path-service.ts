@@ -1212,6 +1212,8 @@ export function escapeForSSHRemote(inputPath: string): string {
  */
 export interface SSHManagerLike {
   getProjectMasterStatus(projectId: string): Promise<{ connected: boolean; error?: string }>
+  /** Lightweight sync check — returns the in-memory connected flag without a live ssh -O check */
+  isProjectConnected?(projectId: string): boolean
   execViaProjectMaster(projectId: string, command: string): Promise<string>
 }
 
@@ -1247,12 +1249,20 @@ export async function getExecutionContext(
   const env = getEnvironment()
   const info = analyzePath(inputPath)
 
-  // First, check if this is an SSH project with an active connection
+  // First, check if this is an SSH project with an active connection.
+  // Prefer the lightweight sync check (isProjectConnected) over the async getProjectMasterStatus
+  // which does a live ssh -O check that can race with freshly-established connections.
   if (projectId && sshManager) {
     try {
-      const status = await sshManager.getProjectMasterStatus(projectId)
-      if (status.connected) {
-        return 'ssh-remote'
+      if (sshManager.isProjectConnected) {
+        if (sshManager.isProjectConnected(projectId)) {
+          return 'ssh-remote'
+        }
+      } else {
+        const status = await sshManager.getProjectMasterStatus(projectId)
+        if (status.connected) {
+          return 'ssh-remote'
+        }
       }
     } catch {
       // Ignore errors, continue with path-based detection

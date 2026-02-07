@@ -48,7 +48,6 @@ export function Sidebar(props: SidebarProps) {
 
   // SSH connection state
   const [showPasswordDialog, setShowPasswordDialog] = useState(false)
-  const [masterTerminalId, setMasterTerminalId] = useState<string | null>(null)
   const [sshConnectionName, setSSHConnectionName] = useState('')
 
   const isSSHProject = activeProject?.isSSHProject ?? false
@@ -71,20 +70,7 @@ export function Sidebar(props: SidebarProps) {
 
     if (!result.success) {
       if (result.requiresInteractive) {
-        const masterCmd = await window.electron.ssh.getInteractiveMasterCommand(activeProject.id)
-        if (!masterCmd) {
-          handleSSHCancelConnect()
-          return
-        }
-
-        const terminalInfo = await window.electron.pty.createWithCommand(
-          masterCmd.shell,
-          masterCmd.args,
-          'SSH Connection Setup',
-          true
-        )
-
-        setMasterTerminalId(terminalInfo.id)
+        // Password auth — show dialog, then establish ControlMaster with the password
         setSSHConnectionName(sshConnection.name)
         setShowPasswordDialog(true)
         return
@@ -100,29 +86,28 @@ export function Sidebar(props: SidebarProps) {
   }
 
   const handlePasswordSubmit = async (password: string) => {
-    if (!masterTerminalId || !window.electron || !activeProject) return
+    if (!window.electron || !activeProject) return
 
-    await window.electron.pty.write(masterTerminalId, password + '\n')
     setShowPasswordDialog(false)
 
-    setTimeout(async () => {
-      if (window.electron && activeProject) {
-        await window.electron.ssh.markProjectConnected(activeProject.id)
-        const { setProjectConnectionStatus } = useProjectStore.getState()
-        setProjectConnectionStatus(activeProject.id, 'connected')
+    // Establish a background ControlMaster using SSH_ASKPASS with the password.
+    // This creates the same persistent `-fN` background process as key auth,
+    // so the ControlMaster survives independently of any terminal.
+    const result = await window.electron.ssh.connectProjectWithPassword(activeProject.id, password)
+    if (result?.success) {
+      const { setProjectConnectionStatus } = useProjectStore.getState()
+      setProjectConnectionStatus(activeProject.id, 'connected')
 
-        const gitPath = activeProject.remotePath || activeProject.path
-        refreshGitInfo(activeProject.id, gitPath)
-      }
-    }, 2000)
+      const gitPath = activeProject.remotePath || activeProject.path
+      refreshGitInfo(activeProject.id, gitPath)
+    } else {
+      console.error('[Sidebar] SSH password auth failed:', result?.error)
+      handleSSHCancelConnect()
+    }
   }
 
   const handlePasswordCancel = () => {
     setShowPasswordDialog(false)
-    if (masterTerminalId && window.electron) {
-      window.electron.pty.kill(masterTerminalId)
-      setMasterTerminalId(null)
-    }
     handleSSHCancelConnect()
   }
 
@@ -235,6 +220,7 @@ export function Sidebar(props: SidebarProps) {
               <AgentTerminalsSection
                 projectId={activeProject.id}
                 projectPath={activeProject.isSSHProject && activeProject.remotePath ? activeProject.remotePath : activeProject.path}
+                sshConnected={isSSHProject && isSSHConnected}
                 onCloseTerminal={onCloseTerminal}
                 onReconnectTerminal={onReconnectTerminal}
                 onLaunchAgent={onCreateAgentTerminal}

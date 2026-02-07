@@ -2,11 +2,12 @@ import { EventEmitter } from 'events'
 import * as os from 'os'
 import * as path from 'path'
 import * as fs from 'fs/promises'
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import { promisify } from 'util'
 import { PathService } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export interface SSHConnectionConfig {
   id: string
@@ -42,6 +43,8 @@ export class SSHManager extends EventEmitter {
   private projectMasterConnections: Map<string, ProjectMasterConnection> = new Map()
   private controlDir: string
   private ptyManager?: any // Will be set by main.ts
+  /** Cached Git Bash path on Windows (null if not found) */
+  private gitBashPath: string | null = null
 
   // Health monitor properties
   private healthCheckInterval: NodeJS.Timeout | null = null
@@ -50,18 +53,31 @@ export class SSHManager extends EventEmitter {
 
   constructor() {
     super()
-    // Use Git Bash compatible path for SSH control sockets
-    // Git Bash can access /tmp which is usually mapped to C:\Users\<user>\AppData\Local\Temp
-    // But we'll use a Unix-style path that Git Bash understands
+
+    // Resolve Git Bash path once on Windows — all SSH operations go through it.
+    // IMPORTANT: bash.exe in PATH resolves to WSL bash on most systems.
+    // We must use Git Bash explicitly since SSH ControlMaster, /tmp paths,
+    // and the overall environment must be consistent across all calls.
     if (process.platform === 'win32') {
-      // On Windows with Git Bash, use /tmp which Git Bash understands
+      this.gitBashPath = PathService.getGitBashPath()
+      if (!this.gitBashPath) {
+        console.error('[SSHManager] Git Bash not found — SSH operations will fail on Windows')
+      }
       this.controlDir = '/tmp/agent-sessions-ssh'
     } else {
-      // On Unix, use standard tmp directory
       this.controlDir = path.join(os.tmpdir(), 'agent-sessions-ssh')
     }
     this.ensureControlDir()
     this.startHealthMonitor()
+  }
+
+  /**
+   * Returns the quoted Git Bash path for use in exec commands, or 'bash.exe' as fallback.
+   */
+  private getBashCommand(): string {
+    if (!this.gitBashPath) return 'bash.exe'
+    // Quote the path since it contains spaces (e.g. "C:\Program Files\Git\bin\bash.exe")
+    return `"${this.gitBashPath}"`
   }
 
   /**
@@ -199,12 +215,17 @@ export class SSHManager extends EventEmitter {
     })
   }
 
+  /** Shell-quote a string using single quotes (POSIX safe) */
+  private shellQuote(s: string): string {
+    return "'" + s.replace(/'/g, "'\\''") + "'"
+  }
+
   private async ensureControlDir() {
     try {
       if (process.platform === 'win32') {
         // On Windows, use bash to create the directory in Git Bash's filesystem
         const { execAsync } = await import('child_process').then(m => ({ execAsync: promisify(m.exec) }))
-        await execAsync(`bash.exe -c "mkdir -p ${this.controlDir}"`)
+        await execAsync(`${this.getBashCommand()} -c "mkdir -p ${this.controlDir}"`)
         console.log('[SSHManager] Created control directory via Git Bash:', this.controlDir)
       } else {
         await fs.mkdir(this.controlDir, { recursive: true })
@@ -230,6 +251,10 @@ export class SSHManager extends EventEmitter {
       args.push('-i', config.identityFile)
     } else if (config.authMethod === 'agent') {
       args.push('-A') // Agent forwarding
+    } else if (config.authMethod === 'password') {
+      // Skip publickey attempts — go straight to password/keyboard-interactive.
+      // This avoids "no such identity" warnings and speeds up the connection.
+      args.push('-o', 'PreferredAuthentications=keyboard-interactive,password')
     }
 
     // SSH Multiplexing (ControlMaster)
@@ -291,44 +316,51 @@ export class SSHManager extends EventEmitter {
    * Execute SSH command through bash on Windows (for Git Bash compatibility)
    * On Unix, execute directly
    */
-  private async execSSH(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  private async execSSH(args: string[], options?: { env?: Record<string, string>; timeout?: number }): Promise<{ stdout: string; stderr: string }> {
+    const extraEnv = options?.env || {}
+    const timeout = options?.timeout
+
     if (process.platform === 'win32') {
-      // On Windows, wrap SSH command in bash to use Git Bash's SSH
+      const bash = this.getBashCommand()
 
-      // Check if this is a control operation (-O check, -O exit, etc.)
-      // Control operations don't execute a remote command, they just
-      // communicate with the local ControlMaster socket
-      const isControlOperation = args.includes('-O')
+      // Build env prefix for bash (e.g. "SSH_ASKPASS=/tmp/x DISPLAY=:0 ")
+      const envPrefix = Object.entries(extraEnv)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ')
+      const envStr = envPrefix ? `${envPrefix} ` : ''
 
-      if (isControlOperation) {
-        // For control operations, just pass all args directly
-        // The syntax is: ssh -O check -o ControlPath="..." user@host
-        // No remote command is executed
-        const bashCommand = `bash.exe -c 'ssh ${args.join(' ')}'`
-        console.log(`[SSHManager] Executing control operation: ${bashCommand}`)
-        return execAsync(bashCommand)
+      // Detect whether there's a remote command to execute.
+      // If the last arg is user@host (contains @) or is an SSH flag (starts with -)
+      // then there is no remote command — pass all args directly.
+      const lastArg = args[args.length - 1]
+      const hasRemoteCommand = lastArg && !lastArg.startsWith('-') && !lastArg.includes('@')
+
+      if (!hasRemoteCommand) {
+        // No remote command: control operations (-O check), background mode (-fN), etc.
+        const bashCommand = `${bash} -c '${envStr}ssh ${args.join(' ')}'`
+        console.log(`[SSHManager] Executing: ${bashCommand}`)
+        return execAsync(bashCommand, { timeout })
       }
 
-      // For regular SSH commands with a remote command to execute:
-      // The last argument is typically the remote command, handle it specially
+      // Has a remote command — the last arg is the command to run remotely.
+      // Use base64 encoding to avoid all quoting hell.
       const sshOptions = args.slice(0, -1)
-      const remoteCommand = args[args.length - 1]
+      const remoteCommand = lastArg
 
-      // Build SSH options (these don't need complex escaping)
       const sshOptsStr = sshOptions.join(' ')
-
-      // Use base64 encoding to avoid all quoting hell
-      // Encode the command and decode it on the remote side
       const base64Command = Buffer.from(remoteCommand).toString('base64')
       const wrappedCommand = `echo ${base64Command} | base64 -d | bash`
 
-      const bashCommand = `bash.exe -c 'ssh ${sshOptsStr} "${wrappedCommand}"'`
+      const bashCommand = `${bash} -c '${envStr}ssh ${sshOptsStr} "${wrappedCommand}"'`
 
       console.log(`[SSHManager] Executing: ${bashCommand}`)
-      return execAsync(bashCommand)
+      return execAsync(bashCommand, { timeout })
     } else {
       // On Unix, execute SSH directly
-      return execAsync(`ssh ${args.join(' ')}`)
+      const env = Object.keys(extraEnv).length > 0
+        ? { ...process.env, ...extraEnv }
+        : undefined
+      return execAsync(`ssh ${args.join(' ')}`, { env, timeout })
     }
   }
 
@@ -459,7 +491,7 @@ export class SSHManager extends EventEmitter {
       // Clean up control socket (may not exist on Windows/Git Bash filesystem from Node perspective)
       if (process.platform === 'win32') {
         try {
-          await execAsync(`bash.exe -c "rm -f ${connection.controlPath}"`)
+          await execAsync(`${this.getBashCommand()} -c "rm -f ${connection.controlPath}"`)
         } catch (err) {
           // Ignore errors
         }
@@ -553,11 +585,8 @@ export class SSHManager extends EventEmitter {
     }
     // Note: If no remoteCwd, SSH will automatically start the user's default login shell
 
-    // On Windows with Git Bash, use bash.exe to wrap SSH
-    // This ensures we use Git Bash's SSH which has ControlMaster support
     if (process.platform === 'win32') {
       const sshCommand = `ssh ${args.map(arg => {
-        // Quote arguments that contain spaces or special characters
         if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('$')) {
           return `"${arg.replace(/"/g, '\\"')}"`
         }
@@ -565,7 +594,7 @@ export class SSHManager extends EventEmitter {
       }).join(' ')}`
 
       return {
-        shell: 'bash.exe',
+        shell: this.gitBashPath || 'bash.exe',
         args: ['-c', sshCommand]
       }
     }
@@ -614,8 +643,9 @@ export class SSHManager extends EventEmitter {
 
     if (process.platform === 'win32') {
       // On Windows, base64-encode the remote command to avoid quoting issues
+      // Use bash -l (login shell) so .profile/.bashrc are sourced and npm/nvm tools are in PATH
       const base64Command = Buffer.from(remoteCommand).toString('base64')
-      const wrappedRemote = `echo ${base64Command} | base64 -d | bash`
+      const wrappedRemote = `echo ${base64Command} | base64 -d | bash -l`
 
       const sshCommand = `ssh ${args.map(arg => {
         if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('$')) {
@@ -625,13 +655,13 @@ export class SSHManager extends EventEmitter {
       }).join(' ')} "${wrappedRemote}"`
 
       return {
-        shell: 'bash.exe',
+        shell: this.gitBashPath || 'bash.exe',
         args: ['-c', sshCommand]
       }
     }
 
-    // On Unix, append the remote command directly
-    args.push(remoteCommand)
+    // On Unix, wrap in bash -l so login profile is sourced (npm/nvm tools in PATH)
+    args.push(`bash -l -c '${remoteCommand.replace(/'/g, "'\\''")}'`)
     return {
       shell: 'ssh',
       args
@@ -683,6 +713,16 @@ export class SSHManager extends EventEmitter {
    */
   isConnected(connectionId: string): boolean {
     const connection = this.connections.get(connectionId)
+    return connection ? connection.connected : false
+  }
+
+  /**
+   * Lightweight sync check — returns the in-memory connected flag for a project
+   * without doing a live ssh -O check. Used by getExecutionContext to avoid
+   * races with freshly-established ControlMaster tunnels.
+   */
+  isProjectConnected(projectId: string): boolean {
+    const connection = this.projectMasterConnections.get(projectId)
     return connection ? connection.connected : false
   }
 
@@ -750,7 +790,92 @@ export class SSHManager extends EventEmitter {
   }
 
   /**
+   * Establish a background ControlMaster for password auth using SSH_ASKPASS.
+   * Creates a temporary script that echoes the password, sets SSH_ASKPASS to it,
+   * then runs `ssh -fN` exactly like key auth does.  The temp script is deleted
+   * immediately after SSH authenticates.
+   */
+  async connectProjectMasterWithPassword(projectId: string, password: string): Promise<{ success: boolean; error?: string }> {
+    const connection = this.projectMasterConnections.get(projectId)
+    if (!connection) {
+      return { success: false, error: `No project master entry for ${projectId}` }
+    }
+
+    const sshConnection = this.connections.get(connection.sshConnectionId)
+    if (!sshConnection) {
+      return { success: false, error: 'SSH connection not found' }
+    }
+
+    // Build SSH args for establishing the ControlMaster
+    const args = this.buildSSHArgs(sshConnection.config, connection.controlPath, true)
+    args.push('-fN') // Background mode, no command — same as key auth
+
+    // Write a temporary askpass script that echoes the password.
+    // SSH_ASKPASS tells SSH to call this script instead of prompting on a tty.
+    const scriptName = `askpass-${Date.now()}.sh`
+    const scriptPath = `/tmp/${scriptName}`
+
+    // Base64-encode the password to avoid ALL quoting issues.
+    // The askpass script decodes it at runtime.
+    const b64Password = Buffer.from(password).toString('base64')
+
+    try {
+      if (process.platform === 'win32') {
+        // Write the script via Git Bash so it lands in Git Bash's /tmp
+        // (which is NOT the same as WSL's /tmp).
+        // The script decodes the base64 password at runtime.
+        //
+        // Strategy: use single quotes for the bash -c argument. cmd.exe does
+        // NOT interpret single quotes, so everything inside passes through
+        // verbatim to Git Bash. The b64 string is alphanumeric-safe.
+        const bash = this.getBashCommand()
+        // Use execFileAsync to call Git Bash directly, bypassing cmd.exe entirely.
+        // This avoids all cmd.exe quoting/escaping issues with pipes, quotes, etc.
+        const bashPath = this.gitBashPath || 'bash.exe'
+        await execFileAsync(bashPath, [
+          '-c',
+          `printf '#!/bin/sh\\necho ${b64Password} | base64 -d\\n' > ${scriptPath} && chmod 700 ${scriptPath}`
+        ], { timeout: 5000 })
+      } else {
+        const escapedPassword = password.replace(/'/g, "'\\''")
+        await fs.writeFile(scriptPath, `#!/bin/sh\necho '${escapedPassword}'\n`, { mode: 0o700 })
+      }
+
+      console.log(`[SSHManager] Establishing password ControlMaster via SSH_ASKPASS`)
+      await this.execSSH(args, {
+        env: {
+          SSH_ASKPASS: scriptPath,
+          SSH_ASKPASS_REQUIRE: 'force',
+          DISPLAY: ':0',
+        },
+        timeout: 30000,
+      })
+
+      // ControlMaster is now running in the background
+      connection.connected = true
+      connection.connectedAt = Date.now()
+      sshConnection.connected = true // Also mark the base connection
+      console.log(`[SSHManager] Password ControlMaster established for project ${projectId}`)
+      return { success: true }
+    } catch (err: any) {
+      console.error(`[SSHManager] Failed to establish password ControlMaster:`, err.message)
+      connection.connected = false
+      connection.error = err.message
+      return { success: false, error: `SSH authentication failed: ${err.message}` }
+    } finally {
+      // Always clean up the askpass script via the same bash environment
+      if (process.platform === 'win32') {
+        const bashPath = this.gitBashPath || 'bash.exe'
+        await execFileAsync(bashPath, ['-c', `rm -f ${scriptPath}`]).catch(() => {})
+      } else {
+        await fs.unlink(scriptPath).catch(() => {})
+      }
+    }
+  }
+
+  /**
    * Get the SSH command for establishing ControlMaster interactively (for password auth)
+   * @deprecated Use connectProjectMasterWithPassword instead
    */
   getInteractiveMasterCommand(projectId: string): { shell: string; args: string[] } | null {
     const master = this.projectMasterConnections.get(projectId)
@@ -769,7 +894,6 @@ export class SSHManager extends EventEmitter {
     // Add -t for interactive terminal (required for password prompt)
     args.push('-t')
 
-    // On Windows with Git Bash, wrap in bash.exe
     if (process.platform === 'win32') {
       const sshCommand = `ssh ${args.map(arg => {
         if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('$')) {
@@ -779,7 +903,7 @@ export class SSHManager extends EventEmitter {
       }).join(' ')}`
 
       return {
-        shell: 'bash.exe',
+        shell: this.gitBashPath || 'bash.exe',
         args: ['-c', sshCommand]
       }
     }
@@ -800,7 +924,67 @@ export class SSHManager extends EventEmitter {
       connection.connected = true
       connection.connectedAt = Date.now()
       console.log(`[SSHManager] Project master marked as connected: ${projectId}`)
+    } else {
+      console.warn(`[SSHManager] markProjectMasterConnected: no entry for ${projectId}`)
     }
+  }
+
+  /**
+   * Mark project master as connected AND verify the tunnel works by running a
+   * quick `echo ok` over the ControlMaster.  Retries a few times to allow the
+   * ControlMaster socket to become ready after interactive password auth.
+   *
+   * Returns true if the connection is verified working.
+   */
+  async verifyAndMarkProjectConnected(projectId: string): Promise<{ success: boolean; error?: string }> {
+    const connection = this.projectMasterConnections.get(projectId)
+    if (!connection) {
+      return { success: false, error: `No project master entry for ${projectId}` }
+    }
+
+    const sshConnection = this.connections.get(connection.sshConnectionId)
+    if (!sshConnection) {
+      return { success: false, error: 'SSH connection not found' }
+    }
+
+    // Poll with `ssh -O check` until the ControlMaster socket is ready.
+    // This is lightweight — it only checks whether the local socket exists
+    // and does NOT initiate a new SSH handshake, so it won't trigger
+    // "Too many authentication failures" on the remote host.
+    //
+    // The interactive PTY terminal needs time to:
+    //  1. Start SSH and do key exchange
+    //  2. Try and fail publickey auth (if no keys configured)
+    //  3. Prompt for password (our pty.write already sent it)
+    //  4. Authenticate and create the ControlMaster socket
+    // This can easily take 5-15s, so we wait up to 30s total.
+    const maxRetries = 15
+    const retryDelay = 2000 // ms
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const quotedControlPath = `"${connection.controlPath}"`
+        const args = ['-O', 'check', '-o', `ControlPath=${quotedControlPath}`, `${sshConnection.config.username}@${sshConnection.config.host}`]
+        await this.execSSH(args)
+
+        // Socket is alive — mark as connected
+        connection.connected = true
+        connection.connectedAt = Date.now()
+        console.log(`[SSHManager] verifyAndMarkProjectConnected: ControlMaster verified on attempt ${attempt}`)
+        return { success: true }
+      } catch {
+        // Socket not ready yet — will retry
+      }
+
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, retryDelay))
+      }
+    }
+
+    // All retries failed — ControlMaster never appeared
+    connection.connected = false
+    connection.error = 'ControlMaster socket not ready after authentication'
+    return { success: false, error: 'SSH ControlMaster socket did not become ready — password may have been incorrect' }
   }
 
   /**
@@ -862,7 +1046,7 @@ export class SSHManager extends EventEmitter {
   async execViaProjectMaster(projectId: string, command: string): Promise<string> {
     const connection = this.projectMasterConnections.get(projectId)
     if (!connection || !connection.connected) {
-      throw new Error('Project master connection not established')
+      throw new Error(`SSH connection not available for project ${projectId}`)
     }
 
     const sshConnection = this.connections.get(connection.sshConnectionId)
@@ -871,8 +1055,11 @@ export class SSHManager extends EventEmitter {
     }
 
     // Build SSH command using the ControlMaster connection
+    // Wrap in login shell so .profile/.bashrc are sourced — required for
+    // npm/nvm-installed tools (claude, codex) to be found in PATH.
     const args = this.buildSSHArgs(sshConnection.config, connection.controlPath, false)
-    args.push(command)
+    const loginWrapped = `bash -l -c ${this.shellQuote(command)}`
+    args.push(loginWrapped)
 
     console.log(`[SSHManager] Executing command via project master ControlMaster`)
 

@@ -288,13 +288,17 @@ export function AgentWorkspace({
             // Mark waiting immediately so sidebar spinner starts
             store.markWaitingForResponse(result.process.id)
             // Send message to the new process
-            await window.electron.agent.sendMessage(result.process.id, {
+            console.log(`[AgentWorkspace] Sending message (${message.length} chars) to process ${result.process.id}`)
+            const sendResult = await window.electron.agent.sendMessage(result.process.id, {
               type: 'user',
               message: {
                 role: 'user',
                 content: message,
               },
             })
+            if (sendResult && !sendResult.success) {
+              console.error('[AgentWorkspace] sendMessage failed:', sendResult.error)
+            }
           } else {
             console.error('[AgentWorkspace] Resume spawn failed:', result)
             setIsProcessing(false)
@@ -303,13 +307,17 @@ export function AgentWorkspace({
           // First message - mark waiting immediately so sidebar spinner starts
           store.markWaitingForResponse(initialProcessId)
           // Send to existing process
-          await window.electron.agent.sendMessage(initialProcessId, {
+          console.log(`[AgentWorkspace] Sending first message (${message.length} chars) to process ${initialProcessId}`)
+          const sendResult = await window.electron.agent.sendMessage(initialProcessId, {
             type: 'user',
             message: {
               role: 'user',
               content: message,
             },
           })
+          if (sendResult && !sendResult.success) {
+            console.error('[AgentWorkspace] sendMessage failed:', sendResult.error)
+          }
         }
       } catch (err) {
         console.error('[AgentWorkspace] handleSend failed:', err)

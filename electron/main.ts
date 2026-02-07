@@ -940,10 +940,17 @@ ipcMain.handle('ssh:get-interactive-master-command', async (_event, projectId: s
 
 ipcMain.handle('ssh:mark-project-connected', async (_event, projectId: string) => {
   if (!sshManager) {
-    return { success: false }
+    return { success: false, error: 'SSH manager not available' }
   }
-  sshManager.markProjectMasterConnected(projectId)
-  return { success: true }
+  // Verify the ControlMaster tunnel actually works before declaring success.
+  return sshManager.verifyAndMarkProjectConnected(projectId)
+})
+
+ipcMain.handle('ssh:connect-project-with-password', async (_event, projectId: string, password: string) => {
+  if (!sshManager) {
+    return { success: false, error: 'SSH manager not available' }
+  }
+  return sshManager.connectProjectMasterWithPassword(projectId, password)
 })
 
 // CLI Detection IPC Handlers
@@ -1115,14 +1122,21 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
   // Build the CLI command based on agent type
   let command: string
   switch (agentType) {
-    case 'claude':
-      // Use print mode with streaming JSON for real-time output
-      // cat | keeps stdin open so we can pipe JSON messages to Claude
+    case 'claude': {
       // -p: print mode (non-interactive, required for --output-format)
       // --output-format stream-json: realtime streaming JSON events
       // --input-format stream-json: accept JSON input via stdin for multi-turn
       // --verbose: include additional metadata
       // --include-partial-messages: get incremental deltas, not just complete blocks
+      //
+      // `stty -icanon` disables canonical mode on the PTY so that the line
+      // discipline does NOT buffer input into ~4096-byte lines. Without this,
+      // large single-line JSON messages (e.g. pasted error dumps with URLs)
+      // get silently truncated by the kernel's MAX_CANON limit and Claude CLI
+      // receives malformed JSON, causing it to never respond.
+      //
+      // `cat |` keeps a stable child process alive for node-pty's ConPTY
+      // process monitoring (without it, AttachConsole fails on Windows).
       let claudeCmd = 'claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages'
       if (resumeSessionId) {
         claudeCmd += ` --resume ${resumeSessionId}`
@@ -1133,9 +1147,9 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       if (allowedTools && allowedTools.length > 0) {
         claudeCmd += ' --allowedTools ' + allowedTools.map(t => `"${t}"`).join(' ')
       }
-      // Use cat as a stdin wrapper to keep input open
-      command = `cat | ${claudeCmd}`
+      command = `stty -icanon && cat | ${claudeCmd}`
       break
+    }
     case 'codex': {
       // Codex CLI uses one-shot `exec` mode with --json for NDJSON streaming.
       // Unlike Claude, the prompt is passed as a CLI argument, not piped via stdin.
@@ -1247,10 +1261,19 @@ ipcMain.handle('agent:send-message', async (_event, id: string, message: Record<
 
   // With --input-format stream-json, Claude expects NDJSON messages
   // Format: {"type": "user", "message": {"role": "user", "content": "..."}}
-  const jsonMessage = JSON.stringify(message)
+  const jsonMessage = JSON.stringify(message) + '\n'
 
-  // Write JSON followed by newline (NDJSON format)
-  ptyManager.write(id, jsonMessage + '\n')
+  console.log(`[Agent] Sending message to ${id} (${jsonMessage.length} chars, ${agentInfo.agentType})`)
+
+  // Use chunked writes for large messages (e.g. pasted error dumps, URLs).
+  // ConPTY on Windows can silently truncate a single large write, causing
+  // the Claude CLI to receive malformed JSON and never respond.
+  try {
+    await ptyManager.writeChunked(id, jsonMessage)
+  } catch (err) {
+    console.error(`[Agent] Failed to write message to ${id}:`, err)
+    return { success: false, error: `Failed to write message: ${err}` }
+  }
 
   return { success: true }
 })

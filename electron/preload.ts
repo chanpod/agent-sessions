@@ -321,8 +321,10 @@ const electronAPI = {
       ipcRenderer.invoke('ssh:disconnect-project', projectId),
     getInteractiveMasterCommand: (projectId: string): Promise<{ shell: string; args: string[] } | null> =>
       ipcRenderer.invoke('ssh:get-interactive-master-command', projectId),
-    markProjectConnected: (projectId: string): Promise<{ success: boolean }> =>
+    markProjectConnected: (projectId: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('ssh:mark-project-connected', projectId),
+    connectProjectWithPassword: (projectId: string, password: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('ssh:connect-project-with-password', projectId, password),
   },
   updater: {
     install: (): Promise<void> =>

@@ -284,11 +284,10 @@ async function execInContextAsync(
         throw new Error(`SSH connection required but not configured for path: ${projectPath}`)
       }
 
-      const projectMasterStatus = await sshManager.getProjectMasterStatus(projectId)
-      if (!projectMasterStatus.connected) {
-        throw new Error('SSH connection not available for project')
-      }
-
+      // Execute directly via the project master connection.
+      // execViaProjectMaster checks connection.connected internally and throws if not connected.
+      // We avoid calling getProjectMasterStatus() here because it does a live ssh -O check
+      // which can race with a freshly-established ControlMaster tunnel.
       try {
         const output = await sshManager.execViaProjectMaster(projectId, command)
         return { stdout: output, stderr: '' }

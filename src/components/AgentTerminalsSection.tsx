@@ -26,6 +26,8 @@ import type { CliToolDetectionResult, UpdateCheckResult } from '../types/electro
 interface AgentTerminalsSectionProps {
   projectId: string
   projectPath: string
+  /** SSH connection status — triggers CLI re-detection when connection is established */
+  sshConnected?: boolean
   onCloseTerminal: (id: string) => void
   onReconnectTerminal: (id: string) => void
   onLaunchAgent: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => void
@@ -274,6 +276,7 @@ function AgentSessionRow({
 export function AgentTerminalsSection({
   projectId,
   projectPath,
+  sshConnected,
   onCloseTerminal,
   onReconnectTerminal,
   onLaunchAgent,
@@ -388,11 +391,14 @@ export function AgentTerminalsSection({
     } finally {
       setDetectingAgents(false)
     }
-  }, [projectPath, projectId])
+  // sshConnected triggers re-detection when SSH tunnel is established
+  }, [projectPath, projectId, sshConnected])
 
   useEffect(() => {
-    detectAgents()
-  }, [detectAgents])
+    // For SSH projects, force refresh to bypass any stale cache from failed detection
+    // attempts that may have run before the SSH tunnel was fully established.
+    detectAgents(!!sshConnected)
+  }, [detectAgents, sshConnected])
 
   // Detect platform for update dialog
   useEffect(() => {

@@ -281,7 +281,8 @@ export interface ElectronAPI {
     connectProject: (projectId: string, sshConnectionId: string) => Promise<{ success: boolean; error?: string; requiresInteractive?: boolean }>
     disconnectProject: (projectId: string) => Promise<{ success: boolean; error?: string }>
     getInteractiveMasterCommand: (projectId: string) => Promise<{ shell: string; args: string[] } | null>
-    markProjectConnected: (projectId: string) => Promise<{ success: boolean }>
+    markProjectConnected: (projectId: string) => Promise<{ success: boolean; error?: string }>
+    connectProjectWithPassword: (projectId: string, password: string) => Promise<{ success: boolean; error?: string }>
   }
   updater: {
     install: () => Promise<void>

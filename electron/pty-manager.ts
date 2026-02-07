@@ -430,6 +430,51 @@ export class PtyManager {
     }
   }
 
+  /**
+   * Write data in chunks to avoid overflowing PTY input buffers.
+   * ConPTY on Windows can silently truncate large single writes, causing
+   * the receiving process to see malformed/incomplete data.
+   * Returns a promise that resolves when all chunks have been written.
+   */
+  writeChunked(id: string, data: string, chunkSize = 4096): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const instance = this.terminals.get(id)
+      if (!instance) {
+        reject(new Error(`Terminal ${id} not found`))
+        return
+      }
+
+      if (data.length <= chunkSize) {
+        instance.ptyProcess.write(data)
+        resolve()
+        return
+      }
+
+      let offset = 0
+      const writeNext = () => {
+        const current = this.terminals.get(id)
+        if (!current) {
+          reject(new Error(`Terminal ${id} was killed during chunked write`))
+          return
+        }
+
+        const chunk = data.slice(offset, offset + chunkSize)
+        if (chunk.length > 0) {
+          current.ptyProcess.write(chunk)
+          offset += chunkSize
+          if (offset < data.length) {
+            setTimeout(writeNext, 5)
+          } else {
+            resolve()
+          }
+        } else {
+          resolve()
+        }
+      }
+      writeNext()
+    })
+  }
+
   resize(id: string, cols: number, rows: number): void {
     const instance = this.terminals.get(id)
     if (instance) {

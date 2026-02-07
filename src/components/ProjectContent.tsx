@@ -48,7 +48,6 @@ export function ProjectContent({
 
   // State for password authentication flow
   const [showPasswordDialog, setShowPasswordDialog] = useState(false)
-  const [masterTerminalId, setMasterTerminalId] = useState<string | null>(null)
   const [sshConnectionName, setSSHConnectionName] = useState('')
 
   // Auto-discover Docker Compose services (only for local projects)
@@ -82,30 +81,8 @@ export function ProjectContent({
     console.log('[ProjectContent] connectProject result:', result)
 
     if (!result.success) {
-      // Check if password authentication is required
       if (result.requiresInteractive) {
-        console.log('[ProjectContent] Password auth required - creating interactive ControlMaster terminal')
-
-        // Get the command to establish ControlMaster interactively
-        const masterCmd = await window.electron.ssh.getInteractiveMasterCommand(project.id)
-        if (!masterCmd) {
-          console.error('[ProjectContent] Failed to get interactive master command')
-          handleCancelConnect()
-          return
-        }
-
-        // Create a HIDDEN terminal for ControlMaster setup (we'll pipe the password to it)
-        const terminalInfo = await window.electron.pty.createWithCommand(
-          masterCmd.shell,
-          masterCmd.args,
-          'SSH Connection Setup',
-          true // hidden
-        )
-
-        console.log('[ProjectContent] Created hidden ControlMaster terminal:', terminalInfo.id)
-
-        // Store terminal ID and show password dialog
-        setMasterTerminalId(terminalInfo.id)
+        // Password auth — show dialog, then establish ControlMaster with the password
         setSSHConnectionName(sshConnection.name)
         setShowPasswordDialog(true)
         return
@@ -129,46 +106,27 @@ export function ProjectContent({
     refreshGitInfo(project.id, gitPath)
   }
 
-  // Handle password submission - pipe it to the hidden terminal
+  // Handle password submission — establish background ControlMaster via SSH_ASKPASS
   const handlePasswordSubmit = async (password: string) => {
-    if (!masterTerminalId || !window.electron) return
+    if (!window.electron) return
 
-    console.log('[ProjectContent] Sending password to ControlMaster terminal:', masterTerminalId)
-
-    // Send password followed by Enter key to the terminal
-    await window.electron.pty.write(masterTerminalId, password + '\n')
-
-    // Close the dialog
     setShowPasswordDialog(false)
 
-    // After a delay, mark the project as connected
-    // (gives SSH time to authenticate and establish ControlMaster)
-    setTimeout(async () => {
-      if (window.electron) {
-        await window.electron.ssh.markProjectConnected(project.id)
-        const { setProjectConnectionStatus } = useProjectStore.getState()
-        setProjectConnectionStatus(project.id, 'connected')
-        console.log('[ProjectContent] Project marked as connected after password auth')
+    const result = await window.electron.ssh.connectProjectWithPassword(project.id, password)
+    if (result?.success) {
+      const { setProjectConnectionStatus } = useProjectStore.getState()
+      setProjectConnectionStatus(project.id, 'connected')
 
-        // Trigger git refresh now that we're connected
-        // Use remotePath for SSH projects since that's the actual path on the server
-        console.log('[ProjectContent] Triggering git refresh after password auth')
-        const gitPath = project.remotePath || project.path
-        refreshGitInfo(project.id, gitPath)
-      }
-    }, 2000) // Wait 2 seconds for SSH to authenticate
+      const gitPath = project.remotePath || project.path
+      refreshGitInfo(project.id, gitPath)
+    } else {
+      console.error('[ProjectContent] SSH password auth failed:', result?.error)
+      handleCancelConnect()
+    }
   }
 
-  // Handle password dialog cancel
   const handlePasswordCancel = () => {
     setShowPasswordDialog(false)
-
-    // Kill the ControlMaster terminal if user cancels
-    if (masterTerminalId && window.electron) {
-      window.electron.pty.kill(masterTerminalId)
-      setMasterTerminalId(null)
-    }
-
     handleCancelConnect()
   }
 
