@@ -153,6 +153,77 @@ AgentWorkspace tracks all process IDs in `activeProcessIds` and merges messages 
 3. **`persistSession(terminalId)` requires a `terminalToSession` entry** -- if the mapping doesn't exist for that terminal, it silently fails. Only the initial process has this mapping.
 4. **Electron main process changes require full app restart** -- HMR only covers renderer code. Changes to `electron/`, `pty-manager.ts`, or detectors require killing and restarting the app.
 
+## Permission System (Hook-based IPC)
+
+The app intercepts Claude CLI tool calls via a **PreToolUse hook** and routes permission decisions through a file-based IPC channel. This replaces the CLI's built-in permission prompts with our own UI (PermissionModal).
+
+### Architecture Overview
+
+```
+Claude CLI (PreToolUse hook fires)
+  → permission-handler.cjs runs
+  → Checks: safe tool? allowlisted? app alive?
+  → Writes .request file to .claude/.permission-ipc/
+  → Polls for .response file (100ms interval, 30s timeout)
+
+Electron main process (PermissionServer)
+  → Polls .permission-ipc/ dirs every 200ms
+  → Reads .request files → sends IPC to renderer
+  → Renderer shows PermissionModal
+  → User clicks Allow/Deny → writes .response file
+  → Hook reads response → returns decision to CLI
+```
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `resources/bin/permission-handler.cjs` | **Bundled hook script** — copied to each project's `.claude/hooks/` on install |
+| `electron/services/permission-server.ts` | **Main process** — polls IPC dirs, forwards to renderer, writes responses |
+| `electron/constants.ts` | `PERMISSION_HOOK_FILENAME`, `PERMISSION_REQUEST_TIMEOUT_MS`, `PERMISSION_ALLOWLIST_FILENAME` |
+| `electron/types/permission-types.ts` | TypeScript types for requests/responses |
+| `src/stores/permission-store.ts` | Zustand store — `pendingRequests`, `hookInstalledCache` |
+| `src/components/PermissionModal.tsx` | UI component — shows tool name/input, Allow/Deny buttons |
+
+### Hook Decision Flow (permission-handler.cjs)
+
+The hook script runs these gates in order:
+
+1. **Heartbeat check** — Is the app alive? Reads `.permission-ipc/.active` timestamp. If stale (>10s) or missing, **abstain** (no stdout → CLI uses its own permission flow)
+2. **HOST_HANDLED_TOOLS** — Currently empty. Would `deny` tools the app handles via custom UI
+3. **SAFE_TOOLS** — Auto-`allow` read-only tools: `Read`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Task`, `TodoWrite`, `EnterPlanMode`, `ExitPlanMode`, `Skill`, `AskUserQuestion`
+4. **Allowlist** — Auto-`allow` if tool is in `.claude/permission-allowlist.json`
+5. **IPC handoff** — Write `.request` file, poll for `.response` from the app
+
+### Critical: `.cjs` Extension Required
+
+The hook script **MUST** use the `.cjs` extension, not `.js`. Projects with `"type": "module"` in `package.json` cause Node.js to treat `.js` files as ES modules, which breaks `require()` calls. When the hook crashes (exit code 1), the CLI silently falls through to its built-in permission system and denies everything. The `.cjs` extension forces CommonJS regardless of the project's module system.
+
+### Heartbeat System
+
+`PermissionServer.writeHeartbeats()` writes the current timestamp to `.permission-ipc/.active` every 3 seconds for each watched project. The hook checks this before doing anything — if the app isn't running, the hook abstains so the CLI's normal permission flow takes over.
+
+**Implication:** If the app crashes, heartbeats go stale within 10 seconds and hooks automatically deactivate. If a dev and prod instance both run, they share the same IPC directory and can conflict.
+
+### Hook Installation & Migration
+
+- `PermissionServer.installHook(projectPath)` — Copies bundled script to `.claude/hooks/`, writes `settings.local.json` with the PreToolUse hook config
+- `PermissionServer.isHookInstalled(projectPath)` — Checks if current `.cjs` version is in settings
+- `PermissionServer.hasLegacyHook(projectPath)` — Detects old `.js` references for auto-migration
+- `installHook` also cleans up old `.js` files and strips stale entries from both `settings.local.json` and `settings.json`
+- The `permission:check-hook` IPC handler auto-migrates legacy `.js` hooks to `.cjs`
+
+### Allowlist
+
+`permission-allowlist.json` in the project's `.claude/` directory lists tool names that are always auto-allowed without showing the modal. Example: `["Bash", "Edit", "Write"]`. The PermissionServer checks this server-side in `handleRequest()`, and the hook script also checks it client-side in Gate 3.
+
+### Common Issues
+
+1. **Hook silently failing** — Usually means the hook script is crashing. Check `%TEMP%/permission-handler-debug.log` for the hook's debug output. Most common cause: `.js` extension in an ESM project.
+2. **Permission denied but no modal appears** — Hook isn't firing (check `settings.local.json` has the correct command with `.cjs`), or heartbeat is stale (check `.permission-ipc/.active` exists and is recent).
+3. **Circular blocking** — If you need to edit permission system files but the permission system is blocking edits, delete the `.permission-ipc/` directory for the project. The PermissionServer will stop watching it and the hook will abstain.
+4. **Dev/prod conflict** — Both app instances share the same `.permission-ipc/` directories. If one crashes, the other's heartbeat may go stale or IPC files may conflict.
+
 ## shadcn/ui Components
 
 Use the shadcn CLI to add components into this Vite + Electron repo. The project is already initialized with `components.json`.

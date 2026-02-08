@@ -277,6 +277,33 @@ export class PermissionServer {
     return false
   }
 
+  /**
+   * Check if a legacy (pre-.cjs) version of the hook is installed.
+   * Used to trigger auto-migration from .js → .cjs.
+   */
+  static hasLegacyHook(projectPath: string): boolean {
+    if (!projectPath) return false
+    const localSettingsPath = path.join(projectPath, '.claude', 'settings.local.json')
+    const repoSettingsPath = path.join(projectPath, '.claude', 'settings.json')
+
+    for (const settingsPath of [localSettingsPath, repoSettingsPath]) {
+      if (!fs.existsSync(settingsPath)) continue
+      try {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+        const matcherGroups = settings.hooks?.PreToolUse
+        if (!Array.isArray(matcherGroups)) continue
+        if (matcherGroups.some((group: { hooks?: Array<{ command?: string }> }) =>
+          group.hooks?.some(h => h.command?.includes('permission-handler.js'))
+        )) {
+          return true
+        }
+      } catch {
+        continue
+      }
+    }
+    return false
+  }
+
   static readAllowlist(projectPath: string): string[] {
     const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
     try {
@@ -327,10 +354,21 @@ export class PermissionServer {
     const scriptContent = fs.readFileSync(bundledScriptPath, 'utf8')
     fs.writeFileSync(installedScriptPath, scriptContent, 'utf8')
 
+    // Clean up old .js version if we've migrated to .cjs
+    const oldJsPath = path.join(hooksDir, 'permission-handler.js')
+    if (PERMISSION_HOOK_FILENAME !== 'permission-handler.js' && fs.existsSync(oldJsPath)) {
+      try { fs.unlinkSync(oldJsPath) } catch {}
+      console.log(`[PermissionServer] Removed old hook script: ${oldJsPath}`)
+    }
+
     // Use relative paths so the command works across environments
     const relativeScript = `.claude/hooks/${PERMISSION_HOOK_FILENAME}`
     const relativeIpcDir = `.claude/${IPC_DIR_NAME}`
     const expectedCommand = `node "${relativeScript}" "${relativeIpcDir}"`
+
+    // Helper: check if a command string references any version of the permission hook
+    const isPermissionHookCommand = (cmd?: string) =>
+      cmd?.includes('permission-handler.js') || cmd?.includes('permission-handler.cjs')
 
     // Read existing local settings or start fresh
     let settings: Record<string, unknown> = {}
@@ -345,7 +383,7 @@ export class PermissionServer {
     // Check if the hook is already up-to-date (avoid unnecessary writes that trigger file watchers)
     const existingGroups = (settings.hooks as Record<string, unknown>)?.PreToolUse
     if (Array.isArray(existingGroups)) {
-      for (const group of existingGroups as Array<{ hooks?: Array<{ command?: string }> }>) {
+      for (const group of existingGroups as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>) {
         const match = group.hooks?.find(h => h.command?.includes(PERMISSION_HOOK_FILENAME))
         if (match?.command === expectedCommand) {
           // Still migrate old repo settings even if local is up-to-date
@@ -369,11 +407,11 @@ export class PermissionServer {
       hooks.PreToolUse = []
     }
 
-    // Remove any existing entries (old absolute-path format or stale)
+    // Remove any existing permission hook entries (old .js format, absolute paths, or stale)
     const filtered = (hooks.PreToolUse as Array<{ hooks?: Array<{ command?: string }>; command?: string }>)
       .filter(group => {
-        if (group.command?.includes(PERMISSION_HOOK_FILENAME)) return false
-        if (group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))) return false
+        if (isPermissionHookCommand(group.command)) return false
+        if (group.hooks?.some(h => isPermissionHookCommand(h.command))) return false
         return true
       })
     filtered.push(matcherGroup)
@@ -400,9 +438,11 @@ export class PermissionServer {
       const matcherGroups = settings.hooks?.PreToolUse
       if (!Array.isArray(matcherGroups)) return
 
+      const isPermissionHook = (cmd?: string) =>
+        cmd?.includes('permission-handler.js') || cmd?.includes('permission-handler.cjs')
       const filtered = matcherGroups.filter((group: { hooks?: Array<{ command?: string }>; command?: string }) => {
-        if (group.command?.includes(PERMISSION_HOOK_FILENAME)) return false
-        if (group.hooks?.some(h => h.command?.includes(PERMISSION_HOOK_FILENAME))) return false
+        if (isPermissionHook(group.command)) return false
+        if (group.hooks?.some(h => isPermissionHook(h.command))) return false
         return true
       })
 

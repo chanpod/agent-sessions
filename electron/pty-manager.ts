@@ -352,7 +352,6 @@ export class PtyManager {
 
     // Forward PTY data to renderer
     ptyProcess.onData((data) => {
-      // Process through detectors
       this.detectorManager.processOutput(id, data)
 
       if (!options.hidden && !this.window.isDestroyed()) {
@@ -361,10 +360,7 @@ export class PtyManager {
     })
 
     ptyProcess.onExit(({ exitCode }) => {
-      // Clean up state tracking
       this.lastChildState.delete(id)
-
-      // Notify detectors of exit
       this.detectorManager.handleTerminalExit(id, exitCode)
 
       if (!options.hidden && !this.window.isDestroyed()) {

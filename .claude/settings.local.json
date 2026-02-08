@@ -8,7 +8,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude/hooks/permission-handler.js\" \".claude/.permission-ipc\""
+            "command": "node \".claude/hooks/permission-handler.cjs\" \".claude/.permission-ipc\""
           }
         ]
       }

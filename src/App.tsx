@@ -633,6 +633,20 @@ function App() {
 
       // Validate dashboard state after terminals are restored
       validateDashboardState()
+
+      // Re-watch all projects with permission hooks so heartbeats stay fresh.
+      // After an app restart, the PermissionServer starts with empty watchedDirs.
+      // Without this, hooks for previously-watched projects see a stale heartbeat
+      // and abstain, silently falling back to the CLI's normal permission flow.
+      if (window.electron?.permission) {
+        const projectPaths = new Set<string>()
+        for (const p of projects) {
+          if (p.path) projectPaths.add(p.path)
+        }
+        for (const pp of projectPaths) {
+          window.electron.permission.checkHook(pp).catch(() => {})
+        }
+      }
     })()
   }, [isElectron, addSessionsBatch, saveConfig, removeSavedConfig, addTerminalToProject, projects, getConnection, validateDashboardState])
 

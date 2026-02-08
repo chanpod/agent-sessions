@@ -1061,7 +1061,6 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
   const { agentType, cwd, resumeSessionId, prompt, model, allowedTools, projectId } = options
-  console.log(`[Agent] Spawning PTY-based agent: ${agentType} in ${cwd}`, resumeSessionId ? `(resuming ${resumeSessionId})` : '', projectId ? `(project ${projectId})` : '')
 
   // Build the CLI command based on agent type
   let command: string
@@ -1314,8 +1313,17 @@ ipcMain.handle('permission:check-hook', async (_event, projectPath: string) => {
     // Re-install to ensure hook command stays current across code changes
     PermissionServer.installHook(projectPath)
     permissionServer?.watchProject(projectPath)
+    return true
   }
-  return installed
+  // Auto-migrate: if an old .js version of the hook exists, upgrade it to .cjs
+  if (PermissionServer.hasLegacyHook(projectPath)) {
+    const result = PermissionServer.installHook(projectPath)
+    if (result.success) {
+      permissionServer?.watchProject(projectPath)
+      return true
+    }
+  }
+  return false
 })
 
 ipcMain.handle('permission:install-hook', async (_event, projectPath: string) => {

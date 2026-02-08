@@ -23,14 +23,14 @@ const SAFE_TOOLS = new Set([
   'EnterPlanMode',
   'ExitPlanMode',
   'Skill',
+  'AskUserQuestion',
 ])
 
 // Tools that must be denied so the host application can handle them.
-// AskUserQuestion: The CLI auto-resolves this in -p mode without waiting for user input.
-// We deny it so the host app can render the question UI, collect the user's answer,
-// and deliver it as a follow-up --resume message.
+// Currently empty — AskUserQuestion was moved to SAFE_TOOLS because denying it
+// at the hook level blocks the tool entirely. The CLI emits the tool_use event
+// in the stream regardless, so the app can capture and render custom UI.
 const HOST_HANDLED_TOOLS = new Set([
-  'AskUserQuestion',
 ])
 
 function toCliResponse(decision, reason) {

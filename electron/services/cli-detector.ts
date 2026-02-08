@@ -41,7 +41,6 @@ let dbInstance: ToolChainDB | null = null
  */
 export function setCliDetectorDatabase(db: ToolChainDB): void {
   dbInstance = db
-  console.log('[cli-detector] Database instance set for persistent caching')
 }
 
 // ============================================================================
@@ -96,7 +95,6 @@ function getCachedDetectionResult(
   // L1: Check memory cache first (fastest)
   const memoryCached = memoryCache.get(cacheKey)
   if (memoryCached) {
-    console.log(`[cli-detector] L1 cache hit for ${cacheKey}`)
     return {
       result: memoryCached.result,
       timestamp: memoryCached.timestamp,
@@ -109,7 +107,6 @@ function getCachedDetectionResult(
     try {
       const dbCached = dbInstance.getCachedCliDetection(cacheKey)
       if (dbCached) {
-        console.log(`[cli-detector] L2 cache hit for ${cacheKey}`)
         const result = dbCached.result as AllCliToolsResult
 
         // Populate L1 cache from L2 for subsequent fast lookups
@@ -125,13 +122,11 @@ function getCachedDetectionResult(
           isStale: isCacheStale(dbCached.detectedAt),
         }
       }
-    } catch (err) {
-      console.error(`[cli-detector] Error reading from L2 cache:`, err)
+    } catch {
       // Fall through to return null
     }
   }
 
-  console.log(`[cli-detector] Cache miss for ${cacheKey}`)
   return null
 }
 
@@ -152,15 +147,12 @@ function setCachedDetectionResult(
     timestamp,
     executionContext,
   })
-  console.log(`[cli-detector] L1 cached detection result for ${cacheKey}`)
 
   // L2: Store in database (persistent)
   if (dbInstance) {
     try {
       dbInstance.setCachedCliDetection(cacheKey, projectPath, executionContext, result)
-      console.log(`[cli-detector] L2 cached detection result for ${cacheKey}`)
-    } catch (err) {
-      console.error(`[cli-detector] Error writing to L2 cache:`, err)
+    } catch {
       // Non-fatal: memory cache is still populated
     }
   }
@@ -188,12 +180,10 @@ export function clearDetectionCache(projectPath?: string): void {
   if (dbInstance) {
     try {
       dbInstance.clearCliDetectionCache(projectPath)
-    } catch (err) {
-      console.error(`[cli-detector] Error clearing L2 cache:`, err)
+    } catch {
+      // Non-fatal
     }
   }
-
-  console.log(`[cli-detector] Detection cache cleared${projectPath ? ` for project: ${projectPath}` : ''}`)
 }
 
 /**
@@ -415,14 +405,11 @@ async function tryCommand(
   sshManager?: SSHManagerLike
 ): Promise<string | null> {
   try {
-    console.log(`[cli-detector] tryCommand: executing "${command}"`)
     const result = await execInContextAsync(command, projectPath, projectId, sshManager)
     // Some CLIs output version to stderr instead of stdout, so check both
     const output = result.stdout.trim() || result.stderr.trim()
-    console.log(`[cli-detector] tryCommand: "${command}" -> stdout="${result.stdout.trim()}", stderr="${result.stderr.trim()}", output="${output}"`)
     return output || null
-  } catch (error) {
-    console.log(`[cli-detector] tryCommand: "${command}" failed:`, error instanceof Error ? error.message : error)
+  } catch {
     return null
   }
 }
@@ -432,7 +419,6 @@ async function tryCommand(
  */
 function extractVersion(output: string, regex: RegExp): string | undefined {
   const match = output.match(regex)
-  console.log(`[cli-detector] extractVersion: output="${output}", regex=${regex}, match=${JSON.stringify(match)}`)
   return match?.[1]
 }
 
@@ -568,8 +554,6 @@ export async function detectCliTool(
   projectId?: string,
   sshManager?: SSHManagerLike
 ): Promise<CliToolDetectionResult> {
-  console.log(`[cli-detector] Detecting ${tool.name} (${tool.id}) for path: ${projectPath}`)
-
   const result: CliToolDetectionResult = {
     id: tool.id,
     name: tool.name,
@@ -625,11 +609,9 @@ export async function detectCliTool(
       result.defaultModel = await detectDefaultModel(tool.id)
     }
 
-    console.log(`[cli-detector] ${tool.name}: installed=${result.installed}, version=${result.version || 'N/A'}, path=${result.path || 'N/A'}, installMethod=${result.installMethod}, defaultModel=${result.defaultModel || 'N/A'}`)
     return result
   } catch (error: unknown) {
     result.error = error instanceof Error ? error.message : String(error)
-    console.log(`[cli-detector] ${tool.name}: ERROR - ${result.error}`)
     return result
   }
 }
@@ -699,21 +681,18 @@ function triggerBackgroundRefresh(
 ): void {
   // Don't start a new refresh if one is already in progress for this key
   if (refreshInProgress.has(cacheKey)) {
-    console.log(`[cli-detector] Background refresh already in progress for ${cacheKey}`)
     return
   }
 
-  console.log(`[cli-detector] Starting background refresh for ${cacheKey}`)
   refreshInProgress.add(cacheKey)
 
   // Run detection in background (fire and forget)
   detectAllCliToolsInternal(projectPath, projectId, sshManager, additionalTools)
     .then((result) => {
       setCachedDetectionResult(projectPath, executionContext, result)
-      console.log(`[cli-detector] Background refresh completed for ${cacheKey}`)
     })
-    .catch((error) => {
-      console.error(`[cli-detector] Background refresh failed for ${cacheKey}:`, error)
+    .catch(() => {
+      // Non-fatal
     })
     .finally(() => {
       refreshInProgress.delete(cacheKey)
@@ -795,7 +774,6 @@ export async function detectAllCliTools(
 
   // Force refresh: bypass cache entirely
   if (forceRefresh) {
-    console.log(`[cli-detector] Force refresh requested for ${cacheKey}`)
     const result = await detectAllCliToolsInternal(projectPath, projectId, resolvedSshManager, resolvedAdditionalTools)
     setCachedDetectionResult(projectPath, executionContext, result)
     return result
@@ -809,7 +787,6 @@ export async function detectAllCliTools(
 
     if (isStale) {
       // Return cached data immediately, but trigger background refresh
-      console.log(`[cli-detector] Cache hit (stale) for ${cacheKey}, triggering background refresh`)
       triggerBackgroundRefresh(
         cacheKey,
         projectPath,
@@ -818,15 +795,12 @@ export async function detectAllCliTools(
         resolvedSshManager,
         resolvedAdditionalTools
       )
-    } else {
-      console.log(`[cli-detector] Cache hit (fresh) for ${cacheKey}`)
     }
 
     return result
   }
 
   // Cache miss: run detection and cache results
-  console.log(`[cli-detector] Cache miss for ${cacheKey}, running detection`)
   const result = await detectAllCliToolsInternal(projectPath, projectId, resolvedSshManager, resolvedAdditionalTools)
   setCachedDetectionResult(projectPath, executionContext, result)
   return result
@@ -892,14 +866,12 @@ async function fetchLatestVersion(packageName: string): Promise<string | null> {
     })
 
     if (!response.ok) {
-      console.log(`[cli-detector] Failed to fetch ${packageName}: ${response.status}`)
       return null
     }
 
     const data = await response.json() as { version?: string }
     return data.version || null
-  } catch (error: unknown) {
-    console.error(`[cli-detector] Error fetching latest version for ${packageName}:`, error)
+  } catch {
     return null
   }
 }
@@ -916,8 +888,6 @@ export async function checkAgentUpdate(
   agentId: string,
   currentVersion: string | null
 ): Promise<UpdateCheckResult> {
-  console.log(`[cli-detector] Checking update for ${agentId}, current version: ${currentVersion}`)
-
   const result: UpdateCheckResult = {
     agentId,
     currentVersion,
@@ -955,12 +925,9 @@ export async function checkAgentUpdate(
     result.latestVersion = latestVersion
     result.updateAvailable = isNewerVersion(currentVersion, latestVersion)
 
-    console.log(`[cli-detector] ${agentId}: current=${currentVersion}, latest=${latestVersion}, updateAvailable=${result.updateAvailable}`)
-
     return result
   } catch (error: unknown) {
     result.error = error instanceof Error ? error.message : String(error)
-    console.error(`[cli-detector] Error checking update for ${agentId}:`, error)
     return result
   }
 }
@@ -974,8 +941,6 @@ export async function checkAgentUpdate(
 export async function checkAgentUpdates(
   agents: Array<{ id: string; version: string | null }>
 ): Promise<UpdateCheckResult[]> {
-  console.log(`[cli-detector] Checking updates for ${agents.length} agents`)
-
   const results = await Promise.all(
     agents.map((agent) => checkAgentUpdate(agent.id, agent.version))
   )
