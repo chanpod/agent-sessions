@@ -347,7 +347,7 @@ export interface ElectronAPI {
     listInstalled: () => Promise<{ success: boolean; skills: SkillInstalledInfo[]; error?: string }>
     listAvailable: () => Promise<{ success: boolean; skills: SkillAvailableInfo[]; error?: string }>
     searchVercel: (query: string, limit?: number) => Promise<{ success: boolean; skills: VercelSkillInfo[]; error?: string }>
-    install: (pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local') => Promise<{ success: boolean; error?: string }>
+    install: (pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local', projectPath?: string) => Promise<{ success: boolean; error?: string }>
     uninstall: (pluginId: string) => Promise<{ success: boolean; error?: string }>
     toggleEnabled: (pluginId: string, enabled: boolean) => Promise<{ success: boolean; error?: string }>
   }

@@ -557,6 +557,7 @@ ipcMain.handle('pty:create', async (_event, options: { cwd?: string; shell?: str
     }
 
     // Create terminal
+    console.log(`[Main] pty:create options:`, JSON.stringify({ shell: options.shell, cwd: options.cwd, initialCommand: !!options.initialCommand, id: options.id }))
     const info = ptyManager.createTerminal(options)
     return info
   } catch (error) {
@@ -1439,7 +1440,7 @@ ipcMain.handle('docker:getLogs', async (_event, serviceId: string, tail?: number
 
 // Execute a CLI command and return stdout. On Windows, routes through Git Bash
 // so that tools installed via npm (e.g. claude) are found in PATH.
-async function execCliCommand(command: string): Promise<string> {
+async function execCliCommand(command: string, cwd?: string): Promise<string> {
   const { promisify } = await import('util')
   const execAsync = promisify(exec)
 
@@ -1451,6 +1452,7 @@ async function execCliCommand(command: string): Promise<string> {
         encoding: 'utf-8',
         timeout: 30000,
         windowsHide: true,
+        cwd,
       })
       return stdout
     }
@@ -1459,6 +1461,7 @@ async function execCliCommand(command: string): Promise<string> {
   const { stdout } = await execAsync(command, {
     encoding: 'utf-8',
     timeout: 30000,
+    cwd,
   })
   return stdout
 }
@@ -1487,14 +1490,16 @@ ipcMain.handle('skill:list-available', async () => {
   }
 })
 
-ipcMain.handle('skill:install', async (_event, pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local') => {
+ipcMain.handle('skill:install', async (_event, pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local', projectPath?: string) => {
   try {
+    // Use projectPath as cwd so --scope project binds to the correct project
+    const cwd = projectPath || undefined
     if (source === 'anthropic') {
       const name = pluginId.split('@')[0] || pluginId
       const scopeFlag = scope ? ` --scope ${scope}` : ''
-      await execCliCommand(`claude plugin install ${name}${scopeFlag}`)
+      await execCliCommand(`claude plugin install ${name}${scopeFlag}`, cwd)
     } else {
-      await execCliCommand(`npx skills add ${pluginId} --agent claude-code --yes`)
+      await execCliCommand(`npx skills add ${pluginId} --agent claude-code --yes`, cwd)
     }
     return { success: true }
   } catch (error: unknown) {

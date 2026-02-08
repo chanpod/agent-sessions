@@ -18,8 +18,10 @@ import type {
   AgentToolInputDeltaData,
   AgentToolEndData,
   AgentMessageEndData,
+  AgentSessionResultData,
   AgentErrorData,
   DebugEventEntry,
+  TokenUsage,
 } from '../types/stream-json'
 
 /**
@@ -32,6 +34,10 @@ export interface PersistedSessionData {
   userMessages: Array<{ id: string; content: string; timestamp: number; agentType: string }>
   lastActiveAt: number
   cwd: string
+  /** Latest context window usage snapshot (input_tokens = full context, not accumulated) */
+  latestContextUsage?: TokenUsage
+  /** Total cost in USD for this session (from result events) */
+  totalCostUsd?: number
 }
 
 
@@ -76,6 +82,13 @@ interface AgentStreamStore {
   // When the agent finishes, queued messages are sent automatically
   queuedMessages: Map<string, string[]>
 
+  // Runtime: latest context window usage per session (sessionId -> TokenUsage)
+  // Updated on every message_start (input_tokens = full context) and message_end (final output_tokens)
+  latestContextUsage: Map<string, TokenUsage>
+
+  // Runtime: accumulated session cost per session (sessionId -> cost in USD)
+  sessionCosts: Map<string, number>
+
   // Actions
   processEvent(terminalId: string, event: AgentStreamEvent): void
   getTerminalState(terminalId: string): TerminalAgentState | undefined
@@ -112,6 +125,10 @@ interface AgentStreamStore {
   dequeueMessage(initialProcessId: string): string | undefined
   peekQueue(initialProcessId: string): string[]
   clearQueue(initialProcessId: string): void
+
+  // Context usage
+  getLatestContextUsage(sessionId: string): TokenUsage | undefined
+  getSessionCost(sessionId: string): number | undefined
 
   // IPC subscription
   subscribeToEvents(): () => void // returns unsubscribe function (for PTY-based detector events)
@@ -599,6 +616,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       notifiedTerminals: new Set(),
       draftInputs: new Map(),
       queuedMessages: new Map(),
+      latestContextUsage: new Map(),
+      sessionCosts: new Map(),
 
       processEvent: (terminalId: string, event: AgentStreamEvent) => {
         set((state) => {
@@ -606,6 +625,35 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           const terminalState = getOrCreateTerminalState(terminals, terminalId)
           const newState = applyAgentEvent(terminalState, event)
           terminals.set(terminalId, newState)
+
+          // Update latestContextUsage on message start/end
+          // input_tokens from the API = full context window, so latest value is the true usage
+          if (event.type === 'agent-message-start' || event.type === 'agent-message-end') {
+            const eventData = event.data as { usage?: TokenUsage }
+            if (eventData.usage) {
+              const sessionId = state.terminalToSession.get(terminalId)
+              if (sessionId) {
+                const latestContextUsage = new Map(state.latestContextUsage)
+                latestContextUsage.set(sessionId, eventData.usage)
+                return { terminals, latestContextUsage }
+              }
+            }
+          }
+
+          // Handle session result events (cost tracking)
+          if (event.type === 'agent-session-result') {
+            const resultData = event.data as AgentSessionResultData
+            if (resultData.totalCostUsd != null) {
+              const sessionId = state.terminalToSession.get(terminalId)
+              if (sessionId) {
+                const sessionCosts = new Map(state.sessionCosts)
+                const existing = sessionCosts.get(sessionId) ?? 0
+                sessionCosts.set(sessionId, existing + resultData.totalCostUsd)
+                return { terminals, sessionCosts }
+              }
+            }
+          }
+
           return { terminals }
         })
 
@@ -805,7 +853,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             })
           }
 
-          return { terminals, terminalToSession, sessionToInitialProcess, conversations }
+          // Hydrate latestContextUsage from persisted data
+          const latestContextUsage = new Map(state.latestContextUsage)
+          if (sessionData.latestContextUsage) {
+            latestContextUsage.set(sessionId, sessionData.latestContextUsage)
+          }
+
+          // Hydrate session costs from persisted data
+          const sessionCosts = new Map(state.sessionCosts)
+          if (sessionData.totalCostUsd != null) {
+            sessionCosts.set(sessionId, sessionData.totalCostUsd)
+          }
+
+          return { terminals, terminalToSession, sessionToInitialProcess, conversations, latestContextUsage, sessionCosts }
         })
 
         console.log('[AgentStreamStore] Restored session to terminal:', {
@@ -858,6 +918,9 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
         const userMessages = conversation?.userMessages ?? []
 
+        const contextUsage = state.latestContextUsage.get(sessionId)
+        const cost = state.sessionCosts.get(sessionId)
+
         const sessionData: PersistedSessionData = {
           sessionId,
           agentType: agentType || existingSession?.agentType || 'unknown',
@@ -865,6 +928,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           userMessages,
           lastActiveAt: Date.now(),
           cwd: cwd || existingSession?.cwd || '',
+          latestContextUsage: contextUsage || existingSession?.latestContextUsage,
+          totalCostUsd: cost ?? existingSession?.totalCostUsd,
         }
 
         set((state) => ({
@@ -964,6 +1029,14 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         })
       },
 
+      getLatestContextUsage: (sessionId: string) => {
+        return get().latestContextUsage.get(sessionId)
+      },
+
+      getSessionCost: (sessionId: string) => {
+        return get().sessionCosts.get(sessionId)
+      },
+
       subscribeToEvents: () => {
         if (listenerSetup) return () => {}
         listenerSetup = true
@@ -1039,11 +1112,38 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             if (agentEvents.length > 0 || processExitTerminals.length > 0) {
               set((state) => {
                 const terminals = new Map(state.terminals)
+                let latestContextUsage: Map<string, TokenUsage> | undefined
+                let sessionCosts: Map<string, number> | undefined
 
                 // Apply agent events
                 for (const { terminalId, event } of agentEvents) {
                   const terminalState = getOrCreateTerminalState(terminals, terminalId)
                   terminals.set(terminalId, applyAgentEvent(terminalState, event))
+
+                  // Track context usage from message start/end events
+                  if (event.type === 'agent-message-start' || event.type === 'agent-message-end') {
+                    const eventData = event.data as { usage?: TokenUsage }
+                    if (eventData.usage) {
+                      const sid = state.terminalToSession.get(terminalId)
+                      if (sid) {
+                        if (!latestContextUsage) latestContextUsage = new Map(state.latestContextUsage)
+                        latestContextUsage.set(sid, eventData.usage)
+                      }
+                    }
+                  }
+
+                  // Track session costs from result events
+                  if (event.type === 'agent-session-result') {
+                    const resultData = event.data as AgentSessionResultData
+                    if (resultData.totalCostUsd != null) {
+                      const sid = state.terminalToSession.get(terminalId)
+                      if (sid) {
+                        if (!sessionCosts) sessionCosts = new Map(state.sessionCosts)
+                        const existing = sessionCosts.get(sid) ?? 0
+                        sessionCosts.set(sid, existing + resultData.totalCostUsd)
+                      }
+                    }
+                  }
                 }
 
                 // Apply process exit events
@@ -1077,7 +1177,11 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                   })
                 }
 
-                return { terminals }
+                return {
+                  terminals,
+                  ...(latestContextUsage ? { latestContextUsage } : {}),
+                  ...(sessionCosts ? { sessionCosts } : {}),
+                }
               })
             }
 
@@ -1332,6 +1436,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           state.notifiedTerminals = new Set()
           state.draftInputs = new Map()
           state.queuedMessages = new Map()
+          state.latestContextUsage = new Map()
+          state.sessionCosts = new Map()
           state.hasRehydrated = true
           console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
           // Resolve the rehydration promise so waitForRehydration() callers can proceed

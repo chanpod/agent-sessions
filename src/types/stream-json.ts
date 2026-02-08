@@ -279,6 +279,17 @@ export interface TokenUsage {
 export interface AgentMessageStartData {
   messageId: string
   model: string
+  usage?: TokenUsage
+}
+
+/**
+ * Agent session result event data (from the CLI 'result' event at end of turn)
+ */
+export interface AgentSessionResultData {
+  subtype: 'success' | 'error'
+  totalCostUsd?: number
+  durationMs?: number
+  usage?: TokenUsage
 }
 
 /**
@@ -349,6 +360,7 @@ export type AgentStreamEvent =
   | { type: 'agent-tool-end'; data: AgentToolEndData }
   | { type: 'agent-block-end'; data: AgentToolEndData }
   | { type: 'agent-message-end'; data: AgentMessageEndData }
+  | { type: 'agent-session-result'; data: AgentSessionResultData }
   | { type: 'agent-error'; data: AgentErrorData }
 
 /**

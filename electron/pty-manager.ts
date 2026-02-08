@@ -8,6 +8,7 @@ import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
 import { StreamJsonDetector } from './output-monitors/stream-json-detector'
 import { CodexStreamDetector } from './output-monitors/codex-stream-detector'
+import { getGitBashPath } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
 
@@ -294,9 +295,10 @@ export class PtyManager {
     // This is used for agent terminals (claude, gemini, codex) and any other command execution
     if (options.initialCommand) {
       if (process.platform === 'win32') {
-        // Windows project — use bash.exe (Git Bash) with -l -i for login interactive shell
+        // Windows project — use Git Bash with -l -i for login interactive shell
         // -i is needed to properly load PATH for npm-installed tools like codex (which need node)
-        shellExecutable = 'bash.exe'
+        // MUST use getGitBashPath() — bare 'bash.exe' resolves to WSL bash on systems with WSL installed
+        shellExecutable = getGitBashPath() || 'bash.exe'
         shellArgs = ['-l', '-i', '-c', options.initialCommand]
       } else {
         // On Unix, use default shell with login interactive
@@ -311,6 +313,8 @@ export class PtyManager {
     // that corrupts JSON streaming output. Regular terminals use standard 80x24.
     const isAgentTerminal = options.hidden || !!options.initialCommand
     const cols = isAgentTerminal ? 10000 : 80
+
+    console.log(`[PtyManager] createTerminal: shell="${shellExecutable}", cwd="${effectiveCwd}", initialCommand=${!!options.initialCommand}, args=${JSON.stringify(finalArgs).substring(0, 200)}`)
 
     const ptyProcess = pty.spawn(shellExecutable, finalArgs, {
       name: 'xterm-256color',

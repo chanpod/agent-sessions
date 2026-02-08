@@ -123,7 +123,7 @@ interface AssistantTurn {
   activityBlocks: (ContentBlock | ToolGroup)[]
   responseBlocks: ContentBlock[]
   toolResults: Map<string, ToolResultBlock>
-  cumulativeUsage: TokenUsage
+  contextUsage: TokenUsage
   isStreaming: boolean
   latestModel?: string
 }
@@ -131,7 +131,7 @@ interface AssistantTurn {
 interface StandaloneMessage {
   kind: 'standalone'
   message: AgentMessage
-  cumulativeUsage: TokenUsage
+  contextUsage: TokenUsage
 }
 
 type DisplayItem = AssistantTurn | StandaloneMessage
@@ -186,7 +186,11 @@ function hasSpecialTool(msg: AgentMessage): boolean {
  */
 function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
   const items: DisplayItem[] = []
-  let cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
+  // Track the latest turn's usage — NOT accumulated.
+  // input_tokens from the Anthropic API already includes all prior context
+  // (system prompt + tools + full conversation history), so the most recent
+  // turn's usage is the true context window consumption.
+  let contextUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
   let currentTurnMessages: AgentMessage[] = []
 
   function flushTurn() {
@@ -234,7 +238,7 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
       activityBlocks,
       responseBlocks,
       toolResults: toolResultMap,
-      cumulativeUsage: { ...cumulativeUsage },
+      contextUsage: { ...contextUsage },
       isStreaming,
       latestModel,
     })
@@ -245,9 +249,11 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
   for (const msg of allMessages) {
     const usage = msg.metadata?.usage as TokenUsage | undefined
     if (usage) {
-      cumulativeUsage = {
-        inputTokens: cumulativeUsage.inputTokens + (usage.inputTokens || 0),
-        outputTokens: cumulativeUsage.outputTokens + (usage.outputTokens || 0),
+      // Use latest turn's usage directly — no accumulation.
+      // input_tokens already represents the full context window for this turn.
+      contextUsage = {
+        inputTokens: usage.inputTokens || 0,
+        outputTokens: usage.outputTokens || 0,
       }
     }
 
@@ -264,7 +270,7 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
       items.push({
         kind: 'standalone',
         message: msg,
-        cumulativeUsage: { ...cumulativeUsage },
+        contextUsage: { ...contextUsage },
       })
     }
   }
@@ -542,7 +548,7 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
                     message={item.message}
                     context={context}
                     composer={composer}
-                    cumulativeUsage={item.cumulativeUsage}
+                    contextUsage={item.contextUsage}
                   />
                 ) : (
                   <AssistantTurnRenderer
@@ -573,13 +579,13 @@ function ActivityBox({
   isStreaming,
   showContextUsage,
   latestModel,
-  cumulativeUsage,
+  contextUsage,
 }: {
   regularActivity: (ContentBlock | ToolGroup)[]
   isStreaming: boolean
   showContextUsage: boolean
   latestModel?: string
-  cumulativeUsage: TokenUsage
+  contextUsage: TokenUsage
 }) {
   const [isOpen, setIsOpen] = useState(true)
 
@@ -607,7 +613,7 @@ function ActivityBox({
             {showContextUsage && latestModel && (
               <ContextUsageIndicator
                 model={latestModel}
-                usage={cumulativeUsage}
+                usage={contextUsage}
                 showTokens={true}
               />
             )}
@@ -672,8 +678,8 @@ function AssistantTurnRenderer({
   const hasPromotedTools = promotedTools.length > 0
   const hasResponse = turn.responseBlocks.length > 0
 
-  const showContextUsage = turn.latestModel && turn.cumulativeUsage &&
-    (turn.cumulativeUsage.inputTokens > 0 || turn.cumulativeUsage.outputTokens > 0)
+  const showContextUsage = turn.latestModel && turn.contextUsage &&
+    (turn.contextUsage.inputTokens > 0 || turn.contextUsage.outputTokens > 0)
 
   return (
     <div className="flex flex-col gap-3">
@@ -684,7 +690,7 @@ function AssistantTurnRenderer({
           isStreaming={turn.isStreaming}
           showContextUsage={!!(showContextUsage && !hasResponse && !hasPromotedTools)}
           latestModel={turn.latestModel}
-          cumulativeUsage={turn.cumulativeUsage}
+          contextUsage={turn.contextUsage}
         />
       )}
 
@@ -722,7 +728,7 @@ function AssistantTurnRenderer({
               {showContextUsage && (
                 <ContextUsageIndicator
                   model={turn.latestModel!}
-                  usage={turn.cumulativeUsage}
+                  usage={turn.contextUsage}
                   showTokens={true}
                 />
               )}
@@ -768,12 +774,12 @@ function StandaloneMessageRenderer({
   message,
   context,
   composer,
-  cumulativeUsage,
+  contextUsage,
 }: {
   message: AgentMessage
   context: RenderContext
   composer?: AgentUIComposer
-  cumulativeUsage?: TokenUsage
+  contextUsage?: TokenUsage
 }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
@@ -829,7 +835,7 @@ function StandaloneMessageRenderer({
             {composer?.renderMessageHeader ? (
               composer.renderMessageHeader(message, context)
             ) : (
-              <DefaultMessageHeader message={message} cumulativeUsage={cumulativeUsage} />
+              <DefaultMessageHeader message={message} contextUsage={contextUsage} />
             )}
             <div className="flex flex-col gap-2 pl-8">
               {message.blocks.map((block) => (
@@ -856,7 +862,7 @@ function StandaloneMessageRenderer({
             {composer?.renderMessageHeader ? (
               composer.renderMessageHeader(message, context)
             ) : (
-              <DefaultMessageHeader message={message} cumulativeUsage={cumulativeUsage} />
+              <DefaultMessageHeader message={message} contextUsage={contextUsage} />
             )}
             <div className="flex flex-col gap-2 pl-8">
               {message.blocks.map((block) => (
@@ -881,7 +887,7 @@ function StandaloneMessageRenderer({
 // Default Renderers
 // =============================================================================
 
-function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMessage; cumulativeUsage?: TokenUsage }) {
+function DefaultMessageHeader({ message, contextUsage }: { message: AgentMessage; contextUsage?: TokenUsage }) {
   const roleConfig = {
     assistant: {
       icon: IconSparkles,
@@ -910,8 +916,8 @@ function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMess
   const Icon = config.icon
 
   const model = message.metadata?.model as string | undefined
-  const showContextUsage = message.role === 'assistant' && model && cumulativeUsage &&
-    (cumulativeUsage.inputTokens > 0 || cumulativeUsage.outputTokens > 0)
+  const showContextUsage = message.role === 'assistant' && model && contextUsage &&
+    (contextUsage.inputTokens > 0 || contextUsage.outputTokens > 0)
 
   return (
     <div className="flex items-center justify-between">
@@ -927,7 +933,7 @@ function DefaultMessageHeader({ message, cumulativeUsage }: { message: AgentMess
         )}
       </div>
       {showContextUsage && (
-        <ContextUsageIndicator model={model} usage={cumulativeUsage} showTokens={true} />
+        <ContextUsageIndicator model={model} usage={contextUsage} showTokens={true} />
       )}
     </div>
   )

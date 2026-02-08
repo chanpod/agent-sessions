@@ -6,6 +6,11 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from '@/components/ui/collapsible'
+import {
   IconRefresh,
   IconPlus,
   IconPlayerPlay,
@@ -13,6 +18,8 @@ import {
   IconX,
   IconTerminal2,
   IconCircleFilled,
+  IconSearch,
+  IconChevronRight,
 } from '@tabler/icons-react'
 
 // ---------------------------------------------------------------------------
@@ -263,13 +270,61 @@ function ScriptPickerContent({
   projectName: string | undefined
   onSelect: (name: string, command: string) => void
 }) {
+  const [search, setSearch] = useState('')
+  const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
+
   const handleScriptSelect = useCallback(
     (script: ScriptInfo, pkg: PackageScripts) => {
       const pm = pkg.packageManager ?? 'npm'
-      const command = `${pm} run ${script.name}`
+      const runCmd = `${pm} run ${script.name}`
+      const command =
+        pkg.packagePath !== '.' ? `cd ${pkg.packagePath} && ${runCmd}` : runCmd
       onSelect(script.name, command)
     },
     [onSelect],
+  )
+
+  // Filter packages and scripts by search term
+  const filteredPackages = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return packages
+
+    return packages
+      .map((pkg) => {
+        const isRoot = pkg.packagePath === '.'
+        const displayName = isRoot
+          ? (pkg.packageName ?? projectName ?? 'root')
+          : pkg.packagePath
+
+        // If the package name matches, show all its scripts
+        if (displayName.toLowerCase().includes(q)) return pkg
+
+        // Otherwise filter scripts by name
+        const matchingScripts = pkg.scripts.filter((s) =>
+          s.name.toLowerCase().includes(q),
+        )
+        if (matchingScripts.length === 0) return null
+
+        return { ...pkg, scripts: matchingScripts }
+      })
+      .filter(Boolean) as PackageScripts[]
+  }, [packages, search, projectName])
+
+  const isSearching = search.trim().length > 0
+  const defaultCollapsed = packages.length > 3
+
+  const togglePkg = useCallback((path: string) => {
+    setManualOpen((prev) => ({ ...prev, [path]: !prev[path] }))
+  }, [])
+
+  // Determine if a package section is open
+  const isPkgOpen = useCallback(
+    (path: string) => {
+      if (isSearching) return true
+      if (path in manualOpen) return manualOpen[path]
+      return !defaultCollapsed
+    },
+    [isSearching, manualOpen, defaultCollapsed],
   )
 
   if (packages.length === 0) {
@@ -292,42 +347,82 @@ function ScriptPickerContent({
       <div className="px-3 pb-2 pt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
         Run Script
       </div>
-      <ScrollArea className="max-h-80">
-        {packages.map((pkg, idx) => {
-          const isRoot = pkg.packagePath === '.'
-          const displayName = isRoot
-            ? pkg.packageName ?? projectName ?? 'root'
-            : pkg.packagePath
 
-          return (
-            <div key={pkg.packagePath}>
-              {idx > 0 && <Separator />}
+      {/* Search input */}
+      <div className="px-3 pb-2">
+        <div className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1">
+          <IconSearch size={14} className="shrink-0 text-muted-foreground" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter scripts..."
+            className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+            autoFocus
+          />
+        </div>
+      </div>
 
-              {/* Package header */}
-              <div className="flex items-center bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
-                <span className="truncate">{displayName}</span>
-                {pkg.packageManager && (
-                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                    {pkg.packageManager}
-                  </span>
-                )}
+      <div className="max-h-96 overflow-y-auto">
+        {filteredPackages.length === 0 ? (
+          <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+            No matching scripts
+          </div>
+        ) : (
+          filteredPackages.map((pkg, idx) => {
+            const isRoot = pkg.packagePath === '.'
+            const displayName = isRoot
+              ? (pkg.packageName ?? projectName ?? 'root')
+              : pkg.packagePath
+            const open = isPkgOpen(pkg.packagePath)
+
+            return (
+              <div key={pkg.packagePath}>
+                {idx > 0 && <Separator />}
+
+                <Collapsible open={open} onOpenChange={() => togglePkg(pkg.packagePath)}>
+                  {/* Package header */}
+                  <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted/80">
+                    <IconChevronRight
+                      size={12}
+                      className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+                    />
+                    <span className="truncate font-medium">{displayName}</span>
+                    <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground/70">
+                        {pkg.scripts.length}
+                      </span>
+                      {pkg.packageManager && (
+                        <span className="text-[10px] text-muted-foreground/70">
+                          {pkg.packageManager}
+                        </span>
+                      )}
+                    </span>
+                  </CollapsibleTrigger>
+
+                  {/* Script items */}
+                  <CollapsibleContent>
+                    {pkg.scripts.map((script) => (
+                      <button
+                        key={`${pkg.packagePath}:${script.name}`}
+                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent"
+                        onClick={() => handleScriptSelect(script, pkg)}
+                        title={script.command}
+                      >
+                        <IconPlayerPlay
+                          size={14}
+                          className="shrink-0 text-muted-foreground"
+                        />
+                        <span className="truncate">{script.name}</span>
+                      </button>
+                    ))}
+                  </CollapsibleContent>
+                </Collapsible>
               </div>
-
-              {/* Script items */}
-              {pkg.scripts.map((script) => (
-                <button
-                  key={`${pkg.packagePath}:${script.name}`}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent"
-                  onClick={() => handleScriptSelect(script, pkg)}
-                >
-                  <IconPlayerPlay size={14} className="shrink-0 text-muted-foreground" />
-                  <span className="truncate">{script.name}</span>
-                </button>
-              ))}
-            </div>
-          )
-        })}
-      </ScrollArea>
+            )
+          })
+        )}
+      </div>
 
       <Separator />
       <CustomCommandForm onSubmit={onSelect} />
@@ -451,7 +546,7 @@ export function ServicesSection({
             >
               <IconPlus size={14} />
             </PopoverTrigger>
-            <PopoverContent className="w-64 p-0" side="right" align="start">
+            <PopoverContent className="w-80 p-0" side="right" align="start">
               <ScriptPickerContent
                 packages={packages}
                 projectName={projectName}

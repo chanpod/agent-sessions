@@ -8,6 +8,7 @@ import { useToastStore } from '@/stores/toast-store'
 import { useTerminalStore, type SavedTerminalConfig } from '@/stores/terminal-store'
 import { AgentMessageView, type AgentMessageViewHandle } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
+import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { DebugEventSheet } from './DebugEventLog'
 import { cn, formatModelDisplayName } from '@/lib/utils'
 import type {
@@ -196,6 +197,11 @@ export function AgentWorkspace({
     (store) => store.terminalToSession.get(initialProcessId) ?? null
   )
   const sessionId = resumeSessionId ?? storeSessionId
+
+  // Subscribe to latest context usage for this session (updated on every message start/end)
+  const contextUsage = useAgentStreamStore(
+    (store) => sessionId ? store.latestContextUsage.get(sessionId) ?? null : null
+  )
 
   // Auto-generate title once sessionId is available (after first message gets a response).
   // Runs reactively when sessionId populates, avoiding the race condition of checking
@@ -785,12 +791,21 @@ export function AgentWorkspace({
             ) : (
               <div />
             )}
-            {/* Model label */}
-            {modelDisplayName && (
-              <span className="text-[11px] font-medium text-muted-foreground/70 px-2 py-1">
-                {modelDisplayName}
-              </span>
-            )}
+            {/* Context usage + Model label */}
+            <div className="flex items-center gap-2">
+              {contextUsage && (latestModel || configuredModel) && (
+                <ContextUsageIndicator
+                  model={(latestModel || configuredModel)!}
+                  usage={contextUsage}
+                  showTokens={true}
+                />
+              )}
+              {modelDisplayName && (
+                <span className="text-[11px] font-medium text-muted-foreground/70 px-2 py-1">
+                  {modelDisplayName}
+                </span>
+              )}
+            </div>
           </div>
           <AgentInputArea
             processId={initialProcessId}

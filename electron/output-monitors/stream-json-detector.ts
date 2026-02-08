@@ -459,11 +459,36 @@ export class StreamJsonDetector implements OutputDetector {
       }
 
       case 'result': {
-        // Result event - final summary (optional additional processing)
+        // Result event - final summary with cost and usage data
         const resultEvent = event as unknown as {
           subtype?: string
           result?: string
-          usage?: { input_tokens?: number; output_tokens?: number }
+          total_cost_usd?: number
+          duration_ms?: number
+          usage?: {
+            input_tokens?: number
+            output_tokens?: number
+            cache_read_input_tokens?: number
+            cache_creation_input_tokens?: number
+          }
+        }
+        if (resultEvent.subtype === 'success' || resultEvent.subtype === 'error') {
+          events.push({
+            terminalId,
+            type: 'agent-session-result',
+            timestamp,
+            data: {
+              subtype: resultEvent.subtype,
+              totalCostUsd: resultEvent.total_cost_usd,
+              durationMs: resultEvent.duration_ms,
+              usage: resultEvent.usage ? {
+                inputTokens: resultEvent.usage.input_tokens ?? 0,
+                outputTokens: resultEvent.usage.output_tokens ?? 0,
+                cacheReadInputTokens: resultEvent.usage.cache_read_input_tokens,
+                cacheCreationInputTokens: resultEvent.usage.cache_creation_input_tokens,
+              } : undefined,
+            },
+          })
         }
         break
       }

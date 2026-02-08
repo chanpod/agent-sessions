@@ -19,7 +19,7 @@ import { AgentContextEditor } from './AgentContextEditor'
 import { AgentUpdateDialog } from './AgentUpdateDialog'
 import AgentContextManager from './AgentContextManager'
 import { SkillBrowser, type InstalledSkill, type MarketplaceSkill } from './skills/SkillBrowser'
-import { cn, formatModelDisplayName } from '../lib/utils'
+import { cn, formatModelDisplayName, formatTimeAgo } from '../lib/utils'
 import { Button } from './ui/button'
 import type { CliToolDetectionResult, UpdateCheckResult } from '../types/electron'
 
@@ -76,6 +76,11 @@ function AgentSessionRow({
   const cliSessionId = useAgentStreamStore((s) => s.terminalToSession.get(session.id))
   const hasPendingPermission = usePermissionStore((s) =>
     cliSessionId ? s.pendingRequests.some((r) => r.sessionId === cliSessionId) : false
+  )
+
+  // Get the last activity timestamp from persisted session data
+  const lastActiveAt = useAgentStreamStore((s) =>
+    cliSessionId ? s.sessions[cliSessionId]?.lastActiveAt : undefined
   )
 
   // Get the actual model from stream messages (includes version like "claude-opus-4-6-20260101")
@@ -262,7 +267,12 @@ function AgentSessionRow({
               {contextLabel && isExited && (
                 <span className="text-muted-foreground/40">&middot;</span>
               )}
-              {isExited && (
+              {isExited && lastActiveAt && (
+                <span className="text-muted-foreground/60" title={new Date(lastActiveAt).toLocaleString()}>
+                  {formatTimeAgo(lastActiveAt)}
+                </span>
+              )}
+              {isExited && !lastActiveAt && (
                 <span className="text-muted-foreground/60">exited</span>
               )}
             </div>
@@ -318,19 +328,27 @@ export function AgentTerminalsSection({
       ])
 
       if (installedRes.success && installedRes.skills) {
+        const all = installedRes.skills.map((s: Record<string, unknown>) => ({
+          id: String(s.id ?? ''),
+          name: String(s.id ?? '').split('@')[0],
+          version: String(s.version ?? ''),
+          scope: (s.scope as InstalledSkill['scope']) ?? 'user',
+          enabled: s.enabled !== false,
+          installPath: String(s.installPath ?? ''),
+          installedAt: String(s.installedAt ?? ''),
+          lastUpdated: String(s.lastUpdated ?? ''),
+          projectPath: s.projectPath as string | undefined,
+          marketplace: String(s.id ?? '').split('@')[1],
+        }))
+        // Show global skills always; project/local skills only for the current project
         setInstalledSkills(
-          installedRes.skills.map((s: Record<string, unknown>) => ({
-            id: String(s.id ?? ''),
-            name: String(s.id ?? '').split('@')[0],
-            version: String(s.version ?? ''),
-            scope: (s.scope as InstalledSkill['scope']) ?? 'user',
-            enabled: s.enabled !== false,
-            installPath: String(s.installPath ?? ''),
-            installedAt: String(s.installedAt ?? ''),
-            lastUpdated: String(s.lastUpdated ?? ''),
-            projectPath: s.projectPath as string | undefined,
-            marketplace: String(s.id ?? '').split('@')[1],
-          }))
+          all.filter((s) => {
+            if (s.scope === 'user') return true
+            if (!s.projectPath) return true
+            // Normalize paths for comparison (handle trailing slashes, case, etc.)
+            const normalize = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase()
+            return normalize(s.projectPath) === normalize(projectPath)
+          })
         )
       }
 
@@ -353,7 +371,7 @@ export function AgentTerminalsSection({
     } finally {
       setSkillsLoading(false)
     }
-  }, [])
+  }, [projectPath])
 
   useEffect(() => {
     if (showSkillBrowser) loadSkills()
@@ -628,7 +646,7 @@ export function AgentTerminalsSection({
         marketplaceSkills={marketplaceSkills}
         onInstall={async (skill, scope) => {
           if (!window.electron?.skill) return
-          const res = await window.electron.skill.install(skill.id, skill.source, scope)
+          const res = await window.electron.skill.install(skill.id, skill.source, scope, projectPath)
           if (res.success) await loadSkills()
         }}
         onUninstall={async (skill) => {
