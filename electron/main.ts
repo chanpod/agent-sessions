@@ -25,7 +25,7 @@ import {
   isExecError
 } from './types/index.js'
 
-import { PathService, getPlatformForInstall, type ExecutionContext } from './utils/path-service.js'
+import { PathService, getPlatformForInstall, getGitBashPath, type ExecutionContext } from './utils/path-service.js'
 import {
   detectCliTool,
   detectAllCliTools,
@@ -1437,49 +1437,64 @@ ipcMain.handle('docker:getLogs', async (_event, serviceId: string, tail?: number
 
 // ─── Skill/Plugin Management IPC ──────────────────────────────────
 
+// Execute a CLI command and return stdout. On Windows, routes through Git Bash
+// so that tools installed via npm (e.g. claude) are found in PATH.
+async function execCliCommand(command: string): Promise<string> {
+  const { promisify } = await import('util')
+  const execAsync = promisify(exec)
+
+  if (process.platform === 'win32') {
+    const gitBashPath = getGitBashPath()
+    if (gitBashPath) {
+      const escaped = command.replace(/"/g, '\\"')
+      const { stdout } = await execAsync(`"${gitBashPath}" -l -c "${escaped}"`, {
+        encoding: 'utf-8',
+        timeout: 30000,
+        windowsHide: true,
+      })
+      return stdout
+    }
+  }
+
+  const { stdout } = await execAsync(command, {
+    encoding: 'utf-8',
+    timeout: 30000,
+  })
+  return stdout
+}
+
 ipcMain.handle('skill:list-installed', async () => {
   try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const { stdout } = await execFileAsync('claude', ['plugin', 'list', '--json'], { shell: true })
+    const stdout = await execCliCommand('claude plugin list --json')
     const skills = JSON.parse(stdout)
     return { success: true, skills: Array.isArray(skills) ? skills : [] }
   } catch (error: unknown) {
     console.error('[Skills] List installed failed:', error)
-    return { success: true, skills: [], error: error instanceof Error ? error.message : String(error) }
+    return { success: false, skills: [], error: error instanceof Error ? error.message : String(error) }
   }
 })
 
 ipcMain.handle('skill:list-available', async () => {
   try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-    const { stdout } = await execFileAsync('claude', ['plugin', 'list', '--available', '--json'], { shell: true })
+    const stdout = await execCliCommand('claude plugin list --available --json')
     const parsed = JSON.parse(stdout)
     // The --available flag returns { installed: [...], available: [...] }
     const available = parsed.available || parsed || []
     return { success: true, skills: Array.isArray(available) ? available : [] }
   } catch (error: unknown) {
     console.error('[Skills] List available failed:', error)
-    return { success: true, skills: [], error: error instanceof Error ? error.message : String(error) }
+    return { success: false, skills: [], error: error instanceof Error ? error.message : String(error) }
   }
 })
 
-ipcMain.handle('skill:install', async (_event, pluginId: string, source: 'anthropic' | 'vercel') => {
+ipcMain.handle('skill:install', async (_event, pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local') => {
   try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
-
     if (source === 'anthropic') {
-      // Extract name from pluginId (e.g., "code-review@claude-plugins-official" -> "code-review")
       const name = pluginId.split('@')[0] || pluginId
-      await execFileAsync('claude', ['plugin', 'install', name], { shell: true })
+      const scopeFlag = scope ? ` --scope ${scope}` : ''
+      await execCliCommand(`claude plugin install ${name}${scopeFlag}`)
     } else {
-      // Vercel skills use npx skills CLI
-      await execFileAsync('npx', ['skills', 'add', pluginId, '--agent', 'claude-code', '--yes'], { shell: true })
+      await execCliCommand(`npx skills add ${pluginId} --agent claude-code --yes`)
     }
     return { success: true }
   } catch (error: unknown) {
@@ -1490,11 +1505,8 @@ ipcMain.handle('skill:install', async (_event, pluginId: string, source: 'anthro
 
 ipcMain.handle('skill:uninstall', async (_event, pluginId: string) => {
   try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
     const name = pluginId.split('@')[0] || pluginId
-    await execFileAsync('claude', ['plugin', 'uninstall', name], { shell: true })
+    await execCliCommand(`claude plugin uninstall ${name}`)
     return { success: true }
   } catch (error: unknown) {
     console.error('[Skills] Uninstall failed:', error)
@@ -1516,18 +1528,15 @@ ipcMain.handle('skill:search-vercel', async (_event, query: string, limit?: numb
     return { success: true, skills: data.skills || [] }
   } catch (error: unknown) {
     console.error('[Skills] Vercel search failed:', error)
-    return { success: true, skills: [], error: error instanceof Error ? error.message : String(error) }
+    return { success: false, skills: [], error: error instanceof Error ? error.message : String(error) }
   }
 })
 
 ipcMain.handle('skill:toggle-enabled', async (_event, pluginId: string, enabled: boolean) => {
   try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileAsync = promisify(execFile)
     const name = pluginId.split('@')[0] || pluginId
     const action = enabled ? 'enable' : 'disable'
-    await execFileAsync('claude', ['plugin', action, name], { shell: true })
+    await execCliCommand(`claude plugin ${action} ${name}`)
     return { success: true }
   } catch (error: unknown) {
     console.error('[Skills] Toggle failed:', error)

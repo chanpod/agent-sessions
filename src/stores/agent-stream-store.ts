@@ -84,6 +84,7 @@ interface AgentStreamStore {
   markWaitingForResponse(terminalId: string): void
   clearWaitingForQuestion(terminalId: string): void
   resetTerminalActivity(terminalId: string): void
+  clearTerminalError(terminalId: string): void
 
   // Conversation state actions (survive component unmount/remount)
   addConversationProcessId(initialProcessId: string, newProcessId: string): void
@@ -138,6 +139,29 @@ function getOrCreateTerminalState(
     isWaitingForQuestion: false,
     processExited: false,
   }
+}
+
+/**
+ * Detect early process death and return an error message if applicable.
+ * "Early death" = process exited while we were still waiting for a response,
+ * or process exited with non-zero code before producing any messages.
+ */
+function detectEarlyDeathError(
+  termState: TerminalAgentState,
+  exitCode: number | null
+): string | undefined {
+  const wasWaiting = termState.isWaitingForResponse
+
+  if (wasWaiting && exitCode !== null && exitCode !== 0) {
+    return `Agent process exited with code ${exitCode} before responding. The session may be invalid — try sending again or start a new session.`
+  }
+  if (wasWaiting) {
+    return 'Agent process exited unexpectedly before responding. Try sending your message again.'
+  }
+  if (exitCode !== null && exitCode !== 0 && !termState.currentMessage && termState.messages.length === 0) {
+    return `Agent process exited with code ${exitCode}.`
+  }
+  return undefined
 }
 
 /**
@@ -673,6 +697,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         get().persistSession(terminalId)
       },
 
+      clearTerminalError: (terminalId: string) => {
+        set((state) => {
+          const terminals = new Map(state.terminals)
+          const terminalState = terminals.get(terminalId)
+          if (!terminalState || !terminalState.error) return state
+          terminals.set(terminalId, {
+            ...terminalState,
+            error: undefined,
+          })
+          return { terminals }
+        })
+      },
+
       // Conversation state actions (survive component unmount/remount)
       addConversationProcessId: (initialProcessId: string, newProcessId: string) => {
         set((state) => {
@@ -943,7 +980,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             const agentEvents: Array<{ terminalId: string; event: AgentStreamEvent }> = []
             // Collect terminal IDs that need post-set() work (persist, notify)
             const messageEndTerminals: Array<{ terminalId: string; stopReason?: string }> = []
-            const processExitTerminals: string[] = []
+            const processExitTerminals: Array<{ terminalId: string; exitCode: number | null }> = []
 
             for (const event of events) {
               // Handle session init
@@ -976,7 +1013,10 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
               // Handle process exit — collect for batch processing
               if (event.type === 'agent-process-exit') {
-                processExitTerminals.push(event.terminalId)
+                processExitTerminals.push({
+                  terminalId: event.terminalId,
+                  exitCode: (event.data as { exitCode?: number })?.exitCode ?? null,
+                })
                 continue
               }
 
@@ -1007,9 +1047,11 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 }
 
                 // Apply process exit events
-                for (const terminalId of processExitTerminals) {
+                for (const { terminalId, exitCode } of processExitTerminals) {
                   const termState = terminals.get(terminalId)
                   if (!termState) continue
+
+                  const errorMsg = detectEarlyDeathError(termState, exitCode)
 
                   const baseState = termState.currentMessage
                     ? {
@@ -1019,16 +1061,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                         isActive: false,
                         isWaitingForResponse: false,
                         processExited: true,
+                        exitCode,
                       }
                     : {
                         ...termState,
                         isActive: false,
                         isWaitingForResponse: false,
                         processExited: true,
+                        exitCode,
                       }
                   terminals.set(terminalId, {
                     ...baseState,
-                    debugEvents: appendDebugEvent(baseState.debugEvents, 'agent-process-exit', null, false, true),
+                    error: errorMsg ?? baseState.error,
+                    debugEvents: appendDebugEvent(baseState.debugEvents, 'agent-process-exit', { exitCode }, false, true),
                   })
                 }
 
@@ -1052,8 +1097,15 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               }
             }
 
-            for (const terminalId of processExitTerminals) {
+            for (const { terminalId } of processExitTerminals) {
               get().persistSession(terminalId)
+
+              // Show error toast if process died unexpectedly
+              const termStateAfter = get().terminals.get(terminalId)
+              if (termStateAfter?.error) {
+                useToastStore.getState().addToast(termStateAfter.error, 'error', 8000)
+              }
+
               if (!get().notifiedTerminals.has(terminalId)) {
                 emitAgentNotification(terminalId, 'done')
               }
@@ -1095,9 +1147,13 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             }
 
             if (event.type === 'agent-process-exit') {
+              const exitCode = (event.data as { exitCode?: number })?.exitCode ?? null
+
               set((state) => {
                 const termState = state.terminals.get(event.terminalId)
                 if (!termState) return state
+
+                const errorMsg = detectEarlyDeathError(termState, exitCode)
 
                 const terminals = new Map(state.terminals)
                 const baseState = termState.currentMessage
@@ -1108,20 +1164,30 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                       isActive: false,
                       isWaitingForResponse: false,
                       processExited: true,
+                      exitCode,
                     }
                   : {
                       ...termState,
                       isActive: false,
                       isWaitingForResponse: false,
                       processExited: true,
+                      exitCode,
                     }
                 terminals.set(event.terminalId, {
                   ...baseState,
-                  debugEvents: appendDebugEvent(baseState.debugEvents, event.type, event.data, false, true),
+                  error: errorMsg ?? baseState.error,
+                  debugEvents: appendDebugEvent(baseState.debugEvents, event.type, { exitCode }, false, true),
                 })
                 return { terminals }
               })
               get().persistSession(event.terminalId)
+
+              // Show error toast if process died unexpectedly
+              const termStateAfter = get().terminals.get(event.terminalId)
+              if (termStateAfter?.error) {
+                useToastStore.getState().addToast(termStateAfter.error, 'error', 8000)
+              }
+
               if (!get().notifiedTerminals.has(event.terminalId)) {
                 emitAgentNotification(event.terminalId, 'done')
               }
@@ -1165,10 +1231,13 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
         // Subscribe to process exit - finalize current message and clear isActive
         const unsubExit = window.electron.agent.onProcessExit((id, code) => {
+          const exitCode = code ?? null
+
           set((state) => {
             const termState = state.terminals.get(id)
             if (!termState) return state
 
+            const errorMsg = detectEarlyDeathError(termState, exitCode)
             const terminals = new Map(state.terminals)
 
             if (termState.currentMessage) {
@@ -1186,6 +1255,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 isActive: false,
                 isWaitingForResponse: false,
                 processExited: true,
+                exitCode,
+                error: errorMsg ?? termState.error,
               })
             } else {
               // No streaming message, but still clear activity flags
@@ -1194,6 +1265,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 isActive: false,
                 isWaitingForResponse: false,
                 processExited: true,
+                exitCode,
+                error: errorMsg ?? termState.error,
               })
             }
 
@@ -1202,6 +1275,13 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
           // Persist session to DB on process exit so conversation history survives app restart
           get().persistSession(id)
+
+          // Show error toast if process died unexpectedly
+          const termStateAfter = get().terminals.get(id)
+          if (termStateAfter?.error) {
+            useToastStore.getState().addToast(termStateAfter.error, 'error', 8000)
+          }
+
           // Only notify on process exit if we didn't already notify on end_turn
           if (!get().notifiedTerminals.has(id)) {
             emitAgentNotification(id, 'done')

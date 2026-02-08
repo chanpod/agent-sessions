@@ -1,10 +1,17 @@
-import React, { useEffect } from 'react'
-import { X, CheckCircle, XCircle, Info, AlertTriangle } from 'lucide-react'
+import React, { useState } from 'react'
+import { X, CheckCircle, XCircle, Info, AlertTriangle, Copy, Check } from 'lucide-react'
 import { useToastStore } from '../stores/toast-store'
 import { cn } from '../lib/utils'
 
 export const ToastContainer: React.FC = () => {
   const { toasts, removeToast } = useToastStore()
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const handleCopy = async (toast: { id: string; message: string }) => {
+    await navigator.clipboard.writeText(toast.message)
+    setCopiedId(toast.id)
+    setTimeout(() => setCopiedId(null), 2000)
+  }
 
   const getToastIcon = (type: string) => {
     switch (type) {
@@ -52,20 +59,33 @@ export const ToastContainer: React.FC = () => {
             }
           }}
           className={cn(
-            'bg-[#2d2d2d] border rounded-lg shadow-lg p-3 pr-10 min-w-[300px] max-w-[500px] pointer-events-auto animate-in slide-in-from-right',
+            'relative bg-[#2d2d2d] border rounded-lg shadow-lg p-3 min-w-[300px] max-w-[400px] pointer-events-auto animate-in slide-in-from-right',
             getToastBorderColor(toast.type),
             toast.onClick && 'cursor-pointer hover:bg-[#3d3d3d] transition-colors'
           )}
         >
-          <div className="flex items-start gap-2">
-            {getToastIcon(toast.type)}
-            <p className="text-sm text-gray-200 flex-1">{toast.message}</p>
+          <div className="flex items-start gap-2 min-w-0 pr-6">
+            <div className="shrink-0 mt-0.5">{getToastIcon(toast.type)}</div>
+            <p className="text-sm text-gray-200 break-words min-w-0">{toast.message}</p>
+          </div>
+          <div className="flex items-center gap-1 mt-2 justify-end">
             <button
-              onClick={() => removeToast(toast.id)}
-              className="absolute top-2 right-2 p-1 hover:bg-gray-700 rounded transition-colors"
-              aria-label="Close"
+              onClick={(e) => { e.stopPropagation(); handleCopy(toast) }}
+              className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+              aria-label="Copy message"
             >
-              <X className="w-3 h-3 text-gray-400" />
+              {copiedId === toast.id ? (
+                <><Check className="w-3 h-3" /> Copied</>
+              ) : (
+                <><Copy className="w-3 h-3" /> Copy</>
+              )}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); removeToast(toast.id) }}
+              className="p-1 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+              aria-label="Dismiss"
+            >
+              <X className="w-3 h-3" />
             </button>
           </div>
         </div>

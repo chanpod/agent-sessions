@@ -457,6 +457,8 @@ export interface TerminalAgentState {
    *  is incorrectly cleared during tool execution, we know the agent isn't done until
    *  the process actually exits. */
   processExited: boolean
+  /** Exit code of the backing process, if exited. Non-zero indicates an error. */
+  exitCode?: number | null
   /** Error message if something went wrong */
   error?: string
   /** Debug event log for the DebugEventLog panel (capped at 200 entries) */

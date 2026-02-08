@@ -626,9 +626,9 @@ export function AgentTerminalsSection({
         onClose={() => setShowSkillBrowser(false)}
         installedSkills={installedSkills}
         marketplaceSkills={marketplaceSkills}
-        onInstall={async (skill) => {
+        onInstall={async (skill, scope) => {
           if (!window.electron?.skill) return
-          const res = await window.electron.skill.install(skill.id, skill.source)
+          const res = await window.electron.skill.install(skill.id, skill.source, scope)
           if (res.success) await loadSkills()
         }}
         onUninstall={async (skill) => {

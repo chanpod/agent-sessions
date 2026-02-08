@@ -1,9 +1,10 @@
 import { useEffect, useCallback, useState, useMemo, useRef } from 'react'
 import { Pencil, PencilOff } from 'lucide-react'
-import { IconSparkles, IconBug } from '@tabler/icons-react'
+import { IconSparkles, IconBug, IconAlertTriangle } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
+import { useToastStore } from '@/stores/toast-store'
 import { useTerminalStore, type SavedTerminalConfig } from '@/stores/terminal-store'
 import { AgentMessageView, type AgentMessageViewHandle } from './AgentMessageView'
 import { AgentInputArea } from './AgentInputArea'
@@ -267,6 +268,11 @@ export function AgentWorkspace({
           } else {
             console.error('[AgentWorkspace] Codex spawn failed:', result)
             setIsProcessing(false)
+            useToastStore.getState().addToast(
+              'Failed to start agent process. Check that the CLI tool is installed.',
+              'error',
+              8000
+            )
           }
           return
         }
@@ -298,10 +304,21 @@ export function AgentWorkspace({
             })
             if (sendResult && !sendResult.success) {
               console.error('[AgentWorkspace] sendMessage failed:', sendResult.error)
+              setIsProcessing(false)
+              useToastStore.getState().addToast(
+                `Failed to send message: ${sendResult.error ?? 'Unknown error'}`,
+                'error',
+                8000
+              )
             }
           } else {
             console.error('[AgentWorkspace] Resume spawn failed:', result)
             setIsProcessing(false)
+            useToastStore.getState().addToast(
+              'Failed to resume agent session. Try sending again or start a new session.',
+              'error',
+              8000
+            )
           }
         } else {
           // First message - mark waiting immediately so sidebar spinner starts
@@ -317,6 +334,12 @@ export function AgentWorkspace({
           })
           if (sendResult && !sendResult.success) {
             console.error('[AgentWorkspace] sendMessage failed:', sendResult.error)
+            setIsProcessing(false)
+            useToastStore.getState().addToast(
+              `Failed to send message: ${sendResult.error ?? 'Unknown error'}`,
+              'error',
+              8000
+            )
           }
         }
       } catch (err) {
@@ -381,6 +404,11 @@ export function AgentWorkspace({
           } else {
             console.error('[AgentWorkspace] Resume spawn for question answer failed:', result)
             setIsProcessing(false)
+            useToastStore.getState().addToast(
+              'Failed to resume agent session. Try sending again or start a new session.',
+              'error',
+              8000
+            )
           }
         } else {
           // No session yet (unlikely for AskUserQuestion, but handle gracefully)
@@ -440,6 +468,17 @@ export function AgentWorkspace({
     return false
   })
 
+  // Get error state from the most recent process in the conversation
+  const processError = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+    for (let i = pids.length - 1; i >= 0; i--) {
+      const state = store.terminals.get(pids[i]!)
+      if (state?.error) return state.error
+    }
+    return null
+  })
+
   // Clear isProcessing when agent starts responding (anyActive becomes true)
   // This transitions from "waiting for agent" to "agent is responding"
   useEffect(() => {
@@ -448,12 +487,24 @@ export function AgentWorkspace({
     }
   }, [anyActive, isProcessing])
 
+  // Clear isProcessing when an error is detected (process died before responding)
+  useEffect(() => {
+    if (processError && isProcessing) {
+      setIsProcessing(false)
+    }
+  }, [processError, isProcessing])
+
   // Safety net: clear isProcessing after timeout to prevent permanent hangs
   useEffect(() => {
     if (!isProcessing) return
     const timeout = setTimeout(() => {
       console.warn('[AgentWorkspace] isProcessing timeout - clearing stale processing state')
       setIsProcessing(false)
+      useToastStore.getState().addToast(
+        'Agent took too long to respond. You can try sending your message again.',
+        'warning',
+        10000
+      )
     }, 30_000)
     return () => clearTimeout(timeout)
   }, [isProcessing])
@@ -491,9 +542,12 @@ export function AgentWorkspace({
     // Determine status:
     // - isProcessing: user sent message, waiting for agent to start
     // - anyActive: agent is actively responding (from store's isActive)
+    // - processError: agent process died with an error
     let status: AgentConversation['status'] = 'idle'
     if (isProcessing || anyActive) {
       status = 'streaming'
+    } else if (processError) {
+      status = 'error'
     } else if (allMessages.length > 0) {
       status = 'completed'
     }
@@ -505,7 +559,7 @@ export function AgentWorkspace({
       currentMessage,
       status,
     }
-  }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive])
+  }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive, processError])
 
   // Derive the latest model name from the most recent assistant message
   const latestModel = useMemo(() => {
@@ -585,6 +639,39 @@ export function AgentWorkspace({
     (s) => s.queuedMessages.get(initialProcessId)?.length ?? 0
   )
 
+  // Safety net: if the agent is idle with queued messages, the transition-based
+  // dequeue above may have missed the edge (e.g. quick process exit, race condition).
+  // Poll on a short delay to catch stuck queues.
+  useEffect(() => {
+    if (anyActive || isProcessing || queueCount === 0) return
+    const timeout = setTimeout(() => {
+      const store = useAgentStreamStore.getState()
+      const nextMessage = store.dequeueMessage(initialProcessId)
+      if (nextMessage) {
+        console.log('[AgentWorkspace] Safety net: dequeuing stuck message')
+        handleSend(nextMessage)
+      }
+    }, 500)
+    return () => clearTimeout(timeout)
+  }, [anyActive, isProcessing, queueCount, initialProcessId, handleSend])
+
+  // Force-send all queued messages: stop the agent, then send each queued message
+  const handleForceQueue = useCallback(async () => {
+    if (!window.electron?.agent) return
+    // Stop all active processes first
+    for (const pid of activeProcessIds) {
+      await window.electron.agent.kill(pid)
+      useAgentStreamStore.getState().resetTerminalActivity(pid)
+    }
+    // Dequeue the next message and send it (remaining will chain via auto-dequeue)
+    const store = useAgentStreamStore.getState()
+    const nextMessage = store.dequeueMessage(initialProcessId)
+    if (nextMessage) {
+      await new Promise((r) => setTimeout(r, 100))
+      handleSend(nextMessage)
+    }
+  }, [activeProcessIds, initialProcessId, handleSend])
+
   return (
     <div className={cn('flex flex-col h-full relative', className)}>
       {/* Debug button - top left corner */}
@@ -646,6 +733,31 @@ export function AgentWorkspace({
         processIds={activeProcessIds}
       />
 
+      {/* Error banner - shown when agent process died unexpectedly */}
+      {processError && (
+        <div className="px-4 py-2">
+          <div className="mx-auto max-w-3xl">
+            <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <IconAlertTriangle className="size-4 shrink-0" />
+              <span className="flex-1">{processError}</span>
+              <button
+                onClick={() => {
+                  const store = useAgentStreamStore.getState()
+                  const conv = store.conversations.get(initialProcessId)
+                  const pids = conv?.processIds ?? [initialProcessId]
+                  for (const pid of pids) {
+                    store.clearTerminalError(pid)
+                  }
+                }}
+                className="text-xs underline hover:no-underline shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Input Area - Floating at bottom */}
       <div className="px-4 pb-4 pt-2">
         <div className="mx-auto max-w-3xl">
@@ -686,6 +798,7 @@ export function AgentWorkspace({
             onStop={handleStop}
             onForceSend={handleForceSend}
             onQueue={handleQueue}
+            onForceQueue={handleForceQueue}
             isStreaming={isStreaming}
             placeholder={placeholder}
             autoFocus={!resumeSessionId}

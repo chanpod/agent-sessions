@@ -17,6 +17,8 @@ interface AgentInputAreaProps {
   onForceSend?: (message: string) => void
   /** Called when user queues a message while agent is streaming */
   onQueue?: (message: string) => void
+  /** Called when user wants to force-send queued messages (stop agent + send queue) */
+  onForceQueue?: () => void
   isStreaming?: boolean
   disabled?: boolean
   placeholder?: string
@@ -46,6 +48,7 @@ export function AgentInputArea({
   onStop,
   onForceSend,
   onQueue,
+  onForceQueue,
   isStreaming = false,
   disabled = false,
   placeholder = 'Send a message...',
@@ -137,9 +140,19 @@ export function AgentInputArea({
     <div className={cn('flex flex-col gap-1', className)}>
       {/* Queue indicator */}
       {queueCount > 0 && (
-        <div className="flex items-center gap-1.5 px-3 text-xs text-muted-foreground/70">
-          <IconBolt className="h-3 w-3" />
-          <span>{queueCount} message{queueCount > 1 ? 's' : ''} queued</span>
+        <div className="flex items-center justify-between px-3 text-xs">
+          <div className="flex items-center gap-1.5 text-muted-foreground/70">
+            <IconBolt className="h-3 w-3" />
+            <span>{queueCount} message{queueCount > 1 ? 's' : ''} queued — will send when agent finishes</span>
+          </div>
+          {onForceQueue && (
+            <button
+              onClick={onForceQueue}
+              className="text-amber-500 hover:text-amber-400 font-medium transition-colors"
+            >
+              Force send anyway
+            </button>
+          )}
         </div>
       )}
       <div

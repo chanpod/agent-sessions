@@ -475,8 +475,8 @@ const electronAPI = {
       ipcRenderer.invoke('skill:list-available'),
     searchVercel: (query: string, limit?: number): Promise<{ success: boolean; skills: unknown[]; error?: string }> =>
       ipcRenderer.invoke('skill:search-vercel', query, limit),
-    install: (pluginId: string, source: 'anthropic' | 'vercel'): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('skill:install', pluginId, source),
+    install: (pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local'): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('skill:install', pluginId, source, scope),
     uninstall: (pluginId: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('skill:uninstall', pluginId),
     toggleEnabled: (pluginId: string, enabled: boolean): Promise<{ success: boolean; error?: string }> =>

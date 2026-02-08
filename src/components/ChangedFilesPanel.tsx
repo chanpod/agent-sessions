@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react'
 import { RefreshCw, Plus, Minus, Undo2, FileText, FilePlus, FileMinus, FileQuestion, ArrowUp, ArrowDown } from 'lucide-react'
 import { diffLines, type Change } from 'diff'
 import { useProjectStore } from '../stores/project-store'
+import { useToastStore } from '../stores/toast-store'
 import { useGitStore, type GitInfo } from '../stores/git-store'
 import { cn, normalizeFilePath } from '../lib/utils'
 import type { ChangedFile } from '../types/electron'
@@ -158,6 +159,8 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
       const result = await window.electron.git.push(projectPath, activeProjectId ?? undefined)
       if (result.success) {
         await handleRefreshGitInfo()
+      } else {
+        useToastStore.getState().addToast(result.error || 'Git push failed', 'error', 8000)
       }
     } finally {
       setIsPushing(false)
@@ -171,6 +174,8 @@ export function ChangedFilesPanel({ isOpen, onClose }: ChangedFilesPanelProps) {
       const result = await window.electron.git.pull(projectPath, activeProjectId ?? undefined)
       if (result.success) {
         await handleRefreshGitInfo()
+      } else {
+        useToastStore.getState().addToast(result.error || 'Git pull failed', 'error', 8000)
       }
     } finally {
       setIsPulling(false)

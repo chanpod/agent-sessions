@@ -15,6 +15,7 @@ import {
   IconCheck,
   IconMarkdown,
   IconTxt,
+  IconMessage,
 } from '@tabler/icons-react'
 
 import type {
@@ -47,6 +48,11 @@ import {
   CollapsibleTrigger,
   CollapsibleContent,
 } from '@/components/ui/collapsible'
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
 // =============================================================================
@@ -315,6 +321,14 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
   // Extract latest plan state for the floating badge
   const plan = useMemo(() => extractLatestPlan(conversation), [conversation])
 
+  // Extract initial prompt from the first user message
+  const initialPrompt = useMemo(() => {
+    const firstUserMsg = conversation.messages.find((m) => m.role === 'user')
+    if (!firstUserMsg) return null
+    const textBlock = firstUserMsg.blocks.find((b) => b.type === 'text') as TextBlock | undefined
+    return textBlock?.content ?? null
+  }, [conversation.messages])
+
   // Build render context
   const context: RenderContext = useMemo(
     () => ({
@@ -397,6 +411,33 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
         <div className="relative h-full">
           {/* Floating side nav — cards + tasks button */}
           <div className="absolute top-1/2 left-4 z-30 hidden -translate-y-1/2 flex-col gap-2 xl:flex">
+            {initialPrompt && (
+              <Popover>
+                <PopoverTrigger
+                  className={cn(
+                    'flex items-center gap-2 rounded-full border px-3 py-1.5',
+                    'transition-colors duration-150 cursor-pointer',
+                    'hover:brightness-125',
+                    'border-amber-500/30 bg-amber-500/10',
+                  )}
+                >
+                  <div className="flex size-5 items-center justify-center rounded-full bg-amber-500/15">
+                    <IconMessage className="size-3 text-amber-400" />
+                  </div>
+                  <span className="text-xs font-medium text-amber-400">
+                    Prompt
+                  </span>
+                </PopoverTrigger>
+                <PopoverContent
+                  side="right"
+                  sideOffset={8}
+                  className="w-80 max-h-64 overflow-y-auto"
+                >
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Initial prompt</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{initialPrompt}</p>
+                </PopoverContent>
+              </Popover>
+            )}
             {cardNavEntries.map((entry) => {
               const Icon = entry.icon
               return (

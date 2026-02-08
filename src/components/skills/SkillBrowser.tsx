@@ -15,6 +15,7 @@ import {
   Loader2,
   Globe,
   FolderOpen,
+  AlertTriangle,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
@@ -72,7 +73,7 @@ interface SkillBrowserProps {
   onClose: () => void
   installedSkills: InstalledSkill[]
   marketplaceSkills: MarketplaceSkill[]
-  onInstall: (skill: MarketplaceSkill) => Promise<void>
+  onInstall: (skill: MarketplaceSkill, scope: SkillScope) => Promise<void>
   onUninstall: (skill: InstalledSkill) => Promise<void>
   onToggleEnabled: (skill: InstalledSkill, enabled: boolean) => Promise<void>
   onSearchVercel?: (query: string) => Promise<MarketplaceSkill[]>
@@ -234,11 +235,12 @@ function MarketplaceCard({
 }: {
   skill: MarketplaceSkill
   installedIds: Set<string>
-  onInstall: (skill: MarketplaceSkill) => void
+  onInstall: (skill: MarketplaceSkill, scope: SkillScope) => void
   installing: string | null
 }) {
   const isInstalled = installedIds.has(skill.name) || skill.installed
   const isInstalling = installing === skill.id
+  const [showScopePicker, setShowScopePicker] = useState(false)
 
   return (
     <div className="group relative rounded-lg border border-white/[0.06] bg-white/[0.02] p-4 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.035]">
@@ -263,20 +265,59 @@ function MarketplaceCard({
             Installed
           </span>
         ) : (
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={isInstalling}
-            onClick={() => onInstall(skill)}
-            className="shrink-0 border border-white/[0.08] bg-white/[0.04] text-zinc-300 hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-400"
-          >
-            {isInstalling ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Download className="size-3" />
+          <div className="relative shrink-0">
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={isInstalling}
+              onClick={() => setShowScopePicker(!showScopePicker)}
+              className="border border-white/[0.08] bg-white/[0.04] text-zinc-300 hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-400"
+            >
+              {isInstalling ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Download className="size-3" />
+              )}
+              Install
+              <ChevronDown className="size-3 ml-0.5" />
+            </Button>
+            {showScopePicker && !isInstalling && (
+              <>
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => setShowScopePicker(false)}
+                />
+                <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-white/[0.08] bg-zinc-900 p-1 shadow-xl shadow-black/40">
+                  <button
+                    onClick={() => {
+                      setShowScopePicker(false)
+                      onInstall(skill, 'project')
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[11px] font-medium text-zinc-300 transition-colors hover:bg-white/[0.06]"
+                  >
+                    <FolderOpen className="size-3 text-violet-400" />
+                    <div>
+                      <div>This Project</div>
+                      <div className="font-normal text-zinc-600">Available in current project only</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowScopePicker(false)
+                      onInstall(skill, 'user')
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[11px] font-medium text-zinc-300 transition-colors hover:bg-white/[0.06]"
+                  >
+                    <Globe className="size-3 text-sky-400" />
+                    <div>
+                      <div>Global</div>
+                      <div className="font-normal text-zinc-600">Available in all projects</div>
+                    </div>
+                  </button>
+                </div>
+              </>
             )}
-            Install
-          </Button>
+          </div>
         )}
       </div>
 
@@ -325,73 +366,128 @@ function InstalledCard({
   uninstalling: string | null
 }) {
   const isUninstalling = uninstalling === skill.id
+  const [showConfirm, setShowConfirm] = useState(false)
 
   return (
-    <div
-      className={cn(
-        'group relative rounded-lg border p-4 transition-all duration-150',
-        skill.enabled
-          ? 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.10]'
-          : 'border-white/[0.04] bg-white/[0.01] opacity-60 hover:opacity-80'
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-[13px] font-semibold text-zinc-200">
-              {skill.name}
-            </h3>
-            <ScopeBadge scope={skill.scope} />
-            {skill.marketplace && (
-              <span className="font-mono text-[10px] text-zinc-700">
-                @{skill.marketplace}
-              </span>
+    <>
+      <div
+        className={cn(
+          'group relative rounded-lg border p-4 transition-all duration-150',
+          skill.enabled
+            ? 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.10]'
+            : 'border-white/[0.04] bg-white/[0.01] opacity-60 hover:opacity-80'
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="truncate text-[13px] font-semibold text-zinc-200">
+                {skill.name}
+              </h3>
+              <ScopeBadge scope={skill.scope} />
+              {skill.marketplace && (
+                <span className="font-mono text-[10px] text-zinc-700">
+                  @{skill.marketplace}
+                </span>
+              )}
+            </div>
+            {skill.description && (
+              <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-500">
+                {skill.description}
+              </p>
             )}
           </div>
-          {skill.description && (
-            <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-500">
-              {skill.description}
-            </p>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <Switch
+              size="sm"
+              checked={skill.enabled}
+              onCheckedChange={(checked) => onToggleEnabled(skill, checked)}
+            />
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={isUninstalling}
+              onClick={() => setShowConfirm(true)}
+              className="text-zinc-600 hover:bg-red-500/10 hover:text-red-400"
+            >
+              {isUninstalling ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Trash2 className="size-3" />
+              )}
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-2.5 flex items-center gap-3">
+          {skill.version && (
+            <span className="font-mono text-[10px] text-zinc-600">
+              v{skill.version}
+            </span>
           )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          <Switch
-            size="sm"
-            checked={skill.enabled}
-            onCheckedChange={(checked) => onToggleEnabled(skill, checked)}
-          />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            disabled={isUninstalling}
-            onClick={() => onUninstall(skill)}
-            className="text-zinc-600 hover:bg-red-500/10 hover:text-red-400"
-          >
-            {isUninstalling ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Trash2 className="size-3" />
-            )}
-          </Button>
-        </div>
-      </div>
-
-      <div className="mt-2.5 flex items-center gap-3">
-        {skill.version && (
-          <span className="font-mono text-[10px] text-zinc-600">
-            v{skill.version}
+          <span className="text-[10px] text-zinc-700">
+            Updated{' '}
+            {new Date(skill.lastUpdated).toLocaleDateString(undefined, {
+              month: 'short',
+              day: 'numeric',
+            })}
           </span>
-        )}
-        <span className="text-[10px] text-zinc-700">
-          Updated{' '}
-          {new Date(skill.lastUpdated).toLocaleDateString(undefined, {
-            month: 'short',
-            day: 'numeric',
-          })}
-        </span>
+        </div>
       </div>
-    </div>
+
+      {/* Uninstall confirmation */}
+      {showConfirm && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowConfirm(false)
+          }}
+        >
+          <div className="mx-4 w-full max-w-sm rounded-xl border border-white/[0.08] bg-zinc-950 p-5 shadow-2xl shadow-black/60">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg bg-red-500/10 p-2">
+                <AlertTriangle className="size-4 text-red-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-zinc-100">
+                  Uninstall {skill.name}?
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
+                  This will remove the skill{' '}
+                  {skill.scope === 'user'
+                    ? 'globally from all projects'
+                    : 'from this project'}
+                  . You can reinstall it later from the marketplace.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowConfirm(false)}
+                className="text-zinc-400"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowConfirm(false)
+                  onUninstall(skill)
+                }}
+                className="bg-red-500/10 text-red-400 ring-1 ring-inset ring-red-500/20 hover:bg-red-500/20"
+              >
+                <Trash2 className="size-3" />
+                Uninstall
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -519,10 +615,10 @@ export function SkillBrowser({
   }, [installedSkills, search])
 
   const handleInstall = useCallback(
-    async (skill: MarketplaceSkill) => {
+    async (skill: MarketplaceSkill, scope: SkillScope) => {
       setInstalling(skill.id)
       try {
-        await onInstall(skill)
+        await onInstall(skill, scope)
       } finally {
         setInstalling(null)
       }
