@@ -544,6 +544,16 @@ function App() {
             continue
           }
 
+          // Skip terminals that reference WSL — WSL support has been removed.
+          // These are legacy configs that would crash (wsl.exe shell or UNC WSL cwd paths).
+          const isWslShell = config.shell?.toLowerCase().includes('wsl')
+          const isWslPath = config.cwd?.startsWith('\\\\wsl') || config.cwd?.startsWith('//wsl')
+          if (isWslShell || isWslPath) {
+            console.log(`[App] Skipping legacy WSL terminal: ${config.shellName} (shell=${config.shell}, cwd=${config.cwd})`)
+            removeSavedConfig(config.id)
+            continue
+          }
+
           let info
 
           // Check if this config has an SSH connection
