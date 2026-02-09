@@ -10,7 +10,7 @@ import { AgentMessageView, type AgentMessageViewHandle } from './AgentMessageVie
 import { AgentInputArea } from './AgentInputArea'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { DebugEventSheet } from './DebugEventLog'
-import { ThinkingIndicator, ThinkingDesignPicker, useThinkingDesign } from './ThinkingIndicator'
+import { ThinkingIndicator } from './ThinkingIndicator'
 import { cn, formatModelDisplayName } from '@/lib/utils'
 import type {
   AgentConversation,
@@ -666,7 +666,6 @@ export function AgentWorkspace({
   // Determine placeholder text and thinking indicator state
   const isStreaming = conversation.status === 'streaming'
   const showThinkingIndicator = isStreaming && !conversation.currentMessage
-  const [thinkingDesign, setThinkingDesign] = useThinkingDesign()
   const placeholder = `Send a message to ${agentType}...`
 
   // Stop handler - kill all active processes and reset UI state
@@ -781,19 +780,7 @@ export function AgentWorkspace({
         />
 
         {/* Thinking indicator - absolutely positioned so it doesn't shrink the scroll container */}
-        <ThinkingIndicator visible={showThinkingIndicator} design={thinkingDesign} />
-
-        {/* Design picker — appears above the indicator when thinking */}
-        <div
-          className={cn(
-            'absolute bottom-7 right-3 z-20 transition-all duration-200',
-            showThinkingIndicator
-              ? 'opacity-100 scale-100'
-              : 'opacity-0 scale-95 pointer-events-none',
-          )}
-        >
-          <ThinkingDesignPicker value={thinkingDesign} onChange={setThinkingDesign} />
-        </div>
+        <ThinkingIndicator visible={showThinkingIndicator} />
       </div>
 
       {/* Debug Events Sheet */}
