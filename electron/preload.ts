@@ -451,12 +451,20 @@ const electronAPI = {
       ipcRenderer.invoke('docker:getLogs', serviceId, tail),
   },
   permission: {
-    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('permission:respond', id, decision, reason, alwaysAllow),
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRule?: string[]): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:respond', id, decision, reason, alwaysAllow, bashRule),
     checkHook: (projectPath: string): Promise<boolean> =>
       ipcRenderer.invoke('permission:check-hook', projectPath),
     installHook: (projectPath: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('permission:install-hook', projectPath),
+    getBashRules: (projectPath: string): Promise<string[][]> =>
+      ipcRenderer.invoke('permission:get-bash-rules', projectPath),
+    getAllowlistConfig: (projectPath: string): Promise<{ tools: string[]; bashRules: string[][] }> =>
+      ipcRenderer.invoke('permission:get-allowlist-config', projectPath),
+    removeBashRule: (projectPath: string, rule: string[]): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:remove-bash-rule', projectPath, rule),
+    removeAllowedTool: (projectPath: string, toolName: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:remove-allowed-tool', projectPath, toolName),
     onRequest: (callback: (request: { id: string; sessionId: string; toolName: string; toolInput: Record<string, unknown>; receivedAt: number }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, request: { id: string; sessionId: string; toolName: string; toolInput: Record<string, unknown>; receivedAt: number }) => callback(request)
       ipcRenderer.on('permission:request', handler)

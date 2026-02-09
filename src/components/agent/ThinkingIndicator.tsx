@@ -78,16 +78,23 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({
   visible,
   className,
 }: ThinkingIndicatorProps) {
+  // Asymmetric transitions: fast fade-in (600ms), slow fade-out (2.5s).
+  // The slow exit means if thinking resumes mid-fade, the animation
+  // smoothly reverses back up instead of flashing off/on.
   return (
     <div
       className={cn(
-        'absolute bottom-0 left-0 right-0 z-10 pointer-events-none',
-        'transition-all duration-500 ease-out',
+        'absolute bottom-4 left-0 right-0 z-10 pointer-events-none',
         visible
           ? 'opacity-100 translate-y-0'
-          : 'opacity-0 translate-y-2',
+          : 'opacity-0 translate-y-3',
         className,
       )}
+      style={{
+        transition: visible
+          ? 'opacity 600ms ease-out, transform 600ms ease-out'
+          : 'opacity 2.5s ease-in-out, transform 2.5s ease-in-out',
+      }}
     >
       <InkDiffusion />
     </div>

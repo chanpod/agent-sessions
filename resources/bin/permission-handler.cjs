@@ -104,17 +104,110 @@ function isAppActive(ipcDir) {
 }
 
 /**
- * Load the user's always-allow list from .claude/permission-allowlist.json.
+ * Load the user's permission config from .claude/permission-allowlist.json.
  * The IPC dir is .claude/.permission-ipc, so the allowlist is one level up.
+ *
+ * Supports two formats:
+ *   Legacy:  ["Edit", "Write", "Bash"]
+ *   Current: { "tools": ["Edit", "Write"], "bashRules": [["git","status"], ["npm","test"]] }
+ *
+ * Returns { tools: string[], bashRules: string[][] }
  */
 function loadAllowlist(ipcDir) {
   const allowlistPath = path.join(path.dirname(ipcDir), ALLOWLIST_FILENAME)
   try {
     const data = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'))
-    return Array.isArray(data) ? data : []
+    // Legacy format: plain array of tool names
+    if (Array.isArray(data)) {
+      return { tools: data, bashRules: [] }
+    }
+    // Current format: object with tools[] and bashRules[][]
+    return {
+      tools: Array.isArray(data.tools) ? data.tools : [],
+      bashRules: Array.isArray(data.bashRules) ? data.bashRules : [],
+    }
   } catch {
-    return []
+    return { tools: [], bashRules: [] }
   }
+}
+
+/**
+ * Tokenize a shell command string into an array of tokens.
+ * Handles quoted strings (single/double) as single tokens.
+ */
+function tokenizeCommand(command) {
+  const tokens = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  let escape = false
+
+  for (const ch of command) {
+    if (escape) {
+      current += ch
+      escape = false
+      continue
+    }
+    if (ch === '\\' && !inSingle) {
+      escape = true
+      current += ch
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      current += ch
+      continue
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      current += ch
+      continue
+    }
+    if (!inSingle && !inDouble && /\s/.test(ch)) {
+      if (current) {
+        tokens.push(current)
+        current = ''
+      }
+      continue
+    }
+    current += ch
+  }
+  if (current) tokens.push(current)
+  return tokens
+}
+
+/**
+ * Check if a Bash command matches any of the user's bash rules.
+ * Each rule is an array of tokens. If the last token is '*', the rule
+ * matches any command whose prefix tokens match (wildcard suffix).
+ * Otherwise, the rule requires an exact token-count and token-value match.
+ */
+function matchesBashRule(command, bashRules) {
+  if (!bashRules.length) return false
+  const tokens = tokenizeCommand(command.trim())
+  for (const rule of bashRules) {
+    if (!Array.isArray(rule) || rule.length === 0) continue
+    const isWildcard = rule[rule.length - 1] === '*'
+    if (isWildcard) {
+      // Prefix match: command must have at least as many tokens as rule minus the '*'
+      const prefixLen = rule.length - 1
+      if (tokens.length < prefixLen) continue
+      let match = true
+      for (let i = 0; i < prefixLen; i++) {
+        if (tokens[i] !== rule[i]) { match = false; break }
+      }
+      if (match) return true
+    } else {
+      // Exact match: same token count, every token must match
+      if (tokens.length !== rule.length) continue
+      let match = true
+      for (let i = 0; i < rule.length; i++) {
+        if (tokens[i] !== rule[i]) { match = false; break }
+      }
+      if (match) return true
+    }
+  }
+  return false
 }
 
 async function main() {
@@ -137,11 +230,13 @@ async function main() {
   const input = await readStdin()
   debug(`Stdin received (${input.length} bytes)`)
 
-  // Gate 2: Auto-allow safe tools that don't need permission prompts.
+  // Parse the hook input once — we need tool_name and tool_input for Bash rules.
   let toolName = null
+  let toolInput = {}
   try {
     const parsed = JSON.parse(input)
     toolName = parsed.tool_name
+    toolInput = parsed.tool_input || {}
   } catch {}
 
   // Gate 2a: Deny host-handled tools so the embedding app can manage them.
@@ -165,7 +260,19 @@ async function main() {
 
   // Gate 3: Check user's always-allow list
   const allowlist = loadAllowlist(ipcDir)
-  if (toolName && allowlist.includes(toolName)) {
+
+  // Gate 3a: For Bash, check granular bash rules before the blanket tool allowlist.
+  // Bash rules are exact token-match patterns created by the user via the permission modal.
+  if (toolName === 'Bash' && toolInput.command) {
+    if (matchesBashRule(String(toolInput.command), allowlist.bashRules)) {
+      debug(`Bash command matches a rule, auto-allowing: ${String(toolInput.command).slice(0, 100)}`)
+      process.stdout.write(toCliResponse('allow'))
+      return
+    }
+  }
+
+  // Gate 3b: Blanket tool allowlist (non-Bash tools, or Bash if explicitly in tools[])
+  if (toolName && allowlist.tools.includes(toolName)) {
     debug(`Tool "${toolName}" is in user allowlist, auto-allowing`)
     process.stdout.write(toCliResponse('allow'))
     return
@@ -203,4 +310,10 @@ async function main() {
   process.stdout.write(toCliResponse(response.decision, response.reason))
 }
 
-main()
+// Only run main() when executed as a script (not when required for testing)
+if (require.main === module) {
+  main()
+}
+
+// Export pure functions for testing
+module.exports = { tokenizeCommand, matchesBashRule }

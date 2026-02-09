@@ -11,6 +11,7 @@ import { AgentInputArea } from './AgentInputArea'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { DebugEventSheet } from './DebugEventLog'
 import { ThinkingIndicator } from './ThinkingIndicator'
+import { BashRulesProvider } from './BashRulesContext'
 import { cn, formatModelDisplayName } from '@/lib/utils'
 import type {
   AgentConversation,
@@ -753,6 +754,7 @@ export function AgentWorkspace({
   }, [activeProcessIds, initialProcessId, handleSend])
 
   return (
+    <BashRulesProvider projectPath={cwd}>
     <div className={cn('flex flex-col h-full relative', className)}>
       {/* Debug button - top left corner */}
       <button
@@ -778,10 +780,11 @@ export function AgentWorkspace({
           agentType={agentType}
           onAnswerQuestion={handleAnswerQuestion}
         />
-
-        {/* Thinking indicator - absolutely positioned so it doesn't shrink the scroll container */}
-        <ThinkingIndicator visible={showThinkingIndicator} />
       </div>
+
+      {/* Thinking indicator — positioned on the outer relative wrapper so it
+          bleeds behind the input bar, not clipped by the scroll container */}
+      <ThinkingIndicator visible={showThinkingIndicator} />
 
       {/* Debug Events Sheet */}
       <DebugEventSheet
@@ -880,5 +883,6 @@ export function AgentWorkspace({
         </div>
       </div>
     </div>
+    </BashRulesProvider>
   )
 }

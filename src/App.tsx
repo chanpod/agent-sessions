@@ -399,7 +399,7 @@ function App() {
         addToast(
           `${sessionLabel} needs permission for ${request.toolName}`,
           'warning',
-          10000,
+          0,
           targetTerminalId
             ? () => {
                 const session = useTerminalStore.getState().sessions.find((s) => s.id === targetTerminalId)
@@ -408,12 +408,14 @@ function App() {
                   useTerminalStore.getState().setActiveAgentSession(targetTerminalId)
                 }
               }
-            : undefined
+            : undefined,
+          `permission-${request.id}`
         )
       }
     })
     const unsubExpired = window.electron.permission.onExpired((id) => {
       removeRequest(id)
+      useToastStore.getState().removeToast(`permission-${id}`)
     })
     return () => {
       unsubRequest()
@@ -687,18 +689,17 @@ function App() {
     }
   }, [isElectron, markSessionExited, updateSessionTitle, updateServerStatus])
 
-  // Keyboard shortcuts: Ctrl+N for project switch, Alt+N for terminal focus
+  // Keyboard shortcuts: Ctrl+N for assigned project shortcut, Alt+N for terminal focus
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const num = parseInt(e.key, 10)
       if (isNaN(num) || num < 1 || num > 9) return
 
-      // Ctrl+N: Switch to project N
+      // Ctrl+N: Switch to project assigned to shortcut N
       if (e.ctrlKey && !e.altKey && !e.metaKey) {
-        e.preventDefault()
-        const projectIndex = num - 1
-        const project = projects[projectIndex]
+        const project = projects.find(p => p.shortcutKey === num)
         if (project) {
+          e.preventDefault()
           setActiveProject(project.id)
         }
         return

@@ -646,7 +646,8 @@ export function waitForRehydration(): Promise<void> {
 }
 
 /**
- * Emit notifications when agents finish or need attention in non-active projects.
+ * Emit notifications when agents finish or need attention, unless the user
+ * is currently viewing that exact session.
  * Uses getState() pattern to avoid circular dependencies.
  */
 function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attention') {
@@ -662,8 +663,10 @@ function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attenti
   const session = useTerminalStore.getState().sessions.find((s) => s.id === originalTerminalId)
   if (!session?.projectId) return
 
+  // Only skip notification if the user is actively viewing this specific session
   const activeProjectId = useProjectStore.getState().activeProjectId
-  if (session.projectId === activeProjectId) return // Don't notify for active project
+  const activeAgentSessionId = useTerminalStore.getState().activeAgentSessionId
+  if (session.projectId === activeProjectId && originalTerminalId === activeAgentSessionId) return
 
   const project = useProjectStore.getState().projects.find((p) => p.id === session.projectId)
   if (!project) return

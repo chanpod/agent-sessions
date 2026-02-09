@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   IconChevronRight,
   IconChevronDown,
@@ -6,6 +6,7 @@ import {
   IconCheck,
   IconX,
   IconClock,
+  IconShieldCheck,
 } from '@tabler/icons-react'
 
 import type { ToolUseBlock, ToolResultBlock } from '@/types/agent-ui'
@@ -16,6 +17,7 @@ import {
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { generateToolSummary } from '@/utils/tool-summary'
+import { usePermissionRulesContext } from './BashRulesContext'
 
 interface ToolCallInlineProps {
   toolUse: ToolUseBlock
@@ -77,11 +79,38 @@ export function ToolCallInline({
   className,
 }: ToolCallInlineProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded)
+  const permRules = usePermissionRulesContext()
 
   const status = statusConfig[toolUse.status]
   const summary = generateToolSummary(toolUse.toolName, toolUse.input)
   const formattedInput = formatJson(toolUse.input)
   const formattedResult = toolResult ? formatJson(toolResult.result) : null
+
+  // Check if this tool call was auto-allowed
+  const autoAllow = useMemo(
+    () => permRules?.checkAutoAllow(toolUse.toolName, toolUse.input) ?? null,
+    [permRules, toolUse.toolName, toolUse.input]
+  )
+
+  const isRevocable = autoAllow && autoAllow.type !== 'safe-tool'
+
+  const handleRevoke = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!autoAllow || !permRules || !isRevocable) return
+    if (autoAllow.type === 'bash-rule') {
+      permRules.revokeBashRule(autoAllow.rule)
+    } else if (autoAllow.type === 'blanket-tool') {
+      permRules.revokeToolAllow(autoAllow.toolName)
+    }
+  }
+
+  const autoAllowLabel = autoAllow
+    ? autoAllow.type === 'bash-rule'
+      ? `Auto-allowed by rule: ${autoAllow.rule.join(' ')}`
+      : autoAllow.type === 'blanket-tool'
+        ? `Auto-allowed: ${autoAllow.toolName} is always allowed`
+        : `Safe tool: always allowed`
+    : null
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -112,6 +141,14 @@ export function ToolCallInline({
             </>
           )}
 
+          {/* Auto-allowed badge */}
+          {autoAllow && (
+            <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+              <IconShieldCheck className="size-2.5" />
+              auto
+            </span>
+          )}
+
           {/* Status label + icon (right-aligned) */}
           <span
             className={cn(
@@ -134,6 +171,26 @@ export function ToolCallInline({
         {/* Expanded details */}
         <CollapsibleContent>
           <div className="ml-4 mt-1.5 space-y-2 border-l-2 border-border/20 pl-3 pb-1">
+            {/* Auto-allowed rule info + revoke */}
+            {autoAllow && (
+              <div className="flex items-center justify-between rounded-md bg-emerald-500/5 border border-emerald-500/15 px-2.5 py-1.5">
+                <div className="flex items-center gap-2">
+                  <IconShieldCheck className="size-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-xs text-emerald-300/80">
+                    {autoAllowLabel}
+                  </span>
+                </div>
+                {isRevocable && (
+                  <button
+                    onClick={handleRevoke}
+                    className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors underline underline-offset-2 shrink-0 ml-2"
+                  >
+                    Revoke
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Input */}
             <div>
               <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">

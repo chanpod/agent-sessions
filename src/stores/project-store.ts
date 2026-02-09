@@ -37,6 +37,8 @@ export interface Project {
   lastActiveAgentSessionId?: string
   // Timestamp of when this project was last viewed/active
   lastViewedAt?: number
+  // Keyboard shortcut: Ctrl+N where N is 1-9
+  shortcutKey?: number
 }
 
 export interface ProjectNotification {
@@ -58,7 +60,7 @@ interface ProjectStore {
   setActiveProject: (id: string | null) => void
   toggleProjectExpanded: (id: string) => void
   setProjectTab: (id: string, tab: ProjectTab) => void
-  updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath'>>) => void
+  updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath' | 'shortcutKey'>>) => void
   setProjectNotification: (projectId: string, notification: ProjectNotification) => void
   clearProjectNotification: (projectId: string) => void
   // SSH connection management
@@ -197,14 +199,9 @@ export const useProjectStore = create<ProjectStore>()(
           }
         })
 
-        // Auto-dismiss notifications for the newly active project
+        // Mark notifications as read (not dismissed) for the newly active project
         if (id) {
-          useNotificationStore.getState().dismissAllForProject(id)
-        }
-
-        // Auto-dismiss notifications for the newly active project
-        if (id) {
-          useNotificationStore.getState().dismissAllForProject(id)
+          useNotificationStore.getState().markAllReadForProject(id)
         }
       },
 
@@ -224,9 +221,14 @@ export const useProjectStore = create<ProjectStore>()(
 
       updateProject: (id, updates) =>
         set((state) => ({
-          projects: state.projects.map((p) =>
-            p.id === id ? { ...p, ...updates } : p
-          ),
+          projects: state.projects.map((p) => {
+            if (p.id === id) return { ...p, ...updates }
+            // Clear duplicate shortcutKey from other projects
+            if (updates.shortcutKey && p.shortcutKey === updates.shortcutKey) {
+              return { ...p, shortcutKey: undefined }
+            }
+            return p
+          }),
         })),
 
       setProjectNotification: (projectId, notification) =>

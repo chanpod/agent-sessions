@@ -1,9 +1,10 @@
-import { useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { IconShieldCheck, IconShieldX, IconTerminal2, IconFile, IconTool } from '@tabler/icons-react'
 import { Button } from '@/components/ui/button'
 import { usePermissionStore } from '@/stores/permission-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
+import { useToastStore } from '@/stores/toast-store'
 import { cn } from '@/lib/utils'
 
 function getToolIcon(toolName: string) {
@@ -36,9 +37,174 @@ function getToolSummary(toolName: string, toolInput: Record<string, unknown>): s
   }
 }
 
+/**
+ * Tokenize a shell command string into an array of tokens.
+ * Mirrors the logic in permission-handler.cjs.
+ */
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  let escape = false
+
+  for (const ch of command) {
+    if (escape) {
+      current += ch
+      escape = false
+      continue
+    }
+    if (ch === '\\' && !inSingle) {
+      escape = true
+      current += ch
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      current += ch
+      continue
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      current += ch
+      continue
+    }
+    if (!inSingle && !inDouble && /\s/.test(ch)) {
+      if (current) {
+        tokens.push(current)
+        current = ''
+      }
+      continue
+    }
+    current += ch
+  }
+  if (current) tokens.push(current)
+  return tokens
+}
+
+/**
+ * Interactive token selector for building bash rules.
+ * Tokens form a contiguous prefix — click a token to set the boundary.
+ * Everything up to and including the clicked token is included in the rule;
+ * everything after is excluded. This ensures the rule always matches a
+ * real command (no gaps).
+ */
+function BashTokenSelector({
+  command,
+  onRuleChange,
+}: {
+  command: string
+  onRuleChange: (selectedTokens: string[] | null) => void
+}) {
+  const tokens = useMemo(() => tokenizeCommand(command), [command])
+  // selectedCount = number of tokens included from the start (prefix length)
+  const [selectedCount, setSelectedCount] = useState<number>(tokens.length)
+  const [wildcard, setWildcard] = useState(false)
+
+  // Reset when command changes
+  useEffect(() => {
+    setSelectedCount(tokens.length)
+    setWildcard(false)
+    onRuleChange(tokens.length > 0 ? tokens : null)
+  }, [command]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const emitRule = (count: number, wc: boolean) => {
+    if (count <= 0) { onRuleChange(null); return }
+    const prefix = tokens.slice(0, count)
+    onRuleChange(wc && count < tokens.length ? [...prefix, '*'] : prefix)
+  }
+
+  const setPrefix = (count: number) => {
+    setSelectedCount(count)
+    emitRule(count, wildcard)
+  }
+
+  const toggleWildcard = () => {
+    const next = !wildcard
+    setWildcard(next)
+    emitRule(selectedCount, next)
+  }
+
+  const handleTokenClick = (index: number) => {
+    if (index === selectedCount - 1 && selectedCount > 1) {
+      setPrefix(index)
+    } else {
+      setPrefix(index + 1)
+    }
+  }
+
+  const selectedTokens = tokens.slice(0, selectedCount)
+  const allSelected = selectedCount === tokens.length
+  const showWildcard = !allSelected
+
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Click a token to set the rule boundary:
+        </p>
+        <div className="flex items-center gap-2">
+          {showWildcard && (
+            <button
+              className={cn(
+                'rounded-md px-1.5 py-0.5 text-xs font-mono border transition-all',
+                'hover:scale-105 active:scale-95',
+                wildcard
+                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                  : 'bg-zinc-800/50 border-zinc-700/30 text-zinc-500 hover:text-zinc-300'
+              )}
+              onClick={toggleWildcard}
+              title={wildcard ? 'Remove wildcard — match only this exact prefix' : 'Add wildcard — match this prefix with any additional args'}
+            >
+              *
+            </button>
+          )}
+          {!allSelected && (
+            <button
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              onClick={() => { setWildcard(false); setPrefix(tokens.length) }}
+            >
+              Select all
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {tokens.map((token, i) => (
+          <button
+            key={i}
+            onClick={() => handleTokenClick(i)}
+            className={cn(
+              'rounded-md px-2 py-1 text-xs font-mono transition-all border',
+              'hover:scale-105 active:scale-95',
+              i < selectedCount
+                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                : 'bg-zinc-800/50 border-zinc-700/30 text-zinc-500 line-through'
+            )}
+          >
+            {token}
+          </button>
+        ))}
+        {showWildcard && wildcard && (
+          <span className="rounded-md px-2 py-1 text-xs font-mono bg-amber-500/20 border border-amber-500/40 text-amber-300">
+            *
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-zinc-500 font-mono">
+        Rule: <span className="text-emerald-400">{selectedTokens.join(' ')}{showWildcard && wildcard ? ' *' : ''}</span>
+        {allSelected && <span className="text-zinc-600 ml-1">(exact command)</span>}
+        {!allSelected && wildcard && <span className="text-zinc-600 ml-1">(matches prefix + any additional args)</span>}
+        {!allSelected && !wildcard && <span className="text-zinc-600 ml-1">(matches only this, extra args will still prompt)</span>}
+      </p>
+    </div>
+  )
+}
+
 export function PermissionModal() {
   const { pendingRequests, removeRequest, getNextRequestForSession } = usePermissionStore()
   const activeAgentSessionId = useTerminalStore((s) => s.activeAgentSessionId)
+  const [bashRule, setBashRule] = useState<string[] | null>(null)
 
   // Derive the CLI sessionId directly in the selector to avoid subscribing to the
   // entire terminalToSession Map reference (which changes on every store update and
@@ -58,11 +224,15 @@ export function PermissionModal() {
     ? pendingRequests.filter((r) => r.sessionId === activeCliSessionId).length
     : 0
 
+  const isBash = request?.toolName === 'Bash'
+
   const respond = useCallback(
-    (decision: 'allow' | 'deny', alwaysAllow?: boolean) => {
+    (decision: 'allow' | 'deny', alwaysAllow?: boolean, rule?: string[]) => {
       if (!request) return
-      window.electron?.permission.respond(request.id, decision, undefined, alwaysAllow)
+      window.electron?.permission.respond(request.id, decision, undefined, alwaysAllow, rule)
       removeRequest(request.id)
+      useToastStore.getState().removeToast(`permission-${request.id}`)
+      setBashRule(null)
     },
     [request, removeRequest]
   )
@@ -113,6 +283,14 @@ export function PermissionModal() {
             </pre>
           </div>
 
+          {/* Bash token selector */}
+          {isBash && summary && (
+            <BashTokenSelector
+              command={summary}
+              onRuleChange={setBashRule}
+            />
+          )}
+
           {/* Full tool input for non-simple tools */}
           {!['Bash', 'Read'].includes(request.toolName) && Object.keys(request.toolInput).length > 1 && (
             <details className="mt-3">
@@ -127,19 +305,47 @@ export function PermissionModal() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
-          <Button variant="destructive" size="sm" onClick={() => respond('deny')}>
-            <IconShieldX className="size-4" />
-            Deny
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => respond('allow', true)}>
-            <IconShieldCheck className="size-4" />
-            Always Allow
-          </Button>
-          <Button variant="default" size="sm" className="bg-emerald-600 hover:bg-emerald-500" onClick={() => respond('allow')}>
-            <IconShieldCheck className="size-4" />
-            Allow
-          </Button>
+        <div className="border-t border-border px-5 py-3">
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="destructive" size="sm" onClick={() => respond('deny')}>
+              <IconShieldX className="size-4" />
+              Deny
+            </Button>
+            {isBash ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!bashRule || bashRule.length === 0}
+                onClick={() => {
+                  if (bashRule && bashRule.length > 0) {
+                    respond('allow', false, bashRule)
+                  }
+                }}
+              >
+                <IconShieldCheck className="size-4" />
+                Always Allow Pattern
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={() => respond('allow', true)}>
+                <IconShieldCheck className="size-4" />
+                Always Allow
+              </Button>
+            )}
+            <Button variant="default" size="sm" className="bg-emerald-600 hover:bg-emerald-500" onClick={() => respond('allow')}>
+              <IconShieldCheck className="size-4" />
+              Allow
+            </Button>
+          </div>
+          {isBash && (
+            <div className="mt-2 flex justify-end">
+              <button
+                className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors underline underline-offset-2"
+                onClick={() => respond('allow', true)}
+              >
+                Always allow all Bash commands
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

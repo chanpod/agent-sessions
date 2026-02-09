@@ -1,7 +1,11 @@
-[
-  "Bash",
-  "Edit",
-  "Write",
-  "TaskOutput",
-  "TaskStop"
-]
+{
+  "tools": [
+    "Edit"
+  ],
+  "bashRules": [
+    [
+      "grep",
+      "*"
+    ]
+  ]
+}

@@ -350,9 +350,13 @@ export interface ElectronAPI {
     getLogs: (serviceId: string, tail?: number) => Promise<{ success: boolean; logs: string; error?: string }>
   }
   permission: {
-    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean) => Promise<{ success: boolean; error?: string }>
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRule?: string[]) => Promise<{ success: boolean; error?: string }>
     checkHook: (projectPath: string) => Promise<boolean>
     installHook: (projectPath: string) => Promise<{ success: boolean; error?: string }>
+    getBashRules: (projectPath: string) => Promise<string[][]>
+    getAllowlistConfig: (projectPath: string) => Promise<{ tools: string[]; bashRules: string[][] }>
+    removeBashRule: (projectPath: string, rule: string[]) => Promise<{ success: boolean; error?: string }>
+    removeAllowedTool: (projectPath: string, toolName: string) => Promise<{ success: boolean; error?: string }>
     onRequest: (callback: (request: PermissionRequestForUI) => void) => () => void
     onExpired: (callback: (id: string) => void) => () => void
   }

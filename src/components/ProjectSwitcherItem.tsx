@@ -107,6 +107,11 @@ export function ProjectSwitcherItem({
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          {project.shortcutKey && (
+            <span className="text-[10px] font-mono text-zinc-500 px-1" title={`Ctrl+${project.shortcutKey}`}>
+              ^{project.shortcutKey}
+            </span>
+          )}
           {isActive ? (
             <Check className="w-4 h-4 text-blue-400" />
           ) : (

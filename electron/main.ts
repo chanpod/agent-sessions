@@ -1277,7 +1277,7 @@ ipcMain.handle('agent:generate-title', async (_event, options: { userMessages: s
 // Permission Hook IPC Handlers
 // ============================================================================
 
-ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean) => {
+ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRule?: string[]) => {
   // Codex approval requests use a composite ID: "codex:<terminalId>:<jsonRpcId>"
   // Route these to the PTY stdin instead of the file-based permission server.
   if (id.startsWith('codex:')) {
@@ -1303,7 +1303,7 @@ ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow
 
   // Claude file-based permission flow
   if (!permissionServer) return { success: false, error: 'Permission server not running' }
-  const resolved = permissionServer.resolvePermission(id, { decision, reason }, alwaysAllow)
+  const resolved = permissionServer.resolvePermission(id, { decision, reason }, alwaysAllow, bashRule)
   return { success: resolved }
 })
 
@@ -1332,6 +1332,32 @@ ipcMain.handle('permission:install-hook', async (_event, projectPath: string) =>
     permissionServer?.watchProject(projectPath)
   }
   return result
+})
+
+ipcMain.handle('permission:get-bash-rules', async (_event, projectPath: string) => {
+  return PermissionServer.readAllowlistConfig(projectPath).bashRules
+})
+
+ipcMain.handle('permission:get-allowlist-config', async (_event, projectPath: string) => {
+  return PermissionServer.readAllowlistConfig(projectPath)
+})
+
+ipcMain.handle('permission:remove-bash-rule', async (_event, projectPath: string, rule: string[]) => {
+  try {
+    PermissionServer.removeBashRule(projectPath, rule)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: getErrorMessage(err) }
+  }
+})
+
+ipcMain.handle('permission:remove-allowed-tool', async (_event, projectPath: string, toolName: string) => {
+  try {
+    PermissionServer.removeFromAllowlist(projectPath, toolName)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: getErrorMessage(err) }
+  }
 })
 
 // App version IPC handler

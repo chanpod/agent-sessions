@@ -14,6 +14,33 @@ import type {
 } from '../types/permission-types.js'
 
 const IPC_DIR_NAME = '.permission-ipc'
+
+/**
+ * Tokenize a shell command string into an array of tokens.
+ * Handles quoted strings (single/double) as single tokens.
+ * Must stay in sync with the copy in permission-handler.cjs.
+ */
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  let escape = false
+
+  for (const ch of command) {
+    if (escape) { current += ch; escape = false; continue }
+    if (ch === '\\' && !inSingle) { escape = true; current += ch; continue }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; current += ch; continue }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; current += ch; continue }
+    if (!inSingle && !inDouble && /\s/.test(ch)) {
+      if (current) { tokens.push(current); current = '' }
+      continue
+    }
+    current += ch
+  }
+  if (current) tokens.push(current)
+  return tokens
+}
 const HEARTBEAT_FILENAME = '.active'
 const HEARTBEAT_INTERVAL_MS = 3000
 
@@ -80,19 +107,27 @@ export class PermissionServer {
     console.log('[PermissionServer] Stopped')
   }
 
-  resolvePermission(id: string, response: PermissionResponse, alwaysAllow?: boolean): boolean {
+  resolvePermission(id: string, response: PermissionResponse, alwaysAllow?: boolean, bashRule?: string[]): boolean {
     const pending = this.pending.get(id)
     if (!pending) return false
 
-    if (alwaysAllow && response.decision === 'allow') {
-      const projectPath = path.dirname(path.dirname(pending.ipcDir))
-      PermissionServer.addToAllowlist(projectPath, pending.request.tool_name)
+    const projectPath = path.dirname(path.dirname(pending.ipcDir))
+
+    if (response.decision === 'allow') {
+      if (bashRule && bashRule.length > 0) {
+        // Granular bash rule — save the specific token pattern
+        PermissionServer.addBashRule(projectPath, bashRule)
+      } else if (alwaysAllow) {
+        // Blanket tool allow (non-Bash tools)
+        PermissionServer.addToAllowlist(projectPath, pending.request.tool_name)
+      }
     }
 
     clearTimeout(pending.timeoutHandle)
     pending.resolveHttp(response)
     this.pending.delete(id)
-    console.log(`[PermissionServer] Resolved ${id}: ${response.decision}${alwaysAllow ? ' (always)' : ''}`)
+    const suffix = bashRule ? ` (bash rule: ${bashRule.join(' ')})` : alwaysAllow ? ' (always)' : ''
+    console.log(`[PermissionServer] Resolved ${id}: ${response.decision}${suffix}`)
     return true
   }
 
@@ -142,7 +177,30 @@ export class PermissionServer {
   private handleRequest(id: string, request: PermissionRequest, ipcDir: string): void {
     // Check allowlist — auto-resolve without showing UI
     const projectPath = path.dirname(path.dirname(ipcDir))
-    if (PermissionServer.isToolAllowed(projectPath, request.tool_name)) {
+    const config = PermissionServer.readAllowlistConfig(projectPath)
+
+    // For Bash, check granular rules first
+    if (request.tool_name === 'Bash' && request.tool_input?.command) {
+      const command = String(request.tool_input.command)
+      const tokens = tokenizeCommand(command.trim())
+      const matched = config.bashRules.some((rule) => {
+        if (!Array.isArray(rule) || rule.length === 0) return false
+        const isWildcard = rule[rule.length - 1] === '*'
+        if (isWildcard) {
+          const prefixLen = rule.length - 1
+          if (tokens.length < prefixLen) return false
+          return rule.slice(0, prefixLen).every((t, i) => t === tokens[i])
+        }
+        return rule.length === tokens.length && rule.every((t, i) => t === tokens[i])
+      })
+      if (matched) {
+        this.writeResponse(ipcDir, id, { decision: 'allow', reason: 'Bash rule matched' })
+        console.log(`[PermissionServer] Auto-allowed ${id}: Bash [${command.slice(0, 80)}] (bash rule)`)
+        return
+      }
+    }
+
+    if (config.tools.includes(request.tool_name)) {
       this.writeResponse(ipcDir, id, { decision: 'allow', reason: 'Always allowed' })
       console.log(`[PermissionServer] Auto-allowed ${id}: ${request.tool_name} (allowlisted)`)
       return
@@ -304,27 +362,81 @@ export class PermissionServer {
     return false
   }
 
-  static readAllowlist(projectPath: string): string[] {
+  static readAllowlistConfig(projectPath: string): { tools: string[]; bashRules: string[][] } {
     const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
     try {
       const data = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'))
-      return Array.isArray(data) ? data : []
+      // Legacy format: plain array of tool names
+      if (Array.isArray(data)) {
+        return { tools: data, bashRules: [] }
+      }
+      return {
+        tools: Array.isArray(data.tools) ? data.tools : [],
+        bashRules: Array.isArray(data.bashRules) ? data.bashRules : [],
+      }
     } catch {
-      return []
+      return { tools: [], bashRules: [] }
     }
   }
 
+  /** @deprecated Use readAllowlistConfig for the full config */
+  static readAllowlist(projectPath: string): string[] {
+    return PermissionServer.readAllowlistConfig(projectPath).tools
+  }
+
   static isToolAllowed(projectPath: string, toolName: string): boolean {
-    return PermissionServer.readAllowlist(projectPath).includes(toolName)
+    return PermissionServer.readAllowlistConfig(projectPath).tools.includes(toolName)
   }
 
   static addToAllowlist(projectPath: string, toolName: string): void {
-    const allowlist = PermissionServer.readAllowlist(projectPath)
-    if (allowlist.includes(toolName)) return
-    allowlist.push(toolName)
+    const config = PermissionServer.readAllowlistConfig(projectPath)
+    if (config.tools.includes(toolName)) return
+    config.tools.push(toolName)
     const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
-    fs.writeFileSync(allowlistPath, JSON.stringify(allowlist, null, 2), 'utf8')
+    fs.writeFileSync(allowlistPath, JSON.stringify(config, null, 2), 'utf8')
     console.log(`[PermissionServer] Added "${toolName}" to allowlist for ${projectPath}`)
+  }
+
+  static removeFromAllowlist(projectPath: string, toolName: string): void {
+    const config = PermissionServer.readAllowlistConfig(projectPath)
+    const idx = config.tools.indexOf(toolName)
+    if (idx === -1) return
+    config.tools.splice(idx, 1)
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    fs.writeFileSync(allowlistPath, JSON.stringify(config, null, 2), 'utf8')
+    console.log(`[PermissionServer] Removed "${toolName}" from allowlist for ${projectPath}`)
+  }
+
+  static addBashRule(projectPath: string, rule: string[]): void {
+    const config = PermissionServer.readAllowlistConfig(projectPath)
+    // Check for duplicate rule
+    const isDuplicate = config.bashRules.some(
+      (existing) => existing.length === rule.length && existing.every((t, i) => t === rule[i])
+    )
+    if (isDuplicate) return
+    config.bashRules.push(rule)
+    // When adding the first bash rule, remove blanket "Bash" from tools[]
+    // so the granular rules actually take effect (Gate 3a before 3b)
+    const bashIdx = config.tools.indexOf('Bash')
+    if (bashIdx !== -1) {
+      config.tools.splice(bashIdx, 1)
+      console.log(`[PermissionServer] Removed blanket "Bash" from tools[] (now using granular rules)`)
+    }
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    fs.writeFileSync(allowlistPath, JSON.stringify(config, null, 2), 'utf8')
+    console.log(`[PermissionServer] Added bash rule [${rule.join(' ')}] for ${projectPath}`)
+  }
+
+  static removeBashRule(projectPath: string, rule: string[]): void {
+    const config = PermissionServer.readAllowlistConfig(projectPath)
+    const idx = config.bashRules.findIndex(
+      (existing) => existing.length === rule.length && existing.every((t, i) => t === rule[i])
+    )
+    if (idx === -1) return
+    config.bashRules.splice(idx, 1)
+    const allowlistPath = path.join(projectPath, '.claude', PERMISSION_ALLOWLIST_FILENAME)
+    fs.writeFileSync(allowlistPath, JSON.stringify(config, null, 2), 'utf8')
+    console.log(`[PermissionServer] Removed bash rule [${rule.join(' ')}] for ${projectPath}`)
   }
 
   static installHook(projectPath: string): { success: boolean; error?: string } {

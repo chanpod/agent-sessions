@@ -20,7 +20,13 @@ export function EditProjectModal({ projectId, onClose, onDelete }: EditProjectMo
   const [isSSHProject, setIsSSHProject] = useState(project?.isSSHProject || false)
   const [sshConnectionId, setSshConnectionId] = useState(project?.sshConnectionId || '')
   const [remotePath, setRemotePath] = useState(project?.remotePath || '')
+  const [shortcutKey, setShortcutKey] = useState<number | undefined>(project?.shortcutKey)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+
+  // Find which shortcut keys are already taken by other projects
+  const usedShortcuts = projects
+    .filter(p => p.id !== projectId && p.shortcutKey)
+    .reduce((acc, p) => { acc[p.shortcutKey!] = p.name; return acc }, {} as Record<number, string>)
 
   // Update state when project changes
   useEffect(() => {
@@ -30,6 +36,7 @@ export function EditProjectModal({ projectId, onClose, onDelete }: EditProjectMo
       setIsSSHProject(project.isSSHProject || false)
       setSshConnectionId(project.sshConnectionId || '')
       setRemotePath(project.remotePath || '')
+      setShortcutKey(project.shortcutKey)
     }
   }, [project])
 
@@ -53,6 +60,7 @@ export function EditProjectModal({ projectId, onClose, onDelete }: EditProjectMo
       isSSHProject,
       sshConnectionId: isSSHProject ? sshConnectionId : undefined,
       remotePath: isSSHProject ? remotePath.trim() : undefined,
+      shortcutKey,
     })
     onClose()
   }
@@ -100,6 +108,39 @@ export function EditProjectModal({ projectId, onClose, onDelete }: EditProjectMo
               className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-md text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               autoFocus
             />
+          </div>
+
+          {/* Keyboard Shortcut */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+              Keyboard Shortcut
+            </label>
+            <div className="flex items-center gap-1.5">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => {
+                const isSelected = shortcutKey === n
+                const takenBy = usedShortcuts[n]
+                return (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setShortcutKey(isSelected ? undefined : n)}
+                    title={takenBy ? `Currently assigned to ${takenBy} (will be reassigned)` : `Ctrl+${n}`}
+                    className={`w-7 h-7 text-xs font-medium rounded transition-colors ${
+                      isSelected
+                        ? 'bg-blue-600 text-white'
+                        : takenBy
+                          ? 'bg-zinc-800 border border-zinc-600 text-zinc-500 hover:border-blue-500 hover:text-zinc-300'
+                          : 'bg-zinc-800 border border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="mt-1 text-xs text-zinc-600">
+              Press Ctrl+Number to quickly switch to this project.{shortcutKey && usedShortcuts[shortcutKey] ? ` Will reassign from "${usedShortcuts[shortcutKey]}".` : ''}
+            </p>
           </div>
 
           {/* SSH Project Toggle */}
