@@ -19,7 +19,7 @@ function formatRelativeTime(timestamp: number): string {
 
 export default function NotificationCenter() {
   const [open, setOpen] = useState(false)
-  const { notifications, markRead, clearAll, getUnreadCount } = useNotificationStore()
+  const { notifications, clearAll, getUnreadCount } = useNotificationStore()
   const unreadCount = getUnreadCount()
 
   // Group notifications by projectName and sort within groups
@@ -39,7 +39,8 @@ export default function NotificationCenter() {
   const handleNotificationClick = (notification: typeof notifications[0]) => {
     useProjectStore.getState().setActiveProject(notification.projectId)
     useTerminalStore.getState().setActiveAgentSession(notification.terminalId)
-    markRead(notification.id)
+    // Dismiss (remove) only this notification — don't touch others
+    useNotificationStore.getState().dismiss(notification.id)
     setOpen(false)
   }
 

@@ -4,7 +4,6 @@ import { electronStorage } from '../lib/electron-storage'
 import { LayoutMode } from './grid-store'
 import { useViewStore } from './view-store'
 import { useTerminalStore } from './terminal-store'
-import { useNotificationStore } from './notification-store'
 
 export type ProjectTab = 'terminals' | 'files' | 'git' | 'search'
 
@@ -199,10 +198,8 @@ export const useProjectStore = create<ProjectStore>()(
           }
         })
 
-        // Mark notifications as read (not dismissed) for the newly active project
-        if (id) {
-          useNotificationStore.getState().markAllReadForProject(id)
-        }
+        // Don't bulk-clear notifications here — each notification should be
+        // dismissed individually when the user clicks on it (toast or popover).
       },
 
       toggleProjectExpanded: (id) =>

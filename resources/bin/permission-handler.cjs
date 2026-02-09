@@ -176,20 +176,43 @@ function tokenizeCommand(command) {
   return tokens
 }
 
+// Shell operators that separate independent commands.
+// A token is a separator if it is exactly one of these, OR ends with ';'
+// (tokenizer doesn't split on ';' so "foo;" is one token).
+const SHELL_OPERATORS = new Set(['&&', '||', '|', ';'])
+
 /**
- * Check if a Bash command matches any of the user's bash rules.
- * Each rule is an array of tokens. If the last token is '*', the rule
- * matches any command whose prefix tokens match (wildcard suffix).
- * Otherwise, the rule requires an exact token-count and token-value match.
+ * Split a token array into sub-command arrays at shell operators (&&, ||, |, ;).
+ * Tokens ending with ';' (e.g. "foo;") are split: "foo" goes to the current
+ * sub-command, then a new sub-command starts.
  */
-function matchesBashRule(command, bashRules) {
-  if (!bashRules.length) return false
-  const tokens = tokenizeCommand(command.trim())
+function splitSubCommands(tokens) {
+  const subs = []
+  let current = []
+  for (const tok of tokens) {
+    if (SHELL_OPERATORS.has(tok)) {
+      if (current.length) subs.push(current)
+      current = []
+    } else if (tok.endsWith(';') && tok.length > 1) {
+      current.push(tok.slice(0, -1))
+      if (current.length) subs.push(current)
+      current = []
+    } else {
+      current.push(tok)
+    }
+  }
+  if (current.length) subs.push(current)
+  return subs
+}
+
+/**
+ * Check if a single sub-command (token array) matches any rule.
+ */
+function matchesSingleRule(tokens, bashRules) {
   for (const rule of bashRules) {
     if (!Array.isArray(rule) || rule.length === 0) continue
     const isWildcard = rule[rule.length - 1] === '*'
     if (isWildcard) {
-      // Prefix match: command must have at least as many tokens as rule minus the '*'
       const prefixLen = rule.length - 1
       if (tokens.length < prefixLen) continue
       let match = true
@@ -198,7 +221,6 @@ function matchesBashRule(command, bashRules) {
       }
       if (match) return true
     } else {
-      // Exact match: same token count, every token must match
       if (tokens.length !== rule.length) continue
       let match = true
       for (let i = 0; i < rule.length; i++) {
@@ -208,6 +230,33 @@ function matchesBashRule(command, bashRules) {
     }
   }
   return false
+}
+
+/**
+ * Check if a Bash command matches the user's bash rules.
+ *
+ * Commands containing shell operators (&&, ||, |, ;) are split into
+ * sub-commands. Every sub-command must independently match a rule —
+ * otherwise a benign prefix like "cd /project" could smuggle through
+ * arbitrary commands via "cd /project && git push --force".
+ *
+ * Rules without operators are matched as before:
+ *  - Wildcard ('*' suffix): prefix match on tokens
+ *  - Exact: all tokens must match
+ */
+function matchesBashRule(command, bashRules) {
+  if (!bashRules.length) return false
+  const tokens = tokenizeCommand(command.trim())
+  if (tokens.length === 0) return false
+
+  const subCommands = splitSubCommands(tokens)
+  if (subCommands.length === 0) return false
+
+  // Every sub-command must match a rule independently
+  for (const sub of subCommands) {
+    if (!matchesSingleRule(sub, bashRules)) return false
+  }
+  return true
 }
 
 async function main() {
@@ -316,4 +365,4 @@ if (require.main === module) {
 }
 
 // Export pure functions for testing
-module.exports = { tokenizeCommand, matchesBashRule }
+module.exports = { tokenizeCommand, matchesBashRule, splitSubCommands }

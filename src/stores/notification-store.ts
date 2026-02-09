@@ -21,6 +21,7 @@ interface NotificationStore {
   markRead: (id: string) => void
   markAllReadForProject: (projectId: string) => void
   dismiss: (id: string) => void
+  dismissByTerminalId: (terminalId: string) => void
   dismissAllForProject: (projectId: string) => void
   clearAll: () => void
   getUnreadCount: () => number
@@ -67,6 +68,11 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   dismiss: (id) =>
     set((state) => ({
       notifications: state.notifications.filter((n) => n.id !== id),
+    })),
+
+  dismissByTerminalId: (terminalId) =>
+    set((state) => ({
+      notifications: state.notifications.filter((n) => n.terminalId !== terminalId),
     })),
 
   dismissAllForProject: (projectId) =>

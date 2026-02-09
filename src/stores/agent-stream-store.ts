@@ -131,6 +131,9 @@ interface AgentStreamStore {
   // Turn timing
   getTurnTiming(initialProcessId: string): { startedAt: number; endedAt?: number } | undefined
 
+  // Flush buffered delta events for a terminal (call when user switches to a session)
+  flushBackgroundDeltas(terminalId: string): void
+
   // IPC subscription
   subscribeToEvents(): () => void // returns unsubscribe function (for PTY-based detector events)
   subscribeToAgentProcessEvents(): () => void // returns unsubscribe function (for child process agent events)
@@ -139,6 +142,34 @@ interface AgentStreamStore {
 // Global listener setup - only set up once
 let listenerSetup = false
 let unsubscribe: (() => void) | null = null
+
+/**
+ * Background delta buffer.
+ *
+ * When multiple agent sessions are streaming simultaneously, delta events
+ * (text-delta, thinking-delta, tool-input-delta) for non-active sessions
+ * are buffered here instead of being applied to the store immediately.
+ * This avoids cloning the terminals Map and triggering subscriber
+ * re-evaluation for sessions the user can't even see.
+ *
+ * Structural events (message-start, message-end, tool-start, etc.) always
+ * process immediately — they change status flags that the sidebar needs.
+ * When a structural event arrives for a buffered terminal, its pending
+ * deltas are flushed first so state stays consistent.
+ *
+ * The buffer is flushed for a terminal when:
+ * 1. The user switches to that session (via flushBackgroundDeltas)
+ * 2. A structural event arrives for that terminal
+ * 3. The process exits
+ */
+const backgroundDeltaBuffer = new Map<string, AgentStreamEvent[]>()
+
+/** Event types that are high-frequency deltas and safe to defer */
+const DEFERRABLE_DELTA_TYPES = new Set([
+  'agent-text-delta',
+  'agent-thinking-delta',
+  'agent-tool-input-delta',
+])
 
 /**
  * Helper to create a new terminal state with immutable updates
@@ -683,6 +714,8 @@ function emitAgentNotification(terminalId: string, type: 'done' | 'needs-attenti
     () => {
       useProjectStore.getState().setActiveProject(project.id)
       useTerminalStore.getState().setActiveAgentSession(originalTerminalId)
+      // Dismiss only notifications for this specific session
+      useNotificationStore.getState().dismissByTerminalId(originalTerminalId)
     }
   )
 }
@@ -900,6 +933,32 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
       getTurnTiming: (initialProcessId: string) => {
         return get().turnTimings.get(initialProcessId)
+      },
+
+      flushBackgroundDeltas: (terminalId: string) => {
+        // Also flush for all process IDs in this conversation
+        const conv = get().conversations.get(terminalId)
+        const pids = conv?.processIds ?? [terminalId]
+        const allEvents: Array<{ terminalId: string; event: AgentStreamEvent }> = []
+        for (const pid of pids) {
+          const buffered = backgroundDeltaBuffer.get(pid)
+          if (buffered && buffered.length > 0) {
+            for (const event of buffered) {
+              allEvents.push({ terminalId: pid, event })
+            }
+            backgroundDeltaBuffer.delete(pid)
+          }
+        }
+        if (allEvents.length === 0) return
+
+        set((state) => {
+          const terminals = new Map(state.terminals)
+          for (const { terminalId: tid, event } of allEvents) {
+            const terminalState = getOrCreateTerminalState(terminals, tid)
+            terminals.set(tid, applyAgentEvent(terminalState, event))
+          }
+          return { terminals }
+        })
       },
 
       // Session management actions
@@ -1138,11 +1197,23 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         if (hasBatch) {
           console.log('[AgentStreamStore] Subscribing to batched detector events')
           unsubscribe = window.electron!.detector.onEventBatch((events) => {
+            // Determine which terminal IDs belong to the active (visible) session.
+            // Delta events for other terminals are buffered instead of applied,
+            // saving ~90% of set() overhead when many agents stream simultaneously.
+            const activeAgentSessionId = useTerminalStore.getState().activeAgentSessionId
+            const activeConv = activeAgentSessionId
+              ? get().conversations.get(activeAgentSessionId)
+              : null
+            const activePids = new Set(activeConv?.processIds ?? (activeAgentSessionId ? [activeAgentSessionId] : []))
+
             // Collect agent events to process in a single set() call
             const agentEvents: Array<{ terminalId: string; event: AgentStreamEvent }> = []
             // Collect terminal IDs that need post-set() work (persist, notify)
             const messageEndTerminals: Array<{ terminalId: string; stopReason?: string }> = []
             const processExitTerminals: Array<{ terminalId: string; exitCode: number | null }> = []
+            // Track which background terminals received a structural event
+            // (their buffered deltas need flushing before the structural event)
+            const terminalsToFlush = new Set<string>()
 
             for (const event of events) {
               // Handle session init
@@ -1175,6 +1246,10 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
               // Handle process exit — collect for batch processing
               if (event.type === 'agent-process-exit') {
+                // Flush any buffered deltas before processing the exit
+                if (backgroundDeltaBuffer.has(event.terminalId)) {
+                  terminalsToFlush.add(event.terminalId)
+                }
                 processExitTerminals.push({
                   terminalId: event.terminalId,
                   exitCode: (event.data as { exitCode?: number })?.exitCode ?? null,
@@ -1185,6 +1260,27 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               // Collect agent-* events for batch state update
               if (event.type.startsWith('agent-')) {
                 const agentEvent = { type: event.type, data: event.data } as AgentStreamEvent
+
+                // For background terminals, buffer delta events instead of
+                // processing them. This is the main optimization: 10 agents
+                // streaming means ~1000 deltas/sec, but only the active
+                // session's ~100 deltas/sec hit the store.
+                if (DEFERRABLE_DELTA_TYPES.has(event.type) && !activePids.has(event.terminalId)) {
+                  let buffer = backgroundDeltaBuffer.get(event.terminalId)
+                  if (!buffer) {
+                    buffer = []
+                    backgroundDeltaBuffer.set(event.terminalId, buffer)
+                  }
+                  buffer.push(agentEvent)
+                  continue
+                }
+
+                // Structural event for a background terminal — flush its
+                // buffered deltas first so the state is consistent
+                if (backgroundDeltaBuffer.has(event.terminalId)) {
+                  terminalsToFlush.add(event.terminalId)
+                }
+
                 agentEvents.push({ terminalId: event.terminalId, event: agentEvent })
                 if (event.type === 'agent-message-end') {
                   messageEndTerminals.push({
@@ -1192,6 +1288,17 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                     stopReason: (event.data as { stopReason?: string })?.stopReason,
                   })
                 }
+              }
+            }
+
+            // Flush buffered deltas for terminals that have structural events
+            for (const tid of terminalsToFlush) {
+              const buffered = backgroundDeltaBuffer.get(tid)
+              if (buffered && buffered.length > 0) {
+                for (const event of buffered) {
+                  agentEvents.unshift({ terminalId: tid, event })
+                }
+                backgroundDeltaBuffer.delete(tid)
               }
             }
 

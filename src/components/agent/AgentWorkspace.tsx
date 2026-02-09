@@ -210,6 +210,13 @@ export function AgentWorkspace({
   const [editsEnabled, setEditsEnabled] = useState(true)
   const [debugSheetOpen, setDebugSheetOpen] = useState(false)
 
+  // Flush any buffered background delta events when this session becomes visible.
+  // While the session was in the background, deltas were deferred to avoid
+  // unnecessary store updates. Now that the user is looking at it, apply them.
+  useEffect(() => {
+    useAgentStreamStore.getState().flushBackgroundDeltas(initialProcessId)
+  }, [initialProcessId])
+
   // The edit tools whose allowlist status the toggle controls
   const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 

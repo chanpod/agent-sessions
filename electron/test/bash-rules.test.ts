@@ -304,10 +304,84 @@ describe('matchesBashRule', () => {
       expect(matchesBashRule('git status | cat', rules)).toBe(false)
     })
 
-    it('can create rules that include operators if the full chain is allowed', () => {
-      const rules = [['git', 'add', '.', '&&', 'git', 'commit', '-m', '"update"']]
+    it('chained commands are allowed only if each sub-command matches a rule', () => {
+      const rules = [
+        ['git', 'add', '*'],
+        ['git', 'commit', '*'],
+      ]
+      // Both sub-commands match rules
       expect(matchesBashRule('git add . && git commit -m "update"', rules)).toBe(true)
+      // git push has no matching rule
       expect(matchesBashRule('git add . && git push', rules)).toBe(false)
+    })
+  })
+
+  describe('wildcard rules must not bypass via command chaining', () => {
+    // This is the critical security scenario: a wildcard rule like ["cd", "*"]
+    // should NOT auto-allow everything chained after cd via && or ;
+    // Real-world: Claude CLI sends "cd /project && git push origin main"
+
+    const rules = [
+      ['cd', '*'],
+      ['cat', '*'],
+      ['grep', '*'],
+      ['ls', '*'],
+    ]
+
+    it('cd wildcard must NOT allow chained git commands via &&', () => {
+      expect(matchesBashRule('cd /c/git/project && git status', rules)).toBe(false)
+      expect(matchesBashRule('cd /c/git/project && git push origin main', rules)).toBe(false)
+      expect(matchesBashRule('cd /c/git/project && git commit -m "msg"', rules)).toBe(false)
+      expect(matchesBashRule('cd /c/git/project && git reset --hard', rules)).toBe(false)
+      expect(matchesBashRule('cd /c/git/project && git add . && git push', rules)).toBe(false)
+    })
+
+    it('cd wildcard must NOT allow chained destructive commands via &&', () => {
+      expect(matchesBashRule('cd /tmp && rm -rf /', rules)).toBe(false)
+      expect(matchesBashRule('cd /project && npx tsc --noEmit', rules)).toBe(false)
+      expect(matchesBashRule('cd /project && npm run build', rules)).toBe(false)
+    })
+
+    it('cd wildcard must NOT allow chained commands via ;', () => {
+      expect(matchesBashRule('cd /project ; git push --force', rules)).toBe(false)
+      expect(matchesBashRule('cd /project ; rm -rf .', rules)).toBe(false)
+    })
+
+    it('cd wildcard must NOT allow chained commands via ||', () => {
+      expect(matchesBashRule('cd /project || echo fail', rules)).toBe(false)
+    })
+
+    it('cd wildcard must NOT allow piped commands', () => {
+      expect(matchesBashRule('cd /project | malicious-command', rules)).toBe(false)
+    })
+
+    it('cat wildcard must NOT allow chained destructive commands', () => {
+      expect(matchesBashRule('cat file.txt && rm -rf /', rules)).toBe(false)
+      expect(matchesBashRule('cat file.txt ; echo pwned', rules)).toBe(false)
+    })
+
+    it('grep wildcard must NOT allow chained commands', () => {
+      expect(matchesBashRule('grep -r pattern . && git push --force', rules)).toBe(false)
+    })
+
+    it('plain cd (no chain) should still be allowed by wildcard', () => {
+      expect(matchesBashRule('cd /project', rules)).toBe(true)
+      expect(matchesBashRule('cd /some/deep/path', rules)).toBe(true)
+      expect(matchesBashRule('cd', rules)).toBe(true)
+    })
+
+    it('plain cat/ls/grep (no chain) should still be allowed by wildcard', () => {
+      expect(matchesBashRule('cat file.txt', rules)).toBe(true)
+      expect(matchesBashRule('cat /etc/hosts', rules)).toBe(true)
+      expect(matchesBashRule('ls -la /tmp', rules)).toBe(true)
+      expect(matchesBashRule('grep -rn pattern src/', rules)).toBe(true)
+    })
+
+    it('wildcard rules for multi-token prefixes still work with chains blocked', () => {
+      const multiRules = [['git', 'log', '*']]
+      expect(matchesBashRule('git log --oneline', multiRules)).toBe(true)
+      expect(matchesBashRule('git log --oneline && rm -rf /', multiRules)).toBe(false)
+      expect(matchesBashRule('git log ; echo done', multiRules)).toBe(false)
     })
   })
 })

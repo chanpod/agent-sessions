@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "commit-commands@claude-code-plugins": true,
+    "playwright@claude-plugins-official": true
+  }
+}

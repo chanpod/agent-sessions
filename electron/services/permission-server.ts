@@ -41,6 +41,57 @@ function tokenizeCommand(command: string): string[] {
   if (current) tokens.push(current)
   return tokens
 }
+
+const SHELL_OPERATORS = new Set(['&&', '||', '|', ';'])
+
+function splitSubCommands(tokens: string[]): string[][] {
+  const subs: string[][] = []
+  let current: string[] = []
+  for (const tok of tokens) {
+    if (SHELL_OPERATORS.has(tok)) {
+      if (current.length) subs.push(current)
+      current = []
+    } else if (tok.endsWith(';') && tok.length > 1) {
+      current.push(tok.slice(0, -1))
+      if (current.length) subs.push(current)
+      current = []
+    } else {
+      current.push(tok)
+    }
+  }
+  if (current.length) subs.push(current)
+  return subs
+}
+
+function matchesSingleRule(tokens: string[], bashRules: string[][]): boolean {
+  for (const rule of bashRules) {
+    if (!Array.isArray(rule) || rule.length === 0) continue
+    const isWildcard = rule[rule.length - 1] === '*'
+    if (isWildcard) {
+      const prefixLen = rule.length - 1
+      if (tokens.length < prefixLen) continue
+      if (rule.slice(0, prefixLen).every((t, i) => t === tokens[i])) return true
+    } else {
+      if (rule.length === tokens.length && rule.every((t, i) => t === tokens[i])) return true
+    }
+  }
+  return false
+}
+
+/**
+ * Check if a Bash command matches the user's bash rules.
+ * Commands with shell operators are split into sub-commands;
+ * every sub-command must independently match a rule.
+ * Must stay in sync with the copy in permission-handler.cjs.
+ */
+function matchesBashCommand(command: string, bashRules: string[][]): boolean {
+  if (!bashRules.length) return false
+  const tokens = tokenizeCommand(command.trim())
+  if (tokens.length === 0) return false
+  const subCommands = splitSubCommands(tokens)
+  if (subCommands.length === 0) return false
+  return subCommands.every((sub) => matchesSingleRule(sub, bashRules))
+}
 const HEARTBEAT_FILENAME = '.active'
 const HEARTBEAT_INTERVAL_MS = 3000
 
@@ -182,18 +233,7 @@ export class PermissionServer {
     // For Bash, check granular rules first
     if (request.tool_name === 'Bash' && request.tool_input?.command) {
       const command = String(request.tool_input.command)
-      const tokens = tokenizeCommand(command.trim())
-      const matched = config.bashRules.some((rule) => {
-        if (!Array.isArray(rule) || rule.length === 0) return false
-        const isWildcard = rule[rule.length - 1] === '*'
-        if (isWildcard) {
-          const prefixLen = rule.length - 1
-          if (tokens.length < prefixLen) return false
-          return rule.slice(0, prefixLen).every((t, i) => t === tokens[i])
-        }
-        return rule.length === tokens.length && rule.every((t, i) => t === tokens[i])
-      })
-      if (matched) {
+      if (matchesBashCommand(command, config.bashRules)) {
         this.writeResponse(ipcDir, id, { decision: 'allow', reason: 'Bash rule matched' })
         console.log(`[PermissionServer] Auto-allowed ${id}: Bash [${command.slice(0, 80)}] (bash rule)`)
         return

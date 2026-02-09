@@ -9,8 +9,30 @@
 import { useTerminalStore } from '../stores/terminal-store'
 import { useAgentStreamStore } from '../stores/agent-stream-store'
 import { IconLoader2 } from '@tabler/icons-react'
+import type { TerminalAgentState } from '../types/stream-json'
 
 type AgentStatus = 'responding' | 'thinking' | 'done' | 'needs-attention' | 'idle' | 'exited'
+
+/**
+ * Derive a status string from a TerminalAgentState.
+ * Shared between AgentStatusIcon and useProjectAgentStatus.
+ */
+export function deriveAgentStatus(
+  agentState: TerminalAgentState | undefined,
+  isExited: boolean
+): AgentStatus {
+  if (isExited) return 'exited'
+  if (!agentState) return 'idle'
+
+  const lastMsg = agentState.messages[agentState.messages.length - 1]
+  const isToolExecutionPending = !agentState.processExited && lastMsg?.stopReason === 'tool_use'
+
+  if (agentState.currentMessage || agentState.isWaitingForResponse) return 'responding'
+  if (agentState.isActive || isToolExecutionPending) return 'thinking'
+  if (agentState.error) return 'needs-attention'
+  if (agentState.messages.length > 0) return 'done'
+  return 'idle'
+}
 
 interface AgentStatusIconProps {
   sessionId: string
@@ -18,53 +40,45 @@ interface AgentStatusIconProps {
 }
 
 export function AgentStatusIcon({ sessionId }: AgentStatusIconProps) {
-  const session = useTerminalStore((state) =>
-    state.sessions.find((s) => s.id === sessionId)
+  const isExited = useTerminalStore((state) =>
+    state.sessions.find((s) => s.id === sessionId)?.status === 'exited'
   )
 
-  const agentState = useAgentStreamStore((state) => {
+  // Derive status string INSIDE the selector so Zustand can compare primitive
+  // strings instead of object references. During streaming, the TerminalAgentState
+  // object changes on every delta (new currentMessage.blocks), but the derived
+  // status stays 'responding' — so this selector returns the same string and
+  // Zustand skips the re-render entirely.
+  const agentStatus = useAgentStreamStore((state): AgentStatus => {
     const conv = state.conversations.get(sessionId)
     const pids = conv?.processIds ?? [sessionId]
 
-    // First pass: find any actively responding process
+    // Find the most relevant agent state (prefer active ones)
+    let bestState: TerminalAgentState | undefined
     for (const pid of pids) {
       const ts = state.terminals.get(pid)
-      if (ts && (ts.isActive || ts.isWaitingForResponse)) return ts
+      if (ts && (ts.isActive || ts.isWaitingForResponse)) {
+        bestState = ts
+        break
+      }
+    }
+    if (!bestState) {
+      for (let i = pids.length - 1; i >= 0; i--) {
+        const pid = pids[i]
+        if (!pid) continue
+        const ts = state.terminals.get(pid)
+        if (ts && (ts.messages.length > 0 || ts.currentMessage)) {
+          bestState = ts
+          break
+        }
+      }
+    }
+    if (!bestState) {
+      bestState = state.terminals.get(sessionId)
     }
 
-    // Second pass: return the most recent terminal state that has messages
-    for (let i = pids.length - 1; i >= 0; i--) {
-      const pid = pids[i]
-      if (!pid) continue
-      const ts = state.terminals.get(pid)
-      if (ts && (ts.messages.length > 0 || ts.currentMessage)) return ts
-    }
-
-    return state.terminals.get(sessionId)
+    return deriveAgentStatus(bestState, isExited ?? false)
   })
-
-  if (!session) return null
-
-  let agentStatus: AgentStatus = 'idle'
-
-  if (session.status === 'exited') {
-    agentStatus = 'exited'
-  } else if (agentState) {
-    const lastMsg = agentState.messages[agentState.messages.length - 1]
-    const isToolExecutionPending = !agentState.processExited && lastMsg?.stopReason === 'tool_use'
-
-    if (agentState.currentMessage || agentState.isWaitingForResponse) {
-      agentStatus = 'responding'
-    } else if (agentState.isActive || isToolExecutionPending) {
-      agentStatus = 'thinking'
-    } else if (agentState.error) {
-      agentStatus = 'needs-attention'
-    } else if (agentState.messages.length > 0) {
-      agentStatus = 'done'
-    } else {
-      agentStatus = 'idle'
-    }
-  }
 
   // Spinner for active states, colored dots for static states
   // Sized to work as an overlay on the agent icon
