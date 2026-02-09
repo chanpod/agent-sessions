@@ -3,7 +3,7 @@
  * for a specific project, with ability to launch new agent terminals
  */
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
 import { Bot, Code, Gem, Package, Pencil, Plus, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import { useTerminalStore, type TerminalSession } from '../stores/terminal-store'
 import { useViewStore } from '../stores/view-store'
@@ -49,7 +49,7 @@ function AgentIcon({ id, className }: { id: string; className?: string }) {
   }
 }
 
-function AgentSessionRow({
+const AgentSessionRow = memo(function AgentSessionRow({
   session,
   isActive,
   onSelect,
@@ -83,7 +83,11 @@ function AgentSessionRow({
     cliSessionId ? s.sessions[cliSessionId]?.lastActiveAt : undefined
   )
 
-  // Get the actual model from stream messages (includes version like "claude-opus-4-6-20260101")
+  // Get the actual model from stream messages.
+  // Optimization: once we find a model, return it as a stable string.
+  // The model doesn't change mid-session, so after the first message-start
+  // event this selector returns the same string on every call — Zustand
+  // sees referential equality and skips re-rendering.
   const streamModel = useAgentStreamStore((store) => {
     const conv = store.conversations.get(session.id)
     const pids = conv?.processIds ?? [session.id]
@@ -281,7 +285,7 @@ function AgentSessionRow({
       </div>
     </li>
   )
-}
+})
 
 export function AgentTerminalsSection({
   projectId,

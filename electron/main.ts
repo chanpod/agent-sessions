@@ -500,6 +500,25 @@ async function createWindow() {
   // Register all file system related IPC handlers
   registerFsHandlers(sshManager)
 
+  // Open all external links in the user's default browser instead of navigating
+  // the Electron window away from the app
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    // Allow dev server reloads and initial load
+    if (isDev && url.startsWith('http://localhost:')) return
+    // Block all other navigation — open externally instead
+    event.preventDefault()
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+  })
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
     // Dev tools can be opened manually with F12 or Ctrl+Shift+I

@@ -748,32 +748,36 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           const endData = event.data as { stopReason?: string }
           const termStateAfter = get().terminals.get(terminalId)
 
-          // Record turn end time when agent finishes its turn
           if (endData.stopReason === 'end_turn') {
+            // Collect patches and apply in a single set()
             const sessionId = get().terminalToSession.get(terminalId)
             const ipid = sessionId ? get().sessionToInitialProcess.get(sessionId) : undefined
-            if (ipid) {
+
+            if (termStateAfter?.isWaitingForQuestion) {
+              emitAgentNotification(terminalId, 'needs-attention')
+            } else {
+              emitAgentNotification(terminalId, 'done')
+            }
+
+            if (ipid || (!termStateAfter?.isWaitingForQuestion)) {
               set((state) => {
-                const timing = state.turnTimings.get(ipid)
-                if (timing) {
-                  const turnTimings = new Map(state.turnTimings)
-                  turnTimings.set(ipid, { ...timing, endedAt: Date.now() })
-                  return { turnTimings }
+                const patch: Partial<typeof state> = {}
+                if (ipid) {
+                  const timing = state.turnTimings.get(ipid)
+                  if (timing) {
+                    const turnTimings = new Map(state.turnTimings)
+                    turnTimings.set(ipid, { ...timing, endedAt: Date.now() })
+                    patch.turnTimings = turnTimings
+                  }
                 }
-                return state
+                if (!termStateAfter?.isWaitingForQuestion) {
+                  const notifiedTerminals = new Set(state.notifiedTerminals)
+                  notifiedTerminals.add(terminalId)
+                  patch.notifiedTerminals = notifiedTerminals
+                }
+                return patch
               })
             }
-          }
-
-          if (endData.stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
-            emitAgentNotification(terminalId, 'needs-attention')
-          } else if (endData.stopReason === 'end_turn') {
-            emitAgentNotification(terminalId, 'done')
-            set((state) => {
-              const notifiedTerminals = new Set(state.notifiedTerminals)
-              notifiedTerminals.add(terminalId)
-              return { notifiedTerminals }
-            })
           }
         }
       },
@@ -1270,56 +1274,88 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               })
             }
 
-            // Post-processing: persist sessions and emit notifications (outside set())
-            for (const { terminalId, stopReason } of messageEndTerminals) {
-              get().persistSession(terminalId)
-              const termStateAfter = get().terminals.get(terminalId)
+            // Post-processing: emit notifications and batch all remaining state
+            // mutations into a SINGLE set() call. Previously this was 1-3
+            // separate set() calls (turnTimings, notifiedTerminals add/delete)
+            // — each triggering a full subscriber re-evaluation cycle.
 
-              // Record turn end time when agent finishes its turn
-              if (stopReason === 'end_turn') {
-                const sessionId = get().terminalToSession.get(terminalId)
-                const ipid = sessionId ? get().sessionToInitialProcess.get(sessionId) : undefined
-                if (ipid) {
-                  set((state) => {
-                    const timing = state.turnTimings.get(ipid)
-                    if (timing) {
-                      const turnTimings = new Map(state.turnTimings)
-                      turnTimings.set(ipid, { ...timing, endedAt: Date.now() })
-                      return { turnTimings }
-                    }
-                    return state
-                  })
+            // Defer persistSession calls to next microtask so they don't
+            // pile onto the synchronous batch handler. Persist triggers its
+            // own set() (updating the sessions Record), which causes all
+            // subscribers to re-evaluate. Deferring lets the main batch
+            // render cycle complete first, keeping the UI responsive.
+            if (messageEndTerminals.length > 0 || processExitTerminals.length > 0) {
+              queueMicrotask(() => {
+                for (const { terminalId } of messageEndTerminals) {
+                  get().persistSession(terminalId)
                 }
-              }
-
-              if (stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
-                emitAgentNotification(terminalId, 'needs-attention')
-              } else if (stopReason === 'end_turn') {
-                emitAgentNotification(terminalId, 'done')
-                set((state) => {
-                  const notifiedTerminals = new Set(state.notifiedTerminals)
-                  notifiedTerminals.add(terminalId)
-                  return { notifiedTerminals }
-                })
-              }
+                for (const { terminalId } of processExitTerminals) {
+                  get().persistSession(terminalId)
+                }
+              })
             }
 
+            // Error toasts (cheap, no set())
             for (const { terminalId } of processExitTerminals) {
-              get().persistSession(terminalId)
-
-              // Show error toast if process died unexpectedly
               const termStateAfter = get().terminals.get(terminalId)
               if (termStateAfter?.error) {
                 useToastStore.getState().addToast(termStateAfter.error, 'error', 8000)
               }
+            }
 
+            // Collect all state patches, then apply in one set()
+            const turnTimingUpdates: Array<{ ipid: string; endedAt: number }> = []
+            const notifiedToAdd: string[] = []
+            const notifiedToDelete: string[] = []
+
+            for (const { terminalId, stopReason } of messageEndTerminals) {
+              const termStateAfter = get().terminals.get(terminalId)
+              if (stopReason === 'end_turn') {
+                const sessionId = get().terminalToSession.get(terminalId)
+                const ipid = sessionId ? get().sessionToInitialProcess.get(sessionId) : undefined
+                if (ipid) {
+                  turnTimingUpdates.push({ ipid, endedAt: Date.now() })
+                }
+                if (termStateAfter?.isWaitingForQuestion) {
+                  emitAgentNotification(terminalId, 'needs-attention')
+                } else {
+                  emitAgentNotification(terminalId, 'done')
+                  notifiedToAdd.push(terminalId)
+                }
+              }
+            }
+
+            for (const { terminalId } of processExitTerminals) {
               if (!get().notifiedTerminals.has(terminalId)) {
                 emitAgentNotification(terminalId, 'done')
               }
+              notifiedToDelete.push(terminalId)
+            }
+
+            // Single set() for all post-batch state mutations
+            if (turnTimingUpdates.length > 0 || notifiedToAdd.length > 0 || notifiedToDelete.length > 0) {
               set((state) => {
-                const notifiedTerminals = new Set(state.notifiedTerminals)
-                notifiedTerminals.delete(terminalId)
-                return { notifiedTerminals }
+                const patch: Partial<typeof state> = {}
+
+                if (turnTimingUpdates.length > 0) {
+                  const turnTimings = new Map(state.turnTimings)
+                  for (const { ipid, endedAt } of turnTimingUpdates) {
+                    const timing = turnTimings.get(ipid)
+                    if (timing) {
+                      turnTimings.set(ipid, { ...timing, endedAt })
+                    }
+                  }
+                  patch.turnTimings = turnTimings
+                }
+
+                if (notifiedToAdd.length > 0 || notifiedToDelete.length > 0) {
+                  const notifiedTerminals = new Set(state.notifiedTerminals)
+                  for (const id of notifiedToAdd) notifiedTerminals.add(id)
+                  for (const id of notifiedToDelete) notifiedTerminals.delete(id)
+                  patch.notifiedTerminals = notifiedTerminals
+                }
+
+                return patch
               })
             }
           })
