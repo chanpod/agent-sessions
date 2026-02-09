@@ -333,6 +333,15 @@ export interface AgentToolEndData {
 }
 
 /**
+ * Agent tool result event data (from user messages containing tool_result blocks)
+ */
+export interface AgentToolResultData {
+  toolId: string
+  result: string
+  isError: boolean
+}
+
+/**
  * Agent message end event data
  */
 export interface AgentMessageEndData {
@@ -349,6 +358,13 @@ export interface AgentErrorData {
 }
 
 /**
+ * Agent system event data (compaction, etc.)
+ */
+export interface AgentSystemEventData {
+  subtype: string
+}
+
+/**
  * Union type of all agent stream events (parsed/semantic events)
  */
 export type AgentStreamEvent =
@@ -358,10 +374,12 @@ export type AgentStreamEvent =
   | { type: 'agent-tool-start'; data: AgentToolStartData }
   | { type: 'agent-tool-input-delta'; data: AgentToolInputDeltaData }
   | { type: 'agent-tool-end'; data: AgentToolEndData }
+  | { type: 'agent-tool-result'; data: AgentToolResultData }
   | { type: 'agent-block-end'; data: AgentToolEndData }
   | { type: 'agent-message-end'; data: AgentMessageEndData }
   | { type: 'agent-session-result'; data: AgentSessionResultData }
   | { type: 'agent-error'; data: AgentErrorData }
+  | { type: 'agent-system-event'; data: AgentSystemEventData }
 
 /**
  * Event type literal union for type-safe event handling
@@ -383,7 +401,7 @@ export type AgentStreamEventData<T extends AgentStreamEventType> = Extract<
 /**
  * Content block types in our state
  */
-export type ContentBlockType = 'text' | 'thinking' | 'tool_use'
+export type ContentBlockType = 'text' | 'thinking' | 'tool_use' | 'system'
 
 /**
  * A content block representing a piece of the agent's response
@@ -401,6 +419,8 @@ export interface ContentBlock {
   toolInput?: string
   /** Whether this block is complete */
   isComplete?: boolean
+  /** Whether the tool result was an error (only for tool_use blocks) */
+  toolResultIsError?: boolean
 }
 
 /**

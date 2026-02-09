@@ -16,6 +16,7 @@ import {
   IconMarkdown,
   IconTxt,
   IconMessage,
+  IconRefresh,
 } from '@tabler/icons-react'
 
 import type {
@@ -31,6 +32,7 @@ import type {
   ToolResultBlock,
   ErrorBlock,
   ImageBlock,
+  SystemBlock,
 } from '@/types/agent-ui'
 import type { TokenUsage } from '@/types/stream-json'
 import { MessageBlock } from '@/components/agent/MessageBlock'
@@ -327,13 +329,18 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
   // Extract latest plan state for the floating badge
   const plan = useMemo(() => extractLatestPlan(conversation), [conversation])
 
-  // Extract initial prompt from the first user message
-  const initialPrompt = useMemo(() => {
-    const firstUserMsg = conversation.messages.find((m) => m.role === 'user')
-    if (!firstUserMsg) return null
-    const textBlock = firstUserMsg.blocks.find((b) => b.type === 'text') as TextBlock | undefined
-    return textBlock?.content ?? null
+  // Extract all user prompts from the conversation
+  const userPrompts = useMemo(() => {
+    return conversation.messages
+      .filter((m) => m.role === 'user')
+      .map((m) => {
+        const textBlock = m.blocks.find((b) => b.type === 'text') as TextBlock | undefined
+        return textBlock?.content ?? null
+      })
+      .filter((content): content is string => content !== null)
   }, [conversation.messages])
+
+  const [promptsExpanded, setPromptsExpanded] = useState(false)
 
   // Build render context
   const context: RenderContext = useMemo(
@@ -417,8 +424,8 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
         <div className="relative h-full">
           {/* Floating side nav — cards + tasks button */}
           <div className="absolute top-1/2 left-4 z-30 hidden -translate-y-1/2 flex-col gap-2 xl:flex">
-            {initialPrompt && (
-              <Popover>
+            {userPrompts.length > 0 && (
+              <Popover onOpenChange={(open) => { if (!open) setPromptsExpanded(false) }}>
                 <PopoverTrigger
                   className={cn(
                     'flex items-center gap-2 rounded-full border px-3 py-1.5',
@@ -431,16 +438,69 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
                     <IconMessage className="size-3 text-amber-400" />
                   </div>
                   <span className="text-xs font-medium text-amber-400">
-                    Prompt
+                    Prompt{userPrompts.length > 1 ? 's' : ''}
                   </span>
+                  {userPrompts.length > 1 && (
+                    <span className="text-[10px] font-semibold text-amber-400/70">
+                      {userPrompts.length}
+                    </span>
+                  )}
                 </PopoverTrigger>
                 <PopoverContent
                   side="right"
                   sideOffset={8}
-                  className="w-80 max-h-64 overflow-y-auto"
+                  className="w-80 max-h-80 overflow-y-auto"
                 >
-                  <p className="text-xs font-medium text-muted-foreground mb-1">Initial prompt</p>
-                  <p className="text-sm whitespace-pre-wrap break-words">{initialPrompt}</p>
+                  <div className="flex flex-col gap-3">
+                    {/* First prompt — always visible */}
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">
+                        Prompt 1
+                      </p>
+                      <p className="text-sm whitespace-pre-wrap break-words">{userPrompts[0]}</p>
+                    </div>
+
+                    {/* Middle prompts — collapsed by default */}
+                    {userPrompts.length > 2 && (
+                      <>
+                        {promptsExpanded ? (
+                          userPrompts.slice(1, -1).map((prompt, i) => (
+                            <div key={i}>
+                              <p className="text-xs font-medium text-muted-foreground mb-1">
+                                Prompt {i + 2}
+                              </p>
+                              <p className="text-sm whitespace-pre-wrap break-words">{prompt}</p>
+                            </div>
+                          ))
+                        ) : (
+                          <button
+                            onClick={() => setPromptsExpanded(true)}
+                            className={cn(
+                              'flex items-center justify-center gap-1 rounded-md py-1.5',
+                              'text-xs text-muted-foreground hover:text-foreground',
+                              'border border-dashed border-border hover:border-foreground/30',
+                              'transition-colors cursor-pointer',
+                            )}
+                          >
+                            <IconChevronDown className="size-3" />
+                            {userPrompts.length - 2} more prompt{userPrompts.length - 2 > 1 ? 's' : ''}
+                          </button>
+                        )}
+                      </>
+                    )}
+
+                    {/* Last prompt — always visible (if more than one) */}
+                    {userPrompts.length > 1 && (
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground mb-1">
+                          Prompt {userPrompts.length}
+                        </p>
+                        <p className="text-sm whitespace-pre-wrap break-words">
+                          {userPrompts[userPrompts.length - 1]}
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 </PopoverContent>
               </Popover>
             )}
@@ -783,6 +843,13 @@ function StandaloneMessageRenderer({
 }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
+
+  // System event messages (compaction, etc.) render as a subtle divider
+  const isSystemEvent = isSystem && message.blocks.length > 0 && message.blocks[0]?.type === 'system'
+  if (isSystemEvent) {
+    const systemBlock = message.blocks[0] as SystemBlock
+    return <SystemEventDivider subtype={systemBlock.subtype} />
+  }
 
   return (
     <div
@@ -1139,9 +1206,38 @@ function DefaultBlockRenderer({
       return <DefaultImageBlock image={image} />
     }
 
+    case 'system': {
+      const system = block as SystemBlock
+      return <SystemEventDivider subtype={system.subtype} />
+    }
+
     default:
       return null
   }
+}
+
+/**
+ * Human-readable labels for system event subtypes
+ */
+const SYSTEM_EVENT_LABELS: Record<string, string> = {
+  compaction: 'Context compressed',
+}
+
+/**
+ * Subtle inline divider for system events (compaction, etc.)
+ */
+function SystemEventDivider({ subtype }: { subtype: string }) {
+  const label = SYSTEM_EVENT_LABELS[subtype] ?? subtype
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <div className="h-px flex-1 bg-border/30" />
+      <div className="flex items-center gap-1.5 text-muted-foreground/50">
+        <IconRefresh className="size-3" />
+        <span className="text-[11px] font-medium">{label}</span>
+      </div>
+      <div className="h-px flex-1 bg-border/30" />
+    </div>
+  )
 }
 
 /**

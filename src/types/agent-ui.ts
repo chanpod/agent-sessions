@@ -23,6 +23,7 @@ export type ContentBlockType =
   | 'tool_result'
   | 'error'
   | 'image'
+  | 'system'
 
 /**
  * Base interface for all content blocks
@@ -122,6 +123,15 @@ export interface ImageBlock extends BaseContentBlock {
 }
 
 /**
+ * System event content block - represents a system event like context compaction
+ */
+export interface SystemBlock extends BaseContentBlock {
+  type: 'system'
+  /** The system event subtype (e.g., 'compaction') */
+  subtype: string
+}
+
+/**
  * Union type of all content block types
  */
 export type ContentBlock =
@@ -132,6 +142,7 @@ export type ContentBlock =
   | ToolResultBlock
   | ErrorBlock
   | ImageBlock
+  | SystemBlock
 
 // =============================================================================
 // Message Types

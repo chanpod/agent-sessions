@@ -60,6 +60,7 @@ function makeTerminalState(messageCount: number): TerminalAgentState {
     messages,
     isActive: false,
     isWaitingForResponse: false,
+    isWaitingForQuestion: false,
     processExited: false,
   }
 }
@@ -286,6 +287,7 @@ describe('agent-stream-store persistence', () => {
             ],
             isActive: false,
             isWaitingForResponse: false,
+            isWaitingForQuestion: false,
             processExited: true,
           },
         ],
@@ -299,6 +301,7 @@ describe('agent-stream-store persistence', () => {
             ],
             isActive: false,
             isWaitingForResponse: false,
+            isWaitingForQuestion: false,
             processExited: true,
           },
         ],
@@ -362,6 +365,7 @@ describe('agent-stream-store persistence', () => {
             messages: [makeMessage('msg_new_3', { startedAt: 3000, completedAt: 3500 })],
             isActive: false,
             isWaitingForResponse: false,
+            isWaitingForQuestion: false,
             processExited: true,
           },
         ],

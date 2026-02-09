@@ -1,6 +1,6 @@
 import { Wifi, WifiOff, AlertCircle, Loader2, X } from 'lucide-react'
 import { useSSHStore } from '../stores/ssh-store'
-import { Project, useProjectStore } from '../stores/project-store'
+import { Project } from '../stores/project-store'
 
 interface ProjectConnectionScreenProps {
   project: Project

@@ -17,9 +17,11 @@ import type {
   AgentToolStartData,
   AgentToolInputDeltaData,
   AgentToolEndData,
+  AgentToolResultData,
   AgentMessageEndData,
   AgentSessionResultData,
   AgentErrorData,
+  AgentSystemEventData,
   DebugEventEntry,
   TokenUsage,
 } from '../types/stream-json'
@@ -89,6 +91,10 @@ interface AgentStreamStore {
   // Runtime: accumulated session cost per session (sessionId -> cost in USD)
   sessionCosts: Map<string, number>
 
+  // Runtime: turn timing per conversation (initialProcessId -> timestamps)
+  // turnStartedAt is set when the user sends a message, turnEndedAt when agent finishes (end_turn)
+  turnTimings: Map<string, { startedAt: number; endedAt?: number }>
+
   // Actions
   processEvent(terminalId: string, event: AgentStreamEvent): void
   getTerminalState(terminalId: string): TerminalAgentState | undefined
@@ -130,6 +136,9 @@ interface AgentStreamStore {
   getLatestContextUsage(sessionId: string): TokenUsage | undefined
   getSessionCost(sessionId: string): number | undefined
 
+  // Turn timing
+  getTurnTiming(initialProcessId: string): { startedAt: number; endedAt?: number } | undefined
+
   // IPC subscription
   subscribeToEvents(): () => void // returns unsubscribe function (for PTY-based detector events)
   subscribeToAgentProcessEvents(): () => void // returns unsubscribe function (for child process agent events)
@@ -162,12 +171,23 @@ function getOrCreateTerminalState(
  * Detect early process death and return an error message if applicable.
  * "Early death" = process exited while we were still waiting for a response,
  * or process exited with non-zero code before producing any messages.
+ *
+ * Exit code 256 on Windows is a common non-fatal exit from `bash -c "cat | claude ..."`:
+ * when Claude CLI exits, `cat` gets a broken pipe and bash reports 256 (0x100).
+ * We only treat it as an error if the agent never produced any output.
  */
 function detectEarlyDeathError(
   termState: TerminalAgentState,
   exitCode: number | null
 ): string | undefined {
   const wasWaiting = termState.isWaitingForResponse
+  const hasMessages = termState.messages.length > 0 || termState.currentMessage !== null
+
+  // Exit code 256 on Windows is typically a benign pipe/signal death of the
+  // bash wrapper after Claude CLI finishes. If we already got messages, ignore it.
+  if (exitCode === 256 && hasMessages) {
+    return undefined
+  }
 
   if (wasWaiting && exitCode !== null && exitCode !== 0) {
     return `Agent process exited with code ${exitCode} before responding. The session may be invalid — try sending again or start a new session.`
@@ -218,6 +238,8 @@ function summarizeEvent(type: string, data: unknown): string {
     case 'agent-block-end':
     case 'agent-tool-end':
       return `blockIndex=${d.blockIndex}`
+    case 'agent-tool-result':
+      return `toolId=${d.toolId} isError=${d.isError}`
     case 'agent-error':
       return `${d.errorType}: ${d.message}`
     case 'agent-process-exit':
@@ -453,6 +475,52 @@ function applyAgentEvent(
       break
     }
 
+    case 'agent-tool-result': {
+      const data = event.data as AgentToolResultData
+      // Find the tool_use block with matching toolId across completed messages and currentMessage.
+      // Tool results arrive in user messages AFTER the assistant message completes,
+      // so the tool_use block will typically be in the completed messages array.
+      newState = terminalState
+
+      // Check completed messages (most recent first — tool result matches the latest use)
+      for (let mi = terminalState.messages.length - 1; mi >= 0; mi--) {
+        const msg = terminalState.messages[mi]!
+        const blockIdx = msg.blocks.findIndex(
+          (b) => b.type === 'tool_use' && b.toolId === data.toolId
+        )
+        if (blockIdx !== -1) {
+          const newMessages = [...terminalState.messages]
+          const newMsg = { ...msg, blocks: [...msg.blocks] }
+          newMsg.blocks[blockIdx] = {
+            ...newMsg.blocks[blockIdx]!,
+            toolResultIsError: data.isError,
+          }
+          newMessages[mi] = newMsg
+          newState = { ...terminalState, messages: newMessages }
+          break
+        }
+      }
+
+      // Also check currentMessage if not found in completed messages
+      if (newState === terminalState && terminalState.currentMessage) {
+        const blockIdx = terminalState.currentMessage.blocks.findIndex(
+          (b) => b.type === 'tool_use' && b.toolId === data.toolId
+        )
+        if (blockIdx !== -1) {
+          const newBlocks = [...terminalState.currentMessage.blocks]
+          newBlocks[blockIdx] = {
+            ...newBlocks[blockIdx]!,
+            toolResultIsError: data.isError,
+          }
+          newState = {
+            ...terminalState,
+            currentMessage: { ...terminalState.currentMessage, blocks: newBlocks },
+          }
+        }
+      }
+      break
+    }
+
     case 'agent-message-end': {
       const data = event.data as AgentMessageEndData
 
@@ -489,6 +557,27 @@ function applyAgentEvent(
         currentMessage: null,
         messages: [...terminalState.messages, completedMessage],
         isActive: stillActive,
+      }
+      break
+    }
+
+    case 'agent-system-event': {
+      const data = event.data as AgentSystemEventData
+      // Create a synthetic system message to display in the conversation
+      const systemMessage: AgentMessage = {
+        id: `system-${Date.now()}-${data.subtype}`,
+        model: '',
+        blocks: [{
+          type: 'system',
+          content: data.subtype,
+        }],
+        status: 'completed',
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+      }
+      newState = {
+        ...terminalState,
+        messages: [...terminalState.messages, systemMessage],
       }
       break
     }
@@ -618,6 +707,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       queuedMessages: new Map(),
       latestContextUsage: new Map(),
       sessionCosts: new Map(),
+      turnTimings: new Map(),
 
       processEvent: (terminalId: string, event: AgentStreamEvent) => {
         set((state) => {
@@ -663,6 +753,24 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
           const endData = event.data as { stopReason?: string }
           const termStateAfter = get().terminals.get(terminalId)
+
+          // Record turn end time when agent finishes its turn
+          if (endData.stopReason === 'end_turn') {
+            const sessionId = get().terminalToSession.get(terminalId)
+            const ipid = sessionId ? get().sessionToInitialProcess.get(sessionId) : undefined
+            if (ipid) {
+              set((state) => {
+                const timing = state.turnTimings.get(ipid)
+                if (timing) {
+                  const turnTimings = new Map(state.turnTimings)
+                  turnTimings.set(ipid, { ...timing, endedAt: Date.now() })
+                  return { turnTimings }
+                }
+                return state
+              })
+            }
+          }
+
           if (endData.stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
             emitAgentNotification(terminalId, 'needs-attention')
           } else if (endData.stopReason === 'end_turn') {
@@ -781,12 +889,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             ...existing,
             userMessages: [...existing.userMessages, message],
           })
-          return { conversations }
+          // Start the turn timer
+          const turnTimings = new Map(state.turnTimings)
+          turnTimings.set(initialProcessId, { startedAt: message.timestamp })
+          return { conversations, turnTimings }
         })
       },
 
       getConversation: (initialProcessId: string) => {
         return get().conversations.get(initialProcessId) ?? { processIds: [initialProcessId], userMessages: [] }
+      },
+
+      getTurnTiming: (initialProcessId: string) => {
+        return get().turnTimings.get(initialProcessId)
       },
 
       // Session management actions
@@ -1189,6 +1304,24 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             for (const { terminalId, stopReason } of messageEndTerminals) {
               get().persistSession(terminalId)
               const termStateAfter = get().terminals.get(terminalId)
+
+              // Record turn end time when agent finishes its turn
+              if (stopReason === 'end_turn') {
+                const sessionId = get().terminalToSession.get(terminalId)
+                const ipid = sessionId ? get().sessionToInitialProcess.get(sessionId) : undefined
+                if (ipid) {
+                  set((state) => {
+                    const timing = state.turnTimings.get(ipid)
+                    if (timing) {
+                      const turnTimings = new Map(state.turnTimings)
+                      turnTimings.set(ipid, { ...timing, endedAt: Date.now() })
+                      return { turnTimings }
+                    }
+                    return state
+                  })
+                }
+              }
+
               if (stopReason === 'end_turn' && termStateAfter?.isWaitingForQuestion) {
                 emitAgentNotification(terminalId, 'needs-attention')
               } else if (stopReason === 'end_turn') {
@@ -1438,6 +1571,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           state.queuedMessages = new Map()
           state.latestContextUsage = new Map()
           state.sessionCosts = new Map()
+          state.turnTimings = new Map()
           state.hasRehydrated = true
           console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
           // Resolve the rehydration promise so waitForRehydration() callers can proceed

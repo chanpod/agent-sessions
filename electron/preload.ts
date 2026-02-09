@@ -479,8 +479,6 @@ const electronAPI = {
       ipcRenderer.invoke('skill:install', pluginId, source, scope, projectPath),
     uninstall: (pluginId: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('skill:uninstall', pluginId),
-    toggleEnabled: (pluginId: string, enabled: boolean): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('skill:toggle-enabled', pluginId, enabled),
   },
   log: {
     openLogsFolder: () => ipcRenderer.invoke('log:open-folder'),

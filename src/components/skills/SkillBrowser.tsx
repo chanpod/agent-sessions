@@ -19,7 +19,6 @@ import {
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
-import { Switch } from '../ui/switch'
 import { ScrollArea } from '../ui/scroll-area'
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -43,7 +42,6 @@ export interface InstalledSkill {
   description?: string
   version: string
   scope: SkillScope
-  enabled: boolean
   installPath: string
   installedAt: string
   lastUpdated: string
@@ -75,7 +73,6 @@ interface SkillBrowserProps {
   marketplaceSkills: MarketplaceSkill[]
   onInstall: (skill: MarketplaceSkill, scope: SkillScope) => Promise<void>
   onUninstall: (skill: InstalledSkill) => Promise<void>
-  onToggleEnabled: (skill: InstalledSkill, enabled: boolean) => Promise<void>
   onSearchVercel?: (query: string) => Promise<MarketplaceSkill[]>
   isLoading?: boolean
 }
@@ -357,12 +354,10 @@ function MarketplaceCard({
 function InstalledCard({
   skill,
   onUninstall,
-  onToggleEnabled,
   uninstalling,
 }: {
   skill: InstalledSkill
   onUninstall: (skill: InstalledSkill) => void
-  onToggleEnabled: (skill: InstalledSkill, enabled: boolean) => void
   uninstalling: string | null
 }) {
   const isUninstalling = uninstalling === skill.id
@@ -371,12 +366,7 @@ function InstalledCard({
   return (
     <>
       <div
-        className={cn(
-          'group relative rounded-lg border p-4 transition-all duration-150',
-          skill.enabled
-            ? 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.10]'
-            : 'border-white/[0.04] bg-white/[0.01] opacity-60 hover:opacity-80'
-        )}
+        className="group relative rounded-lg border border-white/[0.06] bg-white/[0.02] p-4 transition-all duration-150 hover:border-white/[0.10]"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -398,26 +388,19 @@ function InstalledCard({
             )}
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
-            <Switch
-              size="sm"
-              checked={skill.enabled}
-              onCheckedChange={(checked) => onToggleEnabled(skill, checked)}
-            />
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              disabled={isUninstalling}
-              onClick={() => setShowConfirm(true)}
-              className="text-zinc-600 hover:bg-red-500/10 hover:text-red-400"
-            >
-              {isUninstalling ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <Trash2 className="size-3" />
-              )}
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            disabled={isUninstalling}
+            onClick={() => setShowConfirm(true)}
+            className="shrink-0 text-zinc-600 hover:bg-red-500/10 hover:text-red-400"
+          >
+            {isUninstalling ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Trash2 className="size-3" />
+            )}
+          </Button>
         </div>
 
         <div className="mt-2.5 flex items-center gap-3">
@@ -500,7 +483,6 @@ export function SkillBrowser({
   marketplaceSkills,
   onInstall,
   onUninstall,
-  onToggleEnabled,
   onSearchVercel,
   isLoading,
 }: SkillBrowserProps) {
@@ -862,7 +844,6 @@ export function SkillBrowser({
                     key={skill.id}
                     skill={skill}
                     onUninstall={handleUninstall}
-                    onToggleEnabled={onToggleEnabled}
                     uninstalling={uninstalling}
                   />
                 ))}

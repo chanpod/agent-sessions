@@ -1,6 +1,6 @@
-import { useEffect, useCallback, useState, useMemo, useRef } from 'react'
+import { useEffect, useCallback, useState, useMemo, useRef, memo } from 'react'
 import { Pencil, PencilOff } from 'lucide-react'
-import { IconSparkles, IconBug, IconAlertTriangle } from '@tabler/icons-react'
+import { IconBug, IconAlertTriangle } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAgentStreamStore } from '@/stores/agent-stream-store'
@@ -10,6 +10,7 @@ import { AgentMessageView, type AgentMessageViewHandle } from './AgentMessageVie
 import { AgentInputArea } from './AgentInputArea'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { DebugEventSheet } from './DebugEventLog'
+import { ThinkingIndicator, ThinkingDesignPicker, useThinkingDesign } from './ThinkingIndicator'
 import { cn, formatModelDisplayName } from '@/lib/utils'
 import type {
   AgentConversation,
@@ -21,6 +22,55 @@ import type {
   AgentMessage as StreamAgentMessage,
   ContentBlock as StreamContentBlock,
 } from '@/types/stream-json'
+
+// =============================================================================
+// Response Timer
+// =============================================================================
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}m ${seconds.toString().padStart(2, '0')}s`
+}
+
+/**
+ * Live response timer that shows elapsed time since the user sent their message.
+ * Ticks every second while the agent is active, freezes when the turn ends.
+ */
+const ResponseTimer = memo(function ResponseTimer({
+  startedAt,
+  endedAt,
+  isActive,
+}: {
+  startedAt: number
+  endedAt?: number
+  isActive: boolean
+}) {
+  const [now, setNow] = useState(Date.now())
+
+  useEffect(() => {
+    if (!isActive || endedAt) return
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [isActive, endedAt])
+
+  const elapsed = (endedAt ?? (isActive ? now : startedAt)) - startedAt
+  if (elapsed < 1000) return null
+
+  return (
+    <span
+      className={cn(
+        'text-[11px] tabular-nums px-2 py-1',
+        endedAt ? 'text-muted-foreground/70' : 'text-muted-foreground/50'
+      )}
+      title={endedAt ? `Response completed in ${formatDuration(elapsed)}` : 'Elapsed time'}
+    >
+      {formatDuration(elapsed)}
+    </span>
+  )
+})
 
 // =============================================================================
 // Types
@@ -83,7 +133,14 @@ function mapContentBlock(
         toolId: block.toolId || '',
         toolName: block.toolName || '',
         input: block.toolInput || '{}',
-        status: block.isComplete ? 'completed' : 'running',
+        status: block.toolResultIsError ? 'error' : block.isComplete ? 'completed' : 'running',
+      }
+
+    case 'system':
+      return {
+        ...baseBlock,
+        type: 'system',
+        subtype: block.content,
       }
 
     default:
@@ -103,10 +160,12 @@ function mapMessage(
   message: StreamAgentMessage,
   agentType: string
 ): UIAgentMessage {
+  // System messages (compaction, etc.) get role: 'system'; everything else is 'assistant'
+  const isSystem = message.blocks.length > 0 && message.blocks[0]?.type === 'system'
   return {
     id: message.id,
     agentType,
-    role: 'assistant',
+    role: isSystem ? 'system' : 'assistant',
     blocks: message.blocks.map((block, idx) =>
       mapContentBlock(block, message.id, idx)
     ),
@@ -203,6 +262,11 @@ export function AgentWorkspace({
     (store) => sessionId ? store.latestContextUsage.get(sessionId) ?? null : null
   )
 
+  // Subscribe to turn timing for the response timer
+  const turnTiming = useAgentStreamStore(
+    useShallow((store) => store.turnTimings.get(initialProcessId) ?? null)
+  )
+
   // Auto-generate title once sessionId is available (after first message gets a response).
   // Runs reactively when sessionId populates, avoiding the race condition of checking
   // inside handleSend before the session init event arrives.
@@ -214,7 +278,7 @@ export function AgentWorkspace({
     if (conversation.userMessages.length < 1) return
 
     store.markTitleGenerated(sessionId)
-    const firstMessage = conversation.userMessages[0].content
+    const firstMessage = conversation.userMessages[0]!.content
     window.electron.agent.generateTitle({ userMessages: [firstMessage] }).then((result) => {
       if (result.success && result.title) {
         useTerminalStore.getState().updateSessionTitle(initialProcessId, result.title)
@@ -286,6 +350,15 @@ export function AgentWorkspace({
         // For multi-turn: spawn new process with --resume if we have a session
         // The first message uses the existing process, follow-ups spawn new ones
         if (sessionId) {
+          // Clear errors from previous processes so stale exit code 256 errors
+          // don't permanently poison the conversation status
+          const conv = store.conversations.get(initialProcessId)
+          if (conv) {
+            for (const pid of conv.processIds) {
+              store.clearTerminalError(pid)
+            }
+          }
+
           console.log(`[AgentWorkspace] Multi-turn: spawning new process with --resume ${sessionId}`)
           const result = await window.electron.agent.spawn({
             agentType,
@@ -474,15 +547,16 @@ export function AgentWorkspace({
     return false
   })
 
-  // Get error state from the most recent process in the conversation
+  // Get error state from ONLY the most recent process in the conversation.
+  // Old process errors are stale — once we spawn a new --resume process,
+  // only the newest process's error matters. Without this, a transient exit
+  // code 256 on Windows permanently poisons the conversation status.
   const processError = useAgentStreamStore((store) => {
     const conv = store.conversations.get(initialProcessId)
     const pids = conv?.processIds ?? [initialProcessId]
-    for (let i = pids.length - 1; i >= 0; i--) {
-      const state = store.terminals.get(pids[i]!)
-      if (state?.error) return state.error
-    }
-    return null
+    const latestPid = pids[pids.length - 1]!
+    const state = store.terminals.get(latestPid)
+    return state?.error ?? null
   })
 
   // Clear isProcessing when agent starts responding (anyActive becomes true)
@@ -592,6 +666,7 @@ export function AgentWorkspace({
   // Determine placeholder text and thinking indicator state
   const isStreaming = conversation.status === 'streaming'
   const showThinkingIndicator = isStreaming && !conversation.currentMessage
+  const [thinkingDesign, setThinkingDesign] = useThinkingDesign()
   const placeholder = `Send a message to ${agentType}...`
 
   // Stop handler - kill all active processes and reset UI state
@@ -706,29 +781,18 @@ export function AgentWorkspace({
         />
 
         {/* Thinking indicator - absolutely positioned so it doesn't shrink the scroll container */}
+        <ThinkingIndicator visible={showThinkingIndicator} design={thinkingDesign} />
+
+        {/* Design picker — appears above the indicator when thinking */}
         <div
           className={cn(
-            'absolute bottom-0 left-0 right-0 z-10',
-            'bg-gradient-to-t from-background via-background/95 to-transparent',
-            'transition-all duration-300 ease-out',
+            'absolute bottom-7 right-3 z-20 transition-all duration-200',
             showThinkingIndicator
-              ? 'opacity-100 translate-y-0'
-              : 'opacity-0 translate-y-2 pointer-events-none'
+              ? 'opacity-100 scale-100'
+              : 'opacity-0 scale-95 pointer-events-none',
           )}
         >
-          <div className="flex items-center gap-2.5 px-4 py-2 max-w-3xl mx-auto">
-            <div className="flex size-5 items-center justify-center rounded-md bg-primary/10 ring-1 ring-primary/20">
-              <IconSparkles className="size-3 text-primary" />
-            </div>
-            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Thinking
-            </span>
-            <div className="flex gap-0.5">
-              <span className="size-1 rounded-full bg-primary/60 animate-pulse" />
-              <span className="size-1 rounded-full bg-primary/40 animate-pulse" style={{ animationDelay: '150ms' }} />
-              <span className="size-1 rounded-full bg-primary/20 animate-pulse" style={{ animationDelay: '300ms' }} />
-            </div>
-          </div>
+          <ThinkingDesignPicker value={thinkingDesign} onChange={setThinkingDesign} />
         </div>
       </div>
 
@@ -791,13 +855,20 @@ export function AgentWorkspace({
             ) : (
               <div />
             )}
-            {/* Context usage + Model label */}
+            {/* Context usage + Response timer + Model label */}
             <div className="flex items-center gap-2">
               {contextUsage && (latestModel || configuredModel) && (
                 <ContextUsageIndicator
                   model={(latestModel || configuredModel)!}
                   usage={contextUsage}
                   showTokens={true}
+                />
+              )}
+              {turnTiming && (
+                <ResponseTimer
+                  startedAt={turnTiming.startedAt}
+                  endedAt={turnTiming.endedAt}
+                  isActive={isStreaming}
                 />
               )}
               {modelDisplayName && (

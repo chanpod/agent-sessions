@@ -81,7 +81,7 @@ export function ContextUsageIndicator({
   className,
   showTokens = true,
 }: ContextUsageIndicatorProps) {
-  const { percentage, totalTokens, contextLimit, level, colors } = useMemo(() => {
+  const { percentage, totalTokens, contextLimit, colors } = useMemo(() => {
     const limit = getContextLimit(model)
     const total = usage.inputTokens + usage.outputTokens
     const pct = Math.min((total / limit) * 100, 100)

@@ -82,7 +82,14 @@ function mapContentBlock(
         toolId: block.toolId || '',
         toolName: block.toolName || '',
         input: block.toolInput || '{}',
-        status: block.isComplete ? 'completed' : 'running',
+        status: block.toolResultIsError ? 'error' : block.isComplete ? 'completed' : 'running',
+      }
+
+    case 'system':
+      return {
+        ...baseBlock,
+        type: 'system',
+        subtype: block.content,
       }
 
     default:
@@ -102,10 +109,11 @@ function mapMessage(
   message: StreamAgentMessage,
   agentType: string
 ): UIAgentMessage {
+  const isSystem = message.blocks.length > 0 && message.blocks[0]?.type === 'system'
   return {
     id: message.id,
     agentType,
-    role: 'assistant',
+    role: isSystem ? 'system' : 'assistant',
     blocks: message.blocks.map((block, idx) =>
       mapContentBlock(block, message.id, idx)
     ),

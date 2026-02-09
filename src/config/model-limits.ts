@@ -66,7 +66,7 @@ const MODEL_PATTERNS: Array<{ pattern: RegExp; limit: number }> = [
 export function getContextLimit(model: string): number {
   // Check for exact match first
   if (model in MODEL_CONTEXT_LIMITS) {
-    return MODEL_CONTEXT_LIMITS[model]
+    return MODEL_CONTEXT_LIMITS[model]!
   }
 
   // Check patterns

@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Project, useProjectStore } from '../stores/project-store'
-import { useTerminalStore } from '../stores/terminal-store'
-import { useServerStore } from '../stores/server-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { useGitStore } from '../stores/git-store'
 import { TerminalsTab } from './TerminalsTab'
@@ -41,8 +39,6 @@ export function ProjectContent({
   onCreateAgentTerminal,
 }: ProjectContentProps) {
   const { connectProject, setProjectConnectionStatus, disconnectProject } = useProjectStore()
-  const { sessions } = useTerminalStore()
-  const { servers } = useServerStore()
   const { getConnection } = useSSHStore()
   const { refreshGitInfo } = useGitStore()
 
@@ -80,15 +76,15 @@ export function ProjectContent({
     const result = await connectProject(project.id)
     console.log('[ProjectContent] connectProject result:', result)
 
-    if (!result.success) {
-      if (result.requiresInteractive) {
+    if (!result || !result.success) {
+      if (result?.requiresInteractive) {
         // Password auth — show dialog, then establish ControlMaster with the password
         setSSHConnectionName(sshConnection.name)
         setShowPasswordDialog(true)
         return
       }
 
-      console.error('[ProjectContent] Failed to connect project:', result.error)
+      console.error('[ProjectContent] Failed to connect project:', result?.error)
       handleCancelConnect()
       return
     }

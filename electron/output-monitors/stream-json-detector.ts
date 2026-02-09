@@ -315,7 +315,7 @@ export class StreamJsonDetector implements OutputDetector {
       // ========================================
 
       case 'system': {
-        // System init event - extract session info and emit to renderer
+        // System events carry session lifecycle info (init, compaction, etc.)
         const sysEvent = event as unknown as { subtype?: string; session_id?: string; model?: string }
         if (sysEvent.subtype === 'init' && sysEvent.session_id) {
           state.messageId = sysEvent.session_id
@@ -328,6 +328,16 @@ export class StreamJsonDetector implements OutputDetector {
             data: {
               sessionId: sysEvent.session_id,
               model: sysEvent.model || '',
+            },
+          })
+        } else if (sysEvent.subtype && sysEvent.subtype !== 'init') {
+          // Forward non-init system events (e.g. compaction) to the renderer
+          events.push({
+            terminalId,
+            type: 'agent-system-event',
+            timestamp,
+            data: {
+              subtype: sysEvent.subtype,
             },
           })
         }
@@ -454,6 +464,48 @@ export class StreamJsonDetector implements OutputDetector {
           state.currentBlockType = null
           state.usage = null
           state.stopReason = null
+        }
+        break
+      }
+
+      case 'user': {
+        // User message containing tool_result blocks — extract error status
+        const userEvent = event as unknown as {
+          message?: {
+            role?: string
+            content?: Array<{
+              type: string
+              tool_use_id?: string
+              content?: string | Array<{ type: string; text?: string }>
+              is_error?: boolean
+            }>
+          }
+        }
+        if (userEvent.message?.content) {
+          for (const block of userEvent.message.content) {
+            if (block.type === 'tool_result' && block.tool_use_id) {
+              // Extract result text from content (may be string or array of text blocks)
+              let resultText = ''
+              if (typeof block.content === 'string') {
+                resultText = block.content
+              } else if (Array.isArray(block.content)) {
+                resultText = block.content
+                  .filter((c) => c.type === 'text' && c.text)
+                  .map((c) => c.text)
+                  .join('\n')
+              }
+              events.push({
+                terminalId,
+                type: 'agent-tool-result',
+                timestamp,
+                data: {
+                  toolId: block.tool_use_id,
+                  result: resultText,
+                  isError: !!block.is_error,
+                },
+              })
+            }
+          }
         }
         break
       }

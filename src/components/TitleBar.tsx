@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Minus, Square, X, Check } from 'lucide-react'
+import { Minus, Square, X } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 interface TitleBarProps {
@@ -30,16 +30,16 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
 
     // Check initial maximized state
     const checkMaximized = async () => {
-      const maximized = await window.electron.window.isMaximized()
+      const maximized = await window.electron!.window.isMaximized()
       setIsMaximized(maximized)
     }
     checkMaximized()
 
     // Listen for window state changes
-    const unsubMaximize = window.electron.window.onMaximize(() => {
+    const unsubMaximize = window.electron!.window.onMaximize(() => {
       setIsMaximized(true)
     })
-    const unsubUnmaximize = window.electron.window.onUnmaximize(() => {
+    const unsubUnmaximize = window.electron!.window.onUnmaximize(() => {
       setIsMaximized(false)
     })
 
@@ -76,19 +76,19 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
 
   const handleMinimize = async () => {
     if (isElectron) {
-      await window.electron.window.minimize()
+      await window.electron!.window.minimize()
     }
   }
 
   const handleMaximize = async () => {
     if (isElectron) {
-      await window.electron.window.maximize()
+      await window.electron!.window.maximize()
     }
   }
 
   const handleClose = async () => {
     if (isElectron) {
-      await window.electron.window.close()
+      await window.electron!.window.close()
     }
   }
 

@@ -60,7 +60,7 @@ export const useAgentContextStore = create<AgentContextStore>()((set, get) => ({
     console.log('[AgentContextStore] Loading contexts for project:', projectId)
 
     try {
-      const stored = await window.electron.store.get(key) as StoredData | null
+      const stored = await window.electron!.store.get(key) as StoredData | null
 
       if (stored && stored.contexts) {
         // Validate activeContextId references
@@ -116,7 +116,7 @@ export const useAgentContextStore = create<AgentContextStore>()((set, get) => ({
     }
 
     try {
-      await window.electron.store.set(key, data)
+      await window.electron!.store.set(key, data)
       console.log('[AgentContextStore] Saved', state.contexts.length, 'contexts')
     } catch (error) {
       console.error('[AgentContextStore] Error saving contexts:', error)

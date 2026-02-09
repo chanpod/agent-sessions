@@ -32,6 +32,9 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
       isSSHProject,
       sshConnectionId: isSSHProject ? sshConnectionId : undefined,
       remotePath: isSSHProject ? remotePath.trim() : undefined,
+      gridTerminalIds: [],
+      gridLayoutMode: 'auto',
+      lastFocusedTerminalId: null,
     })
     onClose()
   }

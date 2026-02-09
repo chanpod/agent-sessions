@@ -266,9 +266,22 @@ export interface ElectronAPI {
     clear: () => Promise<void>
   }
   fs: {
-    readFile: (filePath: string) => Promise<FileReadResult>
-    writeFile: (filePath: string, content: string) => Promise<FileWriteResult>
-    listDir: (dirPath: string) => Promise<DirListResult>
+    readFile: (filePath: string, projectId?: string) => Promise<FileReadResult>
+    writeFile: (filePath: string, content: string, projectId?: string) => Promise<FileWriteResult>
+    listDir: (dirPath: string, projectId?: string) => Promise<DirListResult>
+    searchContent: (projectPath: string, query: string, options: { caseSensitive?: boolean; wholeWord?: boolean; useRegex?: boolean; userExclusions?: string[] }, projectId?: string) => Promise<{ success: boolean; results?: Array<{ file: string; line: number; column: number; content: string; matchStart: number; matchEnd: number }>; error?: string }>
+  }
+  window: {
+    minimize: () => Promise<void>
+    maximize: () => Promise<void>
+    close: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    onMaximize: (callback: () => void) => () => void
+    onUnmaximize: (callback: () => void) => () => void
+  }
+  menu: {
+    executeRole: (role: string) => Promise<void>
+    checkForUpdates: () => Promise<void>
   }
   ssh: {
     connect: (config: SSHConnectionConfig) => Promise<SSHConnectionResult>
@@ -349,7 +362,6 @@ export interface ElectronAPI {
     searchVercel: (query: string, limit?: number) => Promise<{ success: boolean; skills: VercelSkillInfo[]; error?: string }>
     install: (pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local', projectPath?: string) => Promise<{ success: boolean; error?: string }>
     uninstall: (pluginId: string) => Promise<{ success: boolean; error?: string }>
-    toggleEnabled: (pluginId: string, enabled: boolean) => Promise<{ success: boolean; error?: string }>
   }
   log: {
     openLogsFolder: () => Promise<void>

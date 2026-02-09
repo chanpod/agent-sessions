@@ -346,7 +346,7 @@ export const useProjectStore = create<ProjectStore>()(
             if (p.id !== projectId) return p
             const newIds = [...p.gridTerminalIds]
             const [removed] = newIds.splice(fromIndex, 1)
-            newIds.splice(toIndex, 0, removed)
+            if (removed !== undefined) newIds.splice(toIndex, 0, removed)
             return { ...p, gridTerminalIds: newIds }
           }),
         })),

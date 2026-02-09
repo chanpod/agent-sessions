@@ -3,7 +3,6 @@ import { useServerStore, type ServerInstance } from '@/stores/server-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useViewStore } from '@/stores/view-store'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import {
   Collapsible,

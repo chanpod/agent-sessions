@@ -13,7 +13,6 @@ import { SearchTab } from './SearchTab'
 import { cn } from '../lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import type { ChangedFile } from '../types/electron'
 
 interface ShellInfo {
   name: string
@@ -30,6 +29,7 @@ interface ProjectItemProps {
   onStopServer: (serverId: string) => void
   onRestartServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
+  onCreateAgentTerminal?: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean) => void
 }
 
 export function ProjectItem({
@@ -42,6 +42,7 @@ export function ProjectItem({
   onStopServer,
   onRestartServer,
   onDeleteServer,
+  onCreateAgentTerminal,
 }: ProjectItemProps) {
   const { toggleProjectExpanded, activeProjectId, setActiveProject, setProjectTab, removeProject } = useProjectStore()
   const { sessions, activeSessionId } = useTerminalStore()
@@ -71,8 +72,6 @@ export function ProjectItem({
 
   const branchMenuRef = useRef<HTMLDivElement>(null)
   const branchBtnRef = useRef<HTMLButtonElement>(null)
-  const changedFilesMenuRef = useRef<HTMLDivElement>(null)
-  const changedFilesBtnRef = useRef<HTMLButtonElement>(null)
 
   // Filter out server terminals from regular terminal list (they have shell: '')
   const projectSessions = sessions.filter((s) => s.projectId === project.id && s.shell !== '')
@@ -397,6 +396,7 @@ export function ProjectItem({
                 onStopServer={onStopServer}
                 onRestartServer={onRestartServer}
                 onDeleteServer={onDeleteServer}
+                onCreateAgentTerminal={onCreateAgentTerminal ?? (() => {})}
               />
             </div>
 

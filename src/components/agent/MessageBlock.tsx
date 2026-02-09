@@ -36,7 +36,6 @@ interface TextContentProps {
 
 function TextContent({ block, className }: TextContentProps) {
   const components = useMemo(() => ({
-    // Render code blocks using our existing CodeContent-style styling
     pre({ children }: React.ComponentProps<'pre'>) {
       return <>{children}</>
     },
@@ -45,21 +44,13 @@ function TextContent({ block, className }: TextContentProps) {
       const isBlock = match || (typeof children === 'string' && children.includes('\n'))
 
       if (isBlock) {
+        const codeText = typeof children === 'string' ? children : String(children ?? '')
         return (
-          <div className="group relative overflow-hidden rounded-lg bg-[#0d1117] ring-1 ring-white/[0.06] my-2">
-            {match && (
-              <div className="flex items-center border-b border-white/[0.06] px-3 py-1.5 bg-white/[0.02]">
-                <span className="text-[11px] font-medium text-zinc-500">{match[1]}</span>
-              </div>
-            )}
-            <div className="overflow-x-auto p-3">
-              <pre className="m-0">
-                <code className="font-mono text-[13px] leading-relaxed text-zinc-200" {...props}>
-                  {children}
-                </code>
-              </pre>
-            </div>
-          </div>
+          <MarkdownCodeBlock language={match?.[1]} codeText={codeText}>
+            <code className="font-mono text-[13px] leading-relaxed text-zinc-200" {...props}>
+              {children}
+            </code>
+          </MarkdownCodeBlock>
         )
       }
 
@@ -207,6 +198,49 @@ function CopyButton({ copied, onClick }: CopyButtonProps) {
         </>
       )}
     </button>
+  )
+}
+
+// =============================================================================
+// MarkdownCodeBlock - Reusable code block with copy button for markdown renderers
+// =============================================================================
+
+interface MarkdownCodeBlockProps {
+  language?: string
+  codeText: string
+  children: React.ReactNode
+}
+
+/**
+ * Code block wrapper with language badge and copy button.
+ * Used by markdown renderers (TextContent, PlanCard, PlanSheet) to render
+ * fenced code blocks with a consistent look and copy functionality.
+ */
+export function MarkdownCodeBlock({ language, codeText, children }: MarkdownCodeBlockProps) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(codeText.replace(/\n$/, ''))
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err)
+    }
+  }, [codeText])
+
+  return (
+    <div className="group relative overflow-hidden rounded-lg bg-[#0d1117] ring-1 ring-white/[0.06] my-2">
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-1.5 bg-white/[0.02]">
+        <span className="text-[11px] font-medium text-zinc-500">{language ?? ''}</span>
+        <CopyButton copied={copied} onClick={handleCopy} />
+      </div>
+      <div className="overflow-x-auto p-3">
+        <pre className="m-0">
+          {children}
+        </pre>
+      </div>
+    </div>
   )
 }
 

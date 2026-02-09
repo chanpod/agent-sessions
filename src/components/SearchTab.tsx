@@ -57,7 +57,7 @@ export function SearchTab({ projectId, projectPath }: SearchTabProps) {
     setIsSearching(true)
 
     try {
-      const result = await window.electron.fs.searchContent(
+      const result = await window.electron!.fs.searchContent(
         projectPath,
         query,
         {

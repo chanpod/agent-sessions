@@ -185,7 +185,7 @@ export const useGlobalRulesStore = create<GlobalRulesStore>()((set, get) => ({
   // Actions
   loadRules: async () => {
     try {
-      const stored = (await window.electron.store.get(STORE_KEY)) as StoredData | null
+      const stored = (await window.electron!.store.get(STORE_KEY)) as StoredData | null
 
       if (stored && stored.rules && Array.isArray(stored.rules)) {
         // Merge stored rules with presets to handle new presets or removed ones
@@ -206,7 +206,7 @@ export const useGlobalRulesStore = create<GlobalRulesStore>()((set, get) => ({
     const data: StoredData = { rules: state.rules }
 
     try {
-      await window.electron.store.set(STORE_KEY, data)
+      await window.electron!.store.set(STORE_KEY, data)
     } catch (error) {
       console.error('[GlobalRulesStore] Error saving rules:', error)
     }

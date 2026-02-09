@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
+import { MarkdownCodeBlock } from '@/components/agent/MessageBlock'
 import type { AgentConversation } from '@/types/agent-ui'
 
 interface PlanData {
@@ -85,21 +86,13 @@ const markdownComponents = {
     const isBlock = match || (typeof children === 'string' && children.includes('\n'))
 
     if (isBlock) {
+      const codeText = typeof children === 'string' ? children : String(children ?? '')
       return (
-        <div className="group relative overflow-hidden rounded-lg bg-[#0d1117] ring-1 ring-white/[0.06] my-2">
-          {match && (
-            <div className="flex items-center border-b border-white/[0.06] px-3 py-1.5 bg-white/[0.02]">
-              <span className="text-[11px] font-medium text-zinc-500">{match[1]}</span>
-            </div>
-          )}
-          <div className="overflow-x-auto p-3">
-            <pre className="m-0">
-              <code className="font-mono text-[13px] leading-relaxed text-zinc-200" {...props}>
-                {children}
-              </code>
-            </pre>
-          </div>
-        </div>
+        <MarkdownCodeBlock language={match?.[1]} codeText={codeText}>
+          <code className="font-mono text-[13px] leading-relaxed text-zinc-200" {...props}>
+            {children}
+          </code>
+        </MarkdownCodeBlock>
       )
     }
 

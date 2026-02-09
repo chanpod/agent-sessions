@@ -258,16 +258,16 @@ function AgentSessionRow({
               {modelLabel && (
                 <span className="text-violet-300/70">{modelLabel}</span>
               )}
-              {modelLabel && (contextLabel || isExited) && (
+              {modelLabel && (contextLabel || lastActiveAt || (isExited && !lastActiveAt)) && (
                 <span className="text-muted-foreground/40">&middot;</span>
               )}
               {contextLabel && (
                 <span className="text-emerald-300/70 truncate">{contextLabel}</span>
               )}
-              {contextLabel && isExited && (
+              {contextLabel && (lastActiveAt || (isExited && !lastActiveAt)) && (
                 <span className="text-muted-foreground/40">&middot;</span>
               )}
-              {isExited && lastActiveAt && (
+              {lastActiveAt && (
                 <span className="text-muted-foreground/60" title={new Date(lastActiveAt).toLocaleString()}>
                   {formatTimeAgo(lastActiveAt)}
                 </span>
@@ -328,17 +328,16 @@ export function AgentTerminalsSection({
       ])
 
       if (installedRes.success && installedRes.skills) {
-        const all = installedRes.skills.map((s: Record<string, unknown>) => ({
-          id: String(s.id ?? ''),
-          name: String(s.id ?? '').split('@')[0],
-          version: String(s.version ?? ''),
-          scope: (s.scope as InstalledSkill['scope']) ?? 'user',
-          enabled: s.enabled !== false,
-          installPath: String(s.installPath ?? ''),
-          installedAt: String(s.installedAt ?? ''),
-          lastUpdated: String(s.lastUpdated ?? ''),
-          projectPath: s.projectPath as string | undefined,
-          marketplace: String(s.id ?? '').split('@')[1],
+        const all = installedRes.skills.map((s) => ({
+          id: s.id ?? '',
+          name: s.id?.split('@')[0] ?? '',
+          version: s.version ?? '',
+          scope: (s.scope ?? 'user') as InstalledSkill['scope'],
+          installPath: s.installPath ?? '',
+          installedAt: s.installedAt ?? '',
+          lastUpdated: s.lastUpdated ?? '',
+          projectPath: s.projectPath,
+          marketplace: s.id?.split('@')[1],
         }))
         // Show global skills always; project/local skills only for the current project
         setInstalledSkills(
@@ -354,15 +353,15 @@ export function AgentTerminalsSection({
 
       if (availableRes.success && availableRes.skills) {
         setMarketplaceSkills(
-          availableRes.skills.map((s: Record<string, unknown>) => ({
-            id: String(s.pluginId ?? s.name ?? ''),
-            name: String(s.name ?? String(s.pluginId ?? '').split('@')[0]),
-            description: String(s.description ?? ''),
+          availableRes.skills.map((s) => ({
+            id: s.pluginId ?? s.name ?? '',
+            name: s.name ?? s.pluginId?.split('@')[0] ?? '',
+            description: s.description ?? '',
             source: 'anthropic' as const,
             category: s.category as MarketplaceSkill['category'],
-            version: s.version as string | undefined,
-            installCount: s.installCount as number | undefined,
-            homepage: s.homepage as string | undefined,
+            version: s.version,
+            installCount: s.installCount,
+            homepage: s.homepage,
           }))
         )
       }
@@ -654,21 +653,16 @@ export function AgentTerminalsSection({
           const res = await window.electron.skill.uninstall(skill.id)
           if (res.success) await loadSkills()
         }}
-        onToggleEnabled={async (skill, enabled) => {
-          if (!window.electron?.skill) return
-          const res = await window.electron.skill.toggleEnabled(skill.id, enabled)
-          if (res.success) await loadSkills()
-        }}
         onSearchVercel={async (query) => {
           if (!window.electron?.skill) return []
           const res = await window.electron.skill.searchVercel(query, 20)
           if (!res.success || !res.skills) return []
-          return res.skills.map((s: Record<string, unknown>) => ({
-            id: String(s.source ?? '') + '/' + String(s.skillId ?? ''),
-            name: String(s.name ?? s.skillId ?? ''),
-            description: `From ${String(s.source ?? 'unknown')}`,
+          return res.skills.map((s) => ({
+            id: (s.source ?? '') + '/' + (s.skillId ?? ''),
+            name: s.name ?? s.skillId ?? '',
+            description: `From ${s.source ?? 'unknown'}`,
             source: 'vercel' as const,
-            installCount: (s.installs as number) ?? undefined,
+            installCount: s.installs ?? undefined,
           }))
         }}
         isLoading={skillsLoading}

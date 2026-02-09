@@ -1545,17 +1545,7 @@ ipcMain.handle('skill:search-vercel', async (_event, query: string, limit?: numb
   }
 })
 
-ipcMain.handle('skill:toggle-enabled', async (_event, pluginId: string, enabled: boolean) => {
-  try {
-    const name = pluginId.split('@')[0] || pluginId
-    const action = enabled ? 'enable' : 'disable'
-    await execCliCommand(`claude plugin ${action} ${name}`)
-    return { success: true }
-  } catch (error: unknown) {
-    console.error('[Skills] Toggle failed:', error)
-    return { success: false, error: error instanceof Error ? error.message : String(error) }
-  }
-})
+
 
 app.whenReady().then(() => {
   createMenu()
