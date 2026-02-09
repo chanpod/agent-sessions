@@ -897,7 +897,7 @@ export function AgentWorkspace({
             onForceQueue={handleForceQueue}
             isStreaming={isStreaming}
             placeholder={placeholder}
-            autoFocus={!resumeSessionId}
+            autoFocus
             queueCount={queueCount}
           />
         </div>

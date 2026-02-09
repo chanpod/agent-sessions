@@ -1580,7 +1580,52 @@ ipcMain.handle('skill:search-vercel', async (_event, query: string, limit?: numb
   }
 })
 
+ipcMain.handle('skill:mcp-status', async () => {
+  try {
+    const stdout = await execCliCommand('claude mcp list')
+    const lines = stdout.split('\n').filter((l) => l.includes(' - '))
+    const servers = lines.map((line) => {
+      // Format: "source:name: endpoint - STATUS"
+      const dashIdx = line.lastIndexOf(' - ')
+      if (dashIdx === -1) return null
+      const prefix = line.substring(0, dashIdx).trim()
+      const statusText = line.substring(dashIdx + 3).trim()
 
+      // Parse status
+      let status: 'connected' | 'needs_auth' | 'failed' | 'unknown' = 'unknown'
+      if (statusText.includes('Connected')) status = 'connected'
+      else if (statusText.includes('Needs authentication')) status = 'needs_auth'
+      else if (statusText.includes('Failed')) status = 'failed'
+
+      // Parse name and endpoint: "plugin:context7:context7: npx -y @upstash/context7-mcp"
+      const colonIdx = prefix.indexOf(': ')
+      const source = colonIdx !== -1 ? prefix.substring(0, colonIdx) : prefix
+      const endpoint = colonIdx !== -1 ? prefix.substring(colonIdx + 2) : ''
+
+      // Extract short name from source (last segment)
+      const parts = source.split(':')
+      const name = parts[parts.length - 1] || source
+
+      return { name, source, endpoint, status }
+    }).filter(Boolean)
+    return { success: true, servers }
+  } catch (error: unknown) {
+    console.error('[Skills] MCP status failed:', error)
+    return { success: false, servers: [], error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('skill:toggle', async (_event, pluginId: string, enabled: boolean) => {
+  try {
+    const name = pluginId.split('@')[0] || pluginId
+    const cmd = enabled ? 'enable' : 'disable'
+    await execCliCommand(`claude plugin ${cmd} ${name}`)
+    return { success: true }
+  } catch (error: unknown) {
+    console.error('[Skills] Toggle failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
 
 app.whenReady().then(() => {
   createMenu()

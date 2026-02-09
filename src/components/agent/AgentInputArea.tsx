@@ -1,9 +1,9 @@
-import { useRef, useCallback, useEffect, KeyboardEvent } from 'react'
+import { useRef, useCallback, useEffect, KeyboardEvent, memo } from 'react'
 import { IconSend, IconPlayerStopFilled, IconBolt } from '@tabler/icons-react'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { useAgentStreamStore } from '@/stores/agent-stream-store'
+import { useDraftInputStore } from '@/stores/draft-input-store'
 
 // =============================================================================
 // Types
@@ -42,7 +42,7 @@ interface AgentInputAreaProps {
  * - Dark theme compatible
  * - Clears input and refocuses after send
  */
-export function AgentInputArea({
+export const AgentInputArea = memo(function AgentInputArea({
   processId,
   onSend,
   onStop,
@@ -56,9 +56,9 @@ export function AgentInputArea({
   autoFocus = false,
   queueCount = 0,
 }: AgentInputAreaProps) {
-  const input = useAgentStreamStore((s) => s.draftInputs.get(processId) ?? '')
+  const input = useDraftInputStore((s) => s.draftInputs.get(processId) ?? '')
   const setInput = useCallback((text: string) => {
-    useAgentStreamStore.getState().setDraftInput(processId, text)
+    useDraftInputStore.getState().setDraftInput(processId, text)
   }, [processId])
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -266,4 +266,4 @@ export function AgentInputArea({
       </div>
     </div>
   )
-}
+})

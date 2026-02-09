@@ -721,6 +721,47 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal])
 
+  // Keyboard shortcut: Tab / Shift+Tab to cycle agent sessions in current project
+  useEffect(() => {
+    const handleTabCycle = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || e.ctrlKey || e.altKey || e.metaKey) return
+
+      // Don't intercept Tab in regular inputs or contenteditable (e.g. rename fields)
+      // DO intercept from textareas — that's the agent input where you'll be pressing Tab
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT') return
+      if ((e.target as HTMLElement)?.isContentEditable) return
+
+      if (!activeProjectId) return
+
+      const projectAgentSessions = sessions.filter(
+        (s) => s.projectId === activeProjectId && s.terminalType === 'agent'
+      )
+      if (projectAgentSessions.length < 2) return
+
+      e.preventDefault()
+
+      const currentIdx = projectAgentSessions.findIndex(s => s.id === activeAgentSessionId)
+      let nextIdx: number
+      if (e.shiftKey) {
+        // Shift+Tab: previous session
+        nextIdx = currentIdx <= 0 ? projectAgentSessions.length - 1 : currentIdx - 1
+      } else {
+        // Tab: next session
+        nextIdx = currentIdx >= projectAgentSessions.length - 1 ? 0 : currentIdx + 1
+      }
+
+      const nextSession = projectAgentSessions[nextIdx]!
+      setActiveSession(nextSession.id)
+      setActiveAgentSession(nextSession.id)
+      useViewStore.getState().setProjectTerminalActive(activeProjectId, nextSession.id)
+    }
+
+    // Use capture phase so we intercept Tab before browser focus navigation
+    window.addEventListener('keydown', handleTabCycle, true)
+    return () => window.removeEventListener('keydown', handleTabCycle, true)
+  }, [sessions, activeProjectId, activeAgentSessionId, setActiveSession, setActiveAgentSession])
+
   // Helper to get display name for AI agents
   const getAgentDisplayName = (agentId: string): string => {
     const names: Record<string, string> = {

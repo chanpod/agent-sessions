@@ -367,6 +367,8 @@ export interface ElectronAPI {
     searchVercel: (query: string, limit?: number) => Promise<{ success: boolean; skills: VercelSkillInfo[]; error?: string }>
     install: (pluginId: string, source: 'anthropic' | 'vercel', scope?: 'user' | 'project' | 'local', projectPath?: string) => Promise<{ success: boolean; error?: string }>
     uninstall: (pluginId: string) => Promise<{ success: boolean; error?: string }>
+    mcpStatus: () => Promise<{ success: boolean; servers: McpServerStatusInfo[]; error?: string }>
+    toggle: (pluginId: string, enabled: boolean) => Promise<{ success: boolean; error?: string }>
   }
   log: {
     openLogsFolder: () => Promise<void>
@@ -384,6 +386,14 @@ export interface SkillInstalledInfo {
   installedAt: string
   lastUpdated: string
   projectPath?: string
+  mcpServers?: Record<string, { command?: string; type?: string; url?: string; args?: string[]; headers?: Record<string, string> }>
+}
+
+export interface McpServerStatusInfo {
+  name: string
+  source: string
+  endpoint: string
+  status: 'connected' | 'needs_auth' | 'failed' | 'unknown'
 }
 
 export interface SkillAvailableInfo {

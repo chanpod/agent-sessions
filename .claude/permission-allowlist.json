@@ -1,6 +1,8 @@
 {
   "tools": [
-    "Edit"
+    "Edit",
+    "Write",
+    "NotebookEdit"
   ],
   "bashRules": [
     [
@@ -9,6 +11,18 @@
     ],
     [
       "cd",
+      "*"
+    ],
+    [
+      "find",
+      "*"
+    ],
+    [
+      "ls",
+      "*"
+    ],
+    [
+      "tail",
       "*"
     ]
   ]

@@ -16,6 +16,8 @@ import {
   Globe,
   FolderOpen,
   AlertTriangle,
+  RefreshCw,
+  Plug,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
@@ -63,7 +65,14 @@ export interface MarketplaceSkill {
   installed?: boolean
 }
 
-type TabId = 'installed' | 'browse'
+export interface McpServerStatus {
+  name: string
+  source: string
+  endpoint: string
+  status: 'connected' | 'needs_auth' | 'failed' | 'unknown'
+}
+
+type TabId = 'installed' | 'browse' | 'mcp'
 type SortKey = 'popular' | 'name' | 'recent'
 
 interface SkillBrowserProps {
@@ -75,6 +84,9 @@ interface SkillBrowserProps {
   onUninstall: (skill: InstalledSkill) => Promise<void>
   onSearchVercel?: (query: string) => Promise<MarketplaceSkill[]>
   isLoading?: boolean
+  mcpServers?: McpServerStatus[]
+  mcpLoading?: boolean
+  onRefreshMcp?: () => void
 }
 
 // ─── Constants ────────────────────────────────────────────────────
@@ -474,6 +486,82 @@ function InstalledCard({
   )
 }
 
+// ─── MCP Server Card ─────────────────────────────────────────────
+
+const MCP_STATUS_CONFIG = {
+  connected: { dot: 'bg-emerald-400', label: 'Connected', textColor: 'text-emerald-400', bgColor: 'bg-emerald-500/5' },
+  needs_auth: { dot: 'bg-amber-400', label: 'Needs auth', textColor: 'text-amber-400', bgColor: 'bg-amber-500/5' },
+  failed: { dot: 'bg-red-400', label: 'Failed', textColor: 'text-red-400', bgColor: 'bg-red-500/5' },
+  unknown: { dot: 'bg-zinc-500', label: 'Unknown', textColor: 'text-zinc-500', bgColor: 'bg-white/[0.02]' },
+} as const
+
+function McpStatusDot({ status }: { status: McpServerStatus['status'] }) {
+  const config = MCP_STATUS_CONFIG[status]
+  return (
+    <span className="relative flex h-2.5 w-2.5">
+      {status === 'connected' && (
+        <span className={cn('absolute inline-flex h-full w-full animate-ping rounded-full opacity-30', config.dot)} />
+      )}
+      <span className={cn('relative inline-flex h-2.5 w-2.5 rounded-full', config.dot)} />
+    </span>
+  )
+}
+
+function McpServerCard({ server }: { server: McpServerStatus }) {
+  const config = MCP_STATUS_CONFIG[server.status]
+  // Parse source to get plugin name: "plugin:context7:context7" -> "context7"
+  const sourceParts = server.source.split(':')
+  const pluginName = sourceParts.length >= 2 ? sourceParts[1] : undefined
+  const isPluginBased = server.source.startsWith('plugin:')
+  const isCloudBased = server.source.startsWith('claude.ai')
+
+  return (
+    <div className={cn(
+      'group rounded-lg border p-4 transition-all duration-150',
+      server.status === 'connected'
+        ? 'border-emerald-500/10 hover:border-emerald-500/20'
+        : server.status === 'needs_auth'
+          ? 'border-amber-500/10 hover:border-amber-500/20'
+          : server.status === 'failed'
+            ? 'border-red-500/10 hover:border-red-500/20'
+            : 'border-white/[0.06] hover:border-white/[0.10]',
+      config.bgColor,
+    )}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5">
+            <McpStatusDot status={server.status} />
+            <h3 className="text-[13px] font-semibold text-zinc-200">{server.name}</h3>
+            {isCloudBased && (
+              <span className="inline-flex items-center rounded-md bg-sky-500/8 px-2 py-0.5 text-[10px] font-medium tracking-wide text-sky-400/90 uppercase ring-1 ring-inset ring-sky-500/15">
+                Cloud
+              </span>
+            )}
+            {isPluginBased && pluginName && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-zinc-500 ring-1 ring-inset ring-white/[0.06]">
+                <Plug className="size-2.5" />
+                {pluginName}
+              </span>
+            )}
+          </div>
+          <p className="mt-1.5 truncate font-mono text-[11px] text-zinc-600" title={server.endpoint}>
+            {server.endpoint}
+          </p>
+        </div>
+        <span className={cn(
+          'shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset',
+          server.status === 'connected' && 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20',
+          server.status === 'needs_auth' && 'bg-amber-500/10 text-amber-400 ring-amber-500/20',
+          server.status === 'failed' && 'bg-red-500/10 text-red-400 ring-red-500/20',
+          server.status === 'unknown' && 'bg-white/[0.04] text-zinc-500 ring-white/[0.08]',
+        )}>
+          {config.label}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Component ───────────────────────────────────────────────
 
 export function SkillBrowser({
@@ -485,6 +573,9 @@ export function SkillBrowser({
   onUninstall,
   onSearchVercel,
   isLoading,
+  mcpServers,
+  mcpLoading,
+  onRefreshMcp,
 }: SkillBrowserProps) {
   const [activeTab, setActiveTab] = useState<TabId>('browse')
   const [search, setSearch] = useState('')
@@ -658,8 +749,9 @@ export function SkillBrowser({
           <div className="flex items-center gap-1 rounded-lg bg-white/[0.03] p-0.5 ring-1 ring-inset ring-white/[0.06]">
             {(
               [
-                { id: 'installed' as TabId, label: 'Installed' },
-                { id: 'browse' as TabId, label: 'Browse Marketplace' },
+                { id: 'installed' as TabId, label: 'Installed', count: installedSkills.length },
+                { id: 'browse' as TabId, label: 'Browse', count: 0 },
+                { id: 'mcp' as TabId, label: 'MCP Servers', count: mcpServers?.length ?? 0 },
               ] as const
             ).map((tab) => (
               <button
@@ -673,29 +765,37 @@ export function SkillBrowser({
                 )}
               >
                 {tab.label}
-                {tab.id === 'installed' && installedSkills.length > 0 && (
-                  <span className="ml-1.5 inline-flex size-4 items-center justify-center rounded-full bg-white/[0.08] text-[10px] tabular-nums">
-                    {installedSkills.length}
+                {tab.count > 0 && (
+                  <span className={cn(
+                    'ml-1.5 inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[10px] tabular-nums',
+                    activeTab === tab.id ? 'bg-white/[0.08]' : 'bg-white/[0.06]',
+                    tab.id === 'mcp' && mcpServers?.some(s => s.status === 'needs_auth' || s.status === 'failed')
+                      ? 'bg-amber-500/15 text-amber-400'
+                      : ''
+                  )}>
+                    {tab.count}
                   </span>
                 )}
               </button>
             ))}
           </div>
 
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-600" />
-            <input
-              type="text"
-              placeholder={
-                activeTab === 'browse'
-                  ? 'Search marketplace skills...'
-                  : 'Filter installed skills...'
-              }
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full rounded-md border border-white/[0.06] bg-white/[0.03] py-2 pl-9 pr-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-white/[0.12] focus:ring-1 focus:ring-emerald-500/20"
-            />
-          </div>
+          {activeTab !== 'mcp' && (
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-600" />
+              <input
+                type="text"
+                placeholder={
+                  activeTab === 'browse'
+                    ? 'Search marketplace skills...'
+                    : 'Filter installed skills...'
+                }
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full rounded-md border border-white/[0.06] bg-white/[0.03] py-2 pl-9 pr-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-white/[0.12] focus:ring-1 focus:ring-emerald-500/20"
+              />
+            </div>
+          )}
 
           {activeTab === 'browse' && (
             <>
@@ -799,7 +899,53 @@ export function SkillBrowser({
         {/* ── Content ─────────────────────────────────────────── */}
         <ScrollArea className="min-h-0 flex-1">
           <div className="p-5">
-            {isLoading || vercelSearching ? (
+            {activeTab === 'mcp' ? (
+              mcpLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="size-5 animate-spin text-zinc-600" />
+                </div>
+              ) : !mcpServers || mcpServers.length === 0 ? (
+                <EmptyState
+                  icon={Plug}
+                  title="No MCP servers"
+                  description="Install a plugin with MCP support to see servers here"
+                />
+              ) : (
+                <div className="space-y-4">
+                  {/* Summary banner */}
+                  {mcpServers.some(s => s.status === 'needs_auth' || s.status === 'failed') && (
+                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="size-3.5 text-amber-400" />
+                        <p className="text-[11px] font-medium text-amber-400">
+                          {mcpServers.filter(s => s.status === 'needs_auth').length > 0 && (
+                            <span>{mcpServers.filter(s => s.status === 'needs_auth').length} server{mcpServers.filter(s => s.status === 'needs_auth').length !== 1 ? 's need' : ' needs'} authentication</span>
+                          )}
+                          {mcpServers.filter(s => s.status === 'needs_auth').length > 0 && mcpServers.filter(s => s.status === 'failed').length > 0 && <span> &middot; </span>}
+                          {mcpServers.filter(s => s.status === 'failed').length > 0 && (
+                            <span>{mcpServers.filter(s => s.status === 'failed').length} server{mcpServers.filter(s => s.status === 'failed').length !== 1 ? 's' : ''} failed to connect</span>
+                          )}
+                        </p>
+                        {onRefreshMcp && (
+                          <button
+                            onClick={onRefreshMcp}
+                            className="ml-auto rounded-md p-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                            title="Refresh MCP status"
+                          >
+                            <RefreshCw className="size-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {mcpServers.map((server) => (
+                      <McpServerCard key={`${server.source}-${server.name}`} server={server} />
+                    ))}
+                  </div>
+                </div>
+              )
+            ) : isLoading || vercelSearching ? (
               <div className="flex items-center justify-center py-16">
                 <Loader2 className="size-5 animate-spin text-zinc-600" />
               </div>
@@ -855,7 +1001,14 @@ export function SkillBrowser({
         {/* ── Footer ──────────────────────────────────────────── */}
         <div className="flex items-center justify-between border-t border-white/[0.06] px-5 py-3">
           <p className="text-[11px] text-zinc-600">
-            {activeTab === 'browse' ? (
+            {activeTab === 'mcp' ? (
+              <>
+                {mcpServers?.length ?? 0} MCP server{(mcpServers?.length ?? 0) !== 1 ? 's' : ''}
+                {mcpServers && mcpServers.length > 0 && (
+                  <> &middot; {mcpServers.filter(s => s.status === 'connected').length} connected</>
+                )}
+              </>
+            ) : activeTab === 'browse' ? (
               <>
                 {filteredMarketplace.length} skill
                 {filteredMarketplace.length !== 1 ? 's' : ''}

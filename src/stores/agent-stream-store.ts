@@ -77,9 +77,6 @@ interface AgentStreamStore {
   // Runtime-only: tracks terminals that have already been notified (prevents duplicate notifications)
   notifiedTerminals: Set<string>
 
-  // Runtime-only: draft input text per session (survives component unmount, not app restart)
-  draftInputs: Map<string, string>
-
   // Runtime-only: queued messages per conversation (initialProcessId -> messages)
   // When the agent finishes, queued messages are sent automatically
   queuedMessages: Map<string, string[]>
@@ -120,11 +117,6 @@ interface AgentStreamStore {
   // Title generation tracking (runtime only)
   markTitleGenerated(sessionId: string): void
   hasTitleBeenGenerated(sessionId: string): boolean
-
-  // Draft input management (survives session switching)
-  setDraftInput(sessionKey: string, text: string): void
-  getDraftInput(sessionKey: string): string
-  clearDraftInput(sessionKey: string): void
 
   // Message queue management
   enqueueMessage(initialProcessId: string, message: string): void
@@ -706,7 +698,6 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       hasRehydrated: false,
       titleGeneratedSessions: new Set(),
       notifiedTerminals: new Set(),
-      draftInputs: new Map(),
       queuedMessages: new Map(),
       latestContextUsage: new Map(),
       sessionCosts: new Map(),
@@ -1084,30 +1075,6 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
       hasTitleBeenGenerated: (sessionId: string) => {
         return get().titleGeneratedSessions.has(sessionId)
-      },
-
-      setDraftInput: (sessionKey: string, text: string) => {
-        set((state) => {
-          const draftInputs = new Map(state.draftInputs)
-          if (text) {
-            draftInputs.set(sessionKey, text)
-          } else {
-            draftInputs.delete(sessionKey)
-          }
-          return { draftInputs }
-        })
-      },
-
-      getDraftInput: (sessionKey: string) => {
-        return get().draftInputs.get(sessionKey) ?? ''
-      },
-
-      clearDraftInput: (sessionKey: string) => {
-        set((state) => {
-          const draftInputs = new Map(state.draftInputs)
-          draftInputs.delete(sessionKey)
-          return { draftInputs }
-        })
       },
 
       enqueueMessage: (initialProcessId: string, message: string) => {
@@ -1570,7 +1537,6 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           state.sessionToInitialProcess = new Map()
           state.titleGeneratedSessions = new Set()
           state.notifiedTerminals = new Set()
-          state.draftInputs = new Map()
           state.queuedMessages = new Map()
           state.latestContextUsage = new Map()
           state.sessionCosts = new Map()

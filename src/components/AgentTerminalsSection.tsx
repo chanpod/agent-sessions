@@ -18,7 +18,7 @@ import { AgentLauncher } from './AgentLauncher'
 import { AgentContextEditor } from './AgentContextEditor'
 import { AgentUpdateDialog } from './AgentUpdateDialog'
 import AgentContextManager from './AgentContextManager'
-import { SkillBrowser, type InstalledSkill, type MarketplaceSkill } from './skills/SkillBrowser'
+import { SkillBrowser, type InstalledSkill, type MarketplaceSkill, type McpServerStatus } from './skills/SkillBrowser'
 import { cn, formatModelDisplayName, formatTimeAgo } from '../lib/utils'
 import { Button } from './ui/button'
 import type { CliToolDetectionResult, UpdateCheckResult } from '../types/electron'
@@ -317,6 +317,25 @@ export function AgentTerminalsSection({
   const [marketplaceSkills, setMarketplaceSkills] = useState<MarketplaceSkill[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
 
+  // MCP state
+  const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
+  const [mcpLoading, setMcpLoading] = useState(false)
+
+  const loadMcpStatus = useCallback(async () => {
+    if (!window.electron?.skill?.mcpStatus) return
+    setMcpLoading(true)
+    try {
+      const res = await window.electron.skill.mcpStatus()
+      if (res.success && res.servers) {
+        setMcpServers(res.servers as McpServerStatus[])
+      }
+    } catch (err) {
+      console.error('[MCP] Failed to load status:', err)
+    } finally {
+      setMcpLoading(false)
+    }
+  }, [])
+
   // Load skills when browser opens
   const loadSkills = useCallback(async () => {
     if (!window.electron?.skill) return
@@ -373,8 +392,11 @@ export function AgentTerminalsSection({
   }, [projectPath])
 
   useEffect(() => {
-    if (showSkillBrowser) loadSkills()
-  }, [showSkillBrowser, loadSkills])
+    if (showSkillBrowser) {
+      loadSkills()
+      loadMcpStatus()
+    }
+  }, [showSkillBrowser, loadSkills, loadMcpStatus])
 
   // Derive project name from store
   const projectName = projects.find((p) => p.id === projectId)?.name || 'Unknown Project'
@@ -666,6 +688,9 @@ export function AgentTerminalsSection({
           }))
         }}
         isLoading={skillsLoading}
+        mcpServers={mcpServers}
+        mcpLoading={mcpLoading}
+        onRefreshMcp={loadMcpStatus}
       />
 
       {/* Agent Update Dialog */}

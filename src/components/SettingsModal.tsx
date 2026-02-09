@@ -2,10 +2,11 @@
  * GlobalSettingsModal - Tabbed settings for global AI rules and SSH connections
  */
 
-import { useEffect, useState } from 'react'
-import { X, Shield, Plus, Pencil, Trash2, AlertTriangle, ChevronRight, Info, Server } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { X, Shield, Plus, Pencil, Trash2, AlertTriangle, ChevronRight, Info, Server, Lock, Terminal, FileEdit, Wrench } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useGlobalRulesStore, GlobalRule } from '../stores/global-rules-store'
+import { useProjectStore } from '../stores/project-store'
 import { SSHConnectionsList } from './SSHConnectionsList'
 import { Switch } from './ui/switch'
 
@@ -13,12 +14,13 @@ interface SettingsModalProps {
   onClose: () => void
 }
 
-type SettingsTab = 'rules' | 'connections'
+type SettingsTab = 'rules' | 'connections' | 'permissions'
 type RuleCategory = 'safety' | 'quality' | 'workflow'
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Shield }[] = [
   { id: 'rules', label: 'AI Rules', icon: Shield },
   { id: 'connections', label: 'Connections', icon: Server },
+  { id: 'permissions', label: 'Permissions', icon: Lock },
 ]
 
 const CATEGORY_META: Record<RuleCategory, { label: string; color: string; bgColor: string }> = {
@@ -402,6 +404,392 @@ function RulesTabContent() {
 }
 
 // =============================================================================
+// Tab content: Permissions
+// =============================================================================
+
+/** All known Claude CLI tool names that can be allowlisted */
+const KNOWN_TOOLS = [
+  'Bash',
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+] as const
+
+function ToolIcon({ tool }: { tool: string }) {
+  if (tool === 'Bash') return <Terminal className="w-3.5 h-3.5" />
+  if (['Edit', 'Write', 'NotebookEdit'].includes(tool)) return <FileEdit className="w-3.5 h-3.5" />
+  return <Wrench className="w-3.5 h-3.5" />
+}
+
+function PermissionsTabContent() {
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const projects = useProjectStore((s) => s.projects)
+  const activeProject = projects.find((p) => p.id === activeProjectId)
+  const projectPath = activeProject?.path
+
+  const [tools, setTools] = useState<string[]>([])
+  const [bashRules, setBashRules] = useState<string[][]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [addingTool, setAddingTool] = useState(false)
+  const [newToolName, setNewToolName] = useState('')
+  const [addingBashRule, setAddingBashRule] = useState(false)
+  const [newBashRule, setNewBashRule] = useState('')
+
+  const loadConfig = useCallback(async () => {
+    if (!projectPath) return
+    setLoading(true)
+    setError(null)
+    try {
+      const config = await window.electron?.permission.getAllowlistConfig(projectPath)
+      if (config) {
+        setTools(config.tools || [])
+        setBashRules(config.bashRules || [])
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to load permissions')
+    } finally {
+      setLoading(false)
+    }
+  }, [projectPath])
+
+  useEffect(() => {
+    loadConfig()
+  }, [loadConfig])
+
+  const handleRemoveTool = async (toolName: string) => {
+    if (!projectPath) return
+    const result = await window.electron?.permission.removeAllowedTool(projectPath, toolName)
+    if (result?.success) {
+      setTools((prev) => prev.filter((t) => t !== toolName))
+    }
+  }
+
+  const handleAddTool = async () => {
+    if (!projectPath || !newToolName.trim()) return
+    const name = newToolName.trim()
+    if (tools.includes(name)) {
+      setNewToolName('')
+      setAddingTool(false)
+      return
+    }
+    const result = await window.electron?.permission.addAllowedTool(projectPath, name)
+    if (result?.success) {
+      setTools((prev) => [...prev, name])
+      setNewToolName('')
+      setAddingTool(false)
+    }
+  }
+
+  const handleRemoveBashRule = async (rule: string[]) => {
+    if (!projectPath) return
+    const result = await window.electron?.permission.removeBashRule(projectPath, rule)
+    if (result?.success) {
+      setBashRules((prev) => prev.filter((r) => JSON.stringify(r) !== JSON.stringify(rule)))
+    }
+  }
+
+  const handleAddBashRule = async () => {
+    if (!projectPath || !newBashRule.trim()) return
+    const tokens = newBashRule.trim().split(/\s+/)
+    // Use the addAllowedTool approach won't work for bash rules, we need to write via
+    // a combination: add the rule by responding to permission with bashRule param.
+    // But we have permission:add-allowed-tool which only adds tools. For bash rules
+    // we need to write the config directly. Let's use the fs API.
+    try {
+      const config = await window.electron?.permission.getAllowlistConfig(projectPath)
+      if (config) {
+        const newRules = [...(config.bashRules || []), tokens]
+        const newConfig = { tools: config.tools, bashRules: newRules }
+        const configPath = projectPath.replace(/\\/g, '/') + '/.claude/permission-allowlist.json'
+        await window.electron?.fs.writeFile(configPath, JSON.stringify(newConfig, null, 2))
+        setBashRules(newRules)
+        setNewBashRule('')
+        setAddingBashRule(false)
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to add bash rule')
+    }
+  }
+
+  if (!projectPath) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 gap-2">
+        <Lock className="w-5 h-5 text-muted-foreground/30" />
+        <p className="text-[11px] text-muted-foreground/40">
+          Select a project to manage its permissions.
+        </p>
+      </div>
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-xs text-muted-foreground/40">
+        Loading permissions...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-rose-500/[0.05] border border-rose-500/15">
+        <AlertTriangle className="w-3.5 h-3.5 text-rose-400/60 flex-shrink-0 mt-0.5" />
+        <p className="text-[11px] text-rose-300/60">{error}</p>
+      </div>
+    )
+  }
+
+  const availableTools = KNOWN_TOOLS.filter((t) => !tools.includes(t))
+
+  return (
+    <div className="space-y-5">
+      <p className="text-[11px] text-muted-foreground/50 leading-relaxed">
+        Permissions for <span className="text-foreground font-medium">{activeProject?.name}</span>.
+        Tools and commands listed here are always allowed without prompting.
+      </p>
+
+      {/* Allowed Tools */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+            Allowed Tools
+          </label>
+          {!addingTool && (
+            <button
+              onClick={() => setAddingTool(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-emerald-400/70 hover:text-emerald-400 rounded-md hover:bg-emerald-500/10 transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              Add Tool
+            </button>
+          )}
+        </div>
+
+        {tools.length === 0 && !addingTool && (
+          <div className="flex items-center justify-center py-4 text-[11px] text-muted-foreground/30">
+            No tools always-allowed. Each tool use will prompt for approval.
+          </div>
+        )}
+
+        {tools.length > 0 && (
+          <div className="space-y-1">
+            {tools.map((tool) => (
+              <div
+                key={tool}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-white/[0.08] bg-white/[0.02] group"
+              >
+                <div className="flex items-center justify-center w-6 h-6 rounded-md bg-emerald-500/10 text-emerald-400/70">
+                  <ToolIcon tool={tool} />
+                </div>
+                <span className="flex-1 text-[13px] font-medium text-foreground">{tool}</span>
+                <button
+                  onClick={() => handleRemoveTool(tool)}
+                  className="p-1.5 rounded-md text-muted-foreground/20 hover:text-rose-400/80 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100"
+                  title="Remove from allowlist"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {addingTool && (
+          <div className="mt-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-3 space-y-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Plus className="w-3.5 h-3.5 text-emerald-400/60" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60">
+                Add Tool
+              </span>
+            </div>
+
+            {availableTools.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {availableTools.map((tool) => (
+                  <button
+                    key={tool}
+                    onClick={() => setNewToolName(tool)}
+                    className={cn(
+                      'px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors',
+                      newToolName === tool
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                        : 'border-white/[0.08] bg-white/[0.02] text-muted-foreground/60 hover:text-foreground hover:border-white/[0.15]'
+                    )}
+                  >
+                    {tool}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/40 mb-1.5">
+                Or enter tool name
+              </label>
+              <input
+                type="text"
+                value={newToolName}
+                onChange={(e) => setNewToolName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddTool()}
+                placeholder="e.g. Bash"
+                className="w-full bg-black/20 border border-white/[0.08] rounded-lg px-3 py-2 text-[13px] text-foreground placeholder-muted-foreground/30 focus:outline-none focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 transition-all"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => { setAddingTool(false); setNewToolName('') }}
+                className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground/50 hover:text-muted-foreground rounded-md hover:bg-white/[0.04] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddTool}
+                disabled={!newToolName.trim()}
+                className={cn(
+                  'px-4 py-1.5 text-[11px] font-semibold rounded-md transition-all duration-150',
+                  newToolName.trim()
+                    ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400 shadow-sm shadow-emerald-500/20'
+                    : 'bg-white/[0.04] text-muted-foreground/30 cursor-not-allowed'
+                )}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Divider */}
+      <div className="h-px bg-white/[0.05]" />
+
+      {/* Bash Rules */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+            Bash Command Rules
+          </label>
+          {!addingBashRule && (
+            <button
+              onClick={() => setAddingBashRule(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-emerald-400/70 hover:text-emerald-400 rounded-md hover:bg-emerald-500/10 transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              Add Rule
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber-500/[0.05] border border-amber-500/15 mb-3">
+          <Info className="w-3.5 h-3.5 text-amber-400/60 flex-shrink-0 mt-0.5" />
+          <p className="text-[11px] text-amber-300/50 leading-relaxed">
+            Bash rules auto-allow specific commands. A trailing <code className="text-amber-300/70 bg-amber-500/10 px-1 rounded">*</code> matches any additional arguments.
+          </p>
+        </div>
+
+        {bashRules.length === 0 && !addingBashRule && (
+          <div className="flex items-center justify-center py-4 text-[11px] text-muted-foreground/30">
+            No bash rules. All bash commands will prompt for approval.
+          </div>
+        )}
+
+        {bashRules.length > 0 && (
+          <div className="space-y-1">
+            {bashRules.map((rule, idx) => (
+              <div
+                key={idx}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-white/[0.08] bg-white/[0.02] group"
+              >
+                <div className="flex items-center justify-center w-6 h-6 rounded-md bg-violet-500/10 text-violet-400/70">
+                  <Terminal className="w-3.5 h-3.5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <code className="text-[12px] font-mono text-foreground/90">
+                    {rule.map((token, i) => (
+                      <span key={i}>
+                        {i > 0 && ' '}
+                        <span className={token === '*' ? 'text-amber-400/80' : ''}>
+                          {token}
+                        </span>
+                      </span>
+                    ))}
+                  </code>
+                  {rule[rule.length - 1] === '*' && (
+                    <p className="text-[10px] text-muted-foreground/40 mt-0.5">
+                      matches prefix + any additional args
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => handleRemoveBashRule(rule)}
+                  className="p-1.5 rounded-md text-muted-foreground/20 hover:text-rose-400/80 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100"
+                  title="Remove rule"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {addingBashRule && (
+          <div className="mt-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] p-3 space-y-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Plus className="w-3.5 h-3.5 text-emerald-400/60" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60">
+                Add Bash Rule
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/40 mb-1.5">
+                Command Pattern
+              </label>
+              <input
+                type="text"
+                value={newBashRule}
+                onChange={(e) => setNewBashRule(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddBashRule()}
+                placeholder="e.g. npm test *"
+                className="w-full bg-black/20 border border-white/[0.08] rounded-lg px-3 py-2 text-[13px] font-mono text-foreground placeholder-muted-foreground/30 focus:outline-none focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 transition-all"
+              />
+              <p className="mt-1.5 text-[10px] text-muted-foreground/40">
+                Space-separated tokens. End with <code className="bg-white/[0.04] px-1 rounded">*</code> to match any additional args.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => { setAddingBashRule(false); setNewBashRule('') }}
+                className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground/50 hover:text-muted-foreground rounded-md hover:bg-white/[0.04] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddBashRule}
+                disabled={!newBashRule.trim()}
+                className={cn(
+                  'px-4 py-1.5 text-[11px] font-semibold rounded-md transition-all duration-150',
+                  newBashRule.trim()
+                    ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400 shadow-sm shadow-emerald-500/20'
+                    : 'bg-white/[0.04] text-muted-foreground/30 cursor-not-allowed'
+                )}
+              >
+                Add Rule
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
 // Tab content: Connections
 // =============================================================================
 
@@ -496,6 +884,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         <div className="flex-1 overflow-y-auto px-5 py-4 scrollbar-thin">
           {activeTab === 'rules' && <RulesTabContent />}
           {activeTab === 'connections' && <ConnectionsTabContent />}
+          {activeTab === 'permissions' && <PermissionsTabContent />}
         </div>
 
         {/* ── Footer ── */}
@@ -507,6 +896,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 <span className="text-emerald-400/60 font-medium">{enabledCount}</span>{' '}
                 {enabledCount === 1 ? 'rule' : 'rules'} active
               </span>
+            </div>
+          ) : activeTab === 'permissions' ? (
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/40">
+              <Lock className="w-3 h-3" />
+              <span>Per-project allowlist</span>
             </div>
           ) : (
             <div />
