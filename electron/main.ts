@@ -1351,6 +1351,15 @@ ipcMain.handle('permission:remove-bash-rule', async (_event, projectPath: string
   }
 })
 
+ipcMain.handle('permission:add-allowed-tool', async (_event, projectPath: string, toolName: string) => {
+  try {
+    PermissionServer.addToAllowlist(projectPath, toolName)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: getErrorMessage(err) }
+  }
+})
+
 ipcMain.handle('permission:remove-allowed-tool', async (_event, projectPath: string, toolName: string) => {
   try {
     PermissionServer.removeFromAllowlist(projectPath, toolName)

@@ -463,6 +463,8 @@ const electronAPI = {
       ipcRenderer.invoke('permission:get-allowlist-config', projectPath),
     removeBashRule: (projectPath: string, rule: string[]): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('permission:remove-bash-rule', projectPath, rule),
+    addAllowedTool: (projectPath: string, toolName: string): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:add-allowed-tool', projectPath, toolName),
     removeAllowedTool: (projectPath: string, toolName: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('permission:remove-allowed-tool', projectPath, toolName),
     onRequest: (callback: (request: { id: string; sessionId: string; toolName: string; toolInput: Record<string, unknown>; receivedAt: number }) => void) => {

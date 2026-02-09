@@ -6,7 +6,7 @@ const path = require('path')
 const crypto = require('crypto')
 
 const POLL_INTERVAL_MS = 100
-const TIMEOUT_MS = 30000 // 30 seconds - deny if app doesn't respond
+const TIMEOUT_MS = 600000 // 10 minutes - deny if app doesn't respond
 const HEARTBEAT_STALE_MS = 10000 // Consider app dead if heartbeat > 10s old
 const ALLOWLIST_FILENAME = 'permission-allowlist.json'
 

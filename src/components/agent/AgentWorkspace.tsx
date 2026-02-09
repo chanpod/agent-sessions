@@ -210,14 +210,37 @@ export function AgentWorkspace({
   const [editsEnabled, setEditsEnabled] = useState(true)
   const [debugSheetOpen, setDebugSheetOpen] = useState(false)
 
+  // The edit tools whose allowlist status the toggle controls
+  const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit']
+
+  // Initialize edits toggle from the permission allowlist
+  useEffect(() => {
+    if (!window.electron?.permission?.getAllowlistConfig) return
+    window.electron.permission.getAllowlistConfig(cwd).then((config) => {
+      // Edits are "on" if Edit and Write are both in the allowlist
+      const hasEdit = config.tools.includes('Edit')
+      const hasWrite = config.tools.includes('Write')
+      setEditsEnabled(hasEdit && hasWrite)
+    })
+  }, [cwd])
+
+  const handleToggleEdits = useCallback(async () => {
+    if (!window.electron?.permission) return
+    const newEnabled = !editsEnabled
+    setEditsEnabled(newEnabled)
+    for (const tool of EDIT_TOOLS) {
+      if (newEnabled) {
+        await window.electron.permission.addAllowedTool(cwd, tool)
+      } else {
+        await window.electron.permission.removeAllowedTool(cwd, tool)
+      }
+    }
+  }, [editsEnabled, cwd])
+
   // Get the configured model from the terminal store (set at launch time)
   const configuredModel = useTerminalStore(
     (s) => s.savedConfigs.find((c: SavedTerminalConfig) => c.id === initialProcessId)?.model ?? null
   )
-
-  // Read-only tools for when edits are disabled
-  const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Task', 'TodoRead', 'TodoWrite', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Skill']
-  const allowedTools = editsEnabled ? undefined : READ_ONLY_TOOLS
 
   // Conversation state lives in the store so it survives unmount/remount (session switching).
   // Use separate selectors to avoid creating new objects on every render.
@@ -330,7 +353,6 @@ export function AgentWorkspace({
             resumeSessionId: sessionId || undefined,
             prompt: message,
             ...(configuredModel ? { model: configuredModel } : {}),
-            ...(allowedTools ? { allowedTools } : {}),
             ...(projectId ? { projectId } : {}),
           })
           if (result.success && result.process) {
@@ -365,7 +387,6 @@ export function AgentWorkspace({
             agentType,
             cwd,
             resumeSessionId: sessionId,
-            ...(allowedTools ? { allowedTools } : {}),
             ...(projectId ? { projectId } : {}),
           })
           if (result.success && result.process) {
@@ -427,7 +448,7 @@ export function AgentWorkspace({
         setIsProcessing(false)
       }
     },
-    [initialProcessId, agentType, cwd, sessionId, configuredModel, allowedTools]
+    [initialProcessId, agentType, cwd, sessionId, configuredModel]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -468,7 +489,6 @@ export function AgentWorkspace({
             agentType,
             cwd,
             resumeSessionId: sessionId,
-            ...(allowedTools ? { allowedTools } : {}),
             ...(projectId ? { projectId } : {}),
           })
           if (result.success && result.process) {
@@ -506,7 +526,7 @@ export function AgentWorkspace({
         setIsProcessing(false)
       }
     },
-    [activeProcessIds, initialProcessId, agentType, cwd, sessionId, allowedTools]
+    [activeProcessIds, initialProcessId, agentType, cwd, sessionId]
   )
 
   // Get state from all active processes in this conversation
@@ -826,7 +846,7 @@ export function AgentWorkspace({
             {/* Edits toggle - Claude only */}
             {agentType === 'claude' ? (
               <button
-                onClick={() => setEditsEnabled(!editsEnabled)}
+                onClick={handleToggleEdits}
                 className={cn(
                   'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all',
                   editsEnabled
