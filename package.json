@@ -1,6 +1,6 @@
 {
   "name": "toolchain",
-  "version": "1.23.1",
+  "version": "1.23.2",
   "description": "ToolChain - Multi-terminal development environment manager",
   "main": "dist-electron/main.js",
   "scripts": {
