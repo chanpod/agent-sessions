@@ -82,6 +82,43 @@
       "git",
       "tag",
       "*"
+    ],
+    [
+      "file",
+      "*"
+    ],
+    [
+      "which",
+      "*"
+    ],
+    [
+      "pwd"
+    ],
+    [
+      "git",
+      "branch",
+      "*"
+    ],
+    [
+      "git",
+      "show",
+      "*"
+    ],
+    [
+      "git",
+      "stash",
+      "list"
+    ],
+    [
+      "git",
+      "remote",
+      "-v"
+    ],
+    [
+      "gh",
+      "run",
+      "list",
+      "*"
     ]
   ]
 }

@@ -57,12 +57,16 @@ export function PlanCard({ input, toolResult, status }: PlanCardProps) {
     | Array<{ tool: string; prompt: string }>
     | undefined
 
-  // Plan content lives in input.plan (it's a string with markdown)
+  // Plan content: check input.plan first, then fall back to tool result text.
+  // The CLI reads the plan from a file and may return it in the tool result
+  // rather than the tool input (ExitPlanMode doesn't take plan as a parameter).
   const planText = typeof input.plan === 'string'
     ? input.plan
     : input.plan != null
       ? JSON.stringify(input.plan, null, 2)
-      : null
+      : (toolResult?.result && !toolResult.isError)
+        ? toolResult.result
+        : null
 
   const isComplete = status === 'completed' || status === 'error'
 
@@ -114,6 +118,15 @@ export function PlanCard({ input, toolResult, status }: PlanCardProps) {
               <div className="pl-8">
                 <p className="text-sm text-muted-foreground/60">
                   Preparing plan...
+                </p>
+              </div>
+            )}
+
+            {/* Completed but no plan content found */}
+            {!planText && isComplete && !toolResult?.isError && (
+              <div className="pl-8">
+                <p className="text-sm text-muted-foreground/60">
+                  Plan submitted for approval.
                 </p>
               </div>
             )}

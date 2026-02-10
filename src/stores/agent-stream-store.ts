@@ -493,6 +493,12 @@ function applyAgentEvent(
         break
       }
 
+      // Debug: log ExitPlanMode input when block completes
+      const completingBlock = blocks[blockIndex]
+      if (completingBlock?.toolName === 'ExitPlanMode') {
+        console.log('[PlanDebug] ExitPlanMode block completed, toolInput:', completingBlock.toolInput?.substring(0, 500))
+      }
+
       newState = {
         ...terminalState,
         currentMessage: {
@@ -508,6 +514,21 @@ function applyAgentEvent(
 
     case 'agent-tool-result': {
       const data = event.data as AgentToolResultData
+
+      // Debug: log tool results for plan-related tools
+      // Find the matching tool_use to check if it's ExitPlanMode
+      const matchingToolBlock = [
+        ...(terminalState.currentMessage?.blocks ?? []),
+        ...terminalState.messages.flatMap(m => m.blocks),
+      ].find(b => b.type === 'tool_use' && b.toolId === data.toolId)
+      if (matchingToolBlock?.toolName === 'ExitPlanMode') {
+        console.log('[PlanDebug] ExitPlanMode tool result:', {
+          isError: data.isError,
+          resultLength: data.result?.length,
+          resultPreview: data.result?.substring(0, 500),
+        })
+      }
+
       // Find the tool_use block with matching toolId across completed messages and currentMessage.
       // Tool results arrive in user messages AFTER the assistant message completes,
       // so the tool_use block will typically be in the completed messages array.
@@ -525,6 +546,7 @@ function applyAgentEvent(
           newMsg.blocks[blockIdx] = {
             ...newMsg.blocks[blockIdx]!,
             toolResultIsError: data.isError,
+            toolResult: data.result,
           }
           newMessages[mi] = newMsg
           newState = { ...terminalState, messages: newMessages }
@@ -542,6 +564,7 @@ function applyAgentEvent(
           newBlocks[blockIdx] = {
             ...newBlocks[blockIdx]!,
             toolResultIsError: data.isError,
+            toolResult: data.result,
           }
           newState = {
             ...terminalState,

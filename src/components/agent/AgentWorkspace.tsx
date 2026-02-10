@@ -163,13 +163,33 @@ function mapMessage(
 ): UIAgentMessage {
   // System messages (compaction, etc.) get role: 'system'; everything else is 'assistant'
   const isSystem = message.blocks.length > 0 && message.blocks[0]?.type === 'system'
+
+  // Map blocks, also synthesizing tool_result blocks for tool_use blocks that
+  // have result data. The store keeps the result text on the tool_use ContentBlock
+  // itself (toolResult / toolResultIsError), but the UI pipeline expects separate
+  // ToolResultBlock objects so that AgentMessageView can pair them via toolResultMap.
+  const uiBlocks: UIContentBlock[] = []
+  for (let idx = 0; idx < message.blocks.length; idx++) {
+    const block = message.blocks[idx]!
+    uiBlocks.push(mapContentBlock(block, message.id, idx))
+
+    if (block.type === 'tool_use' && block.toolId && block.toolResult != null) {
+      uiBlocks.push({
+        id: generateBlockId(message.id, idx) + '_result',
+        timestamp: Date.now(),
+        type: 'tool_result',
+        toolId: block.toolId,
+        result: block.toolResult,
+        isError: block.toolResultIsError,
+      })
+    }
+  }
+
   return {
     id: message.id,
     agentType,
     role: isSystem ? 'system' : 'assistant',
-    blocks: message.blocks.map((block, idx) =>
-      mapContentBlock(block, message.id, idx)
-    ),
+    blocks: uiBlocks,
     status: message.status,
     timestamp: message.startedAt,
     metadata: {

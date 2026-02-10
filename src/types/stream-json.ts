@@ -421,6 +421,8 @@ export interface ContentBlock {
   isComplete?: boolean
   /** Whether the tool result was an error (only for tool_use blocks) */
   toolResultIsError?: boolean
+  /** Tool result text (only for tool_use blocks) */
+  toolResult?: string
 }
 
 /**

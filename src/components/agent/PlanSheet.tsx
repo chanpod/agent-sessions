@@ -52,11 +52,22 @@ export function extractLatestPlan(conversation: AgentConversation): PlanData | n
         try {
           const parsed = JSON.parse(block.input)
 
-          const planText = typeof parsed.plan === 'string'
+          let planText = typeof parsed.plan === 'string'
             ? parsed.plan
             : parsed.plan != null
               ? JSON.stringify(parsed.plan, null, 2)
               : null
+
+          // If plan text isn't in the input, check the tool result.
+          // The CLI reads the plan from a file and returns it in the tool result.
+          if (!planText) {
+            const resultBlock = msg.blocks.find(
+              (b) => b.type === 'tool_result' && b.toolId === block.toolId
+            )
+            if (resultBlock && resultBlock.type === 'tool_result' && resultBlock.result && !resultBlock.isError) {
+              planText = resultBlock.result
+            }
+          }
 
           const allowedPrompts = Array.isArray(parsed.allowedPrompts)
             ? parsed.allowedPrompts
@@ -138,18 +149,22 @@ export function PlanSheet({ open, onOpenChange, conversation }: PlanSheetProps) 
           <SheetDescription>
             {!plan
               ? 'No plan yet'
-              : isComplete
-                ? 'Plan ready for implementation'
-                : 'Plan is being prepared...'}
+              : plan.status === 'error'
+                ? 'Plan was not approved'
+                : isComplete
+                  ? 'Plan ready for implementation'
+                  : 'Plan is being prepared...'}
           </SheetDescription>
         </SheetHeader>
 
         <ScrollArea className="flex-1 min-h-0 px-6">
           {!plan || !plan.planText ? (
             <div className="text-sm text-muted-foreground text-center py-8">
-              {plan
-                ? 'Preparing plan...'
-                : 'A plan will appear here when the agent creates one.'}
+              {!plan
+                ? 'A plan will appear here when the agent creates one.'
+                : isComplete
+                  ? 'Plan content is not available.'
+                  : 'Preparing plan...'}
             </div>
           ) : (
             <div className="flex flex-col gap-4 pt-2 pb-6">
