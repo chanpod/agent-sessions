@@ -8,7 +8,7 @@ import { DetectorManager } from './output-monitors/detector-manager'
 import { ServerDetector } from './output-monitors/server-detector'
 import { StreamJsonDetector } from './output-monitors/stream-json-detector'
 import { CodexStreamDetector } from './output-monitors/codex-stream-detector'
-import { getGitBashPath } from './utils/path-service.js'
+import { getGitBashPath, isWslPath, parseWslPath, getEnvironment } from './utils/path-service.js'
 
 const execAsync = promisify(exec)
 
@@ -294,7 +294,19 @@ export class PtyManager {
     // If we have an initial command, wrap it in a shell
     // This is used for agent terminals (claude, gemini, codex) and any other command execution
     if (options.initialCommand) {
-      if (process.platform === 'win32') {
+      if (process.platform === 'win32' && isWslPath(originalCwd)) {
+        // WSL project — spawn agent inside WSL via wsl.exe
+        const parsed = parseWslPath(originalCwd)
+        const distro = parsed?.distro || getEnvironment().defaultWslDistro
+        const linuxPath = parsed?.linuxPath || '~'
+        if (!distro) {
+          throw new Error('No WSL distribution found. Please install a Linux distribution from the Microsoft Store.')
+        }
+        shellExecutable = 'wsl.exe'
+        shellArgs = ['-d', distro, '--cd', linuxPath, '--', 'bash', '-l', '-i', '-c', options.initialCommand]
+        // node-pty needs a valid Windows-accessible cwd; the UNC path works
+        effectiveCwd = originalCwd
+      } else if (process.platform === 'win32') {
         // Windows project — use Git Bash with -l -i for login interactive shell
         // -i is needed to properly load PATH for npm-installed tools like codex (which need node)
         // MUST use getGitBashPath() — bare 'bash.exe' resolves to WSL bash on systems with WSL installed
@@ -304,6 +316,18 @@ export class PtyManager {
         // On Unix, use default shell with login interactive
         shellExecutable = process.env.SHELL || '/bin/bash'
         shellArgs = ['-l', '-i', '-c', options.initialCommand]
+      }
+    }
+
+    // For regular (non-agent) terminals with a WSL cwd, spawn wsl.exe
+    if (!options.initialCommand && process.platform === 'win32' && isWslPath(originalCwd)) {
+      const parsed = parseWslPath(originalCwd)
+      const distro = parsed?.distro || getEnvironment().defaultWslDistro
+      const linuxPath = parsed?.linuxPath || '~'
+      if (distro) {
+        shellExecutable = 'wsl.exe'
+        shellArgs = ['-d', distro, '--cd', linuxPath]
+        effectiveCwd = originalCwd
       }
     }
 

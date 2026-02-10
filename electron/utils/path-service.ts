@@ -18,6 +18,7 @@
 import * as nodePath from 'path'
 import * as posixPath from 'path/posix'
 import * as fs from 'fs'
+import { execSync } from 'child_process'
 
 // ============================================================================
 // Types & Interfaces
@@ -27,7 +28,7 @@ import * as fs from 'fs'
  * Execution context for running commands.
  * Determines how a command should be executed based on the path and environment.
  */
-export type ExecutionContext = 'local-windows' | 'local-unix' | 'ssh-remote'
+export type ExecutionContext = 'local-windows' | 'local-unix' | 'wsl' | 'ssh-remote'
 
 /**
  * Represents the current platform and environment configuration.
@@ -42,12 +43,16 @@ export interface PathEnvironment {
   isMac: boolean
   /** True if running on Linux */
   isLinux: boolean
+  /** True if WSL is available and functional (Windows only) */
+  wslAvailable: boolean
+  /** The default WSL distribution name, or null if unavailable */
+  defaultWslDistro: string | null
 }
 
 /**
  * The type of path detected
  */
-export type PathType = 'windows' | 'unix' | 'ssh-remote'
+export type PathType = 'windows' | 'unix' | 'wsl' | 'ssh-remote'
 
 /**
  * Detailed information about a path after analysis
@@ -61,6 +66,10 @@ export interface PathInfo {
   normalized: string
   /** Whether the path is absolute */
   isAbsolute: boolean
+  /** WSL distribution name if this is a WSL path */
+  wslDistro?: string
+  /** Linux path component for WSL paths */
+  linuxPath?: string
   /** SSH host if this is a remote path */
   sshHost?: string
   /** Remote path component for SSH paths */
@@ -84,12 +93,44 @@ export function getEnvironment(): PathEnvironment {
   }
 
   const platform = process.platform as 'win32' | 'darwin' | 'linux'
+  let wslAvailable = false
+  let defaultWslDistro: string | null = null
+
+  if (platform === 'win32') {
+    try {
+      execSync('wsl --status', { stdio: 'ignore', timeout: 5000 })
+      wslAvailable = true
+    } catch {
+      // WSL not available
+    }
+
+    if (wslAvailable) {
+      try {
+        const output = execSync('wsl -l -q', {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 5000,
+        })
+        // Output has UTF-16 encoding issues on Windows, clean it up
+        const distros = output
+          .replace(/\0/g, '')
+          .split('\n')
+          .map(l => l.trim())
+          .filter(l => l.length > 0)
+        defaultWslDistro = distros[0] || null
+      } catch {
+        // Ignore
+      }
+    }
+  }
 
   cachedEnvironment = {
     platform,
     isWindows: platform === 'win32',
     isMac: platform === 'darwin',
     isLinux: platform === 'linux',
+    wslAvailable,
+    defaultWslDistro,
   }
 
   return cachedEnvironment
@@ -200,6 +241,43 @@ export function getPlatformForInstall(): InstallPlatform {
 }
 
 // ============================================================================
+// WSL Path Detection
+// ============================================================================
+
+/** Regex to match WSL UNC paths: \\wsl$\Distro\... or \\wsl.localhost\Distro\... */
+const WSL_UNC_REGEX = /^[/\\][/\\]wsl(?:\$|\.localhost)[/\\]([^/\\]+)(.*)?$/i
+
+/**
+ * Check if a path is a WSL UNC path.
+ */
+export function isWslPath(inputPath: string): boolean {
+  return WSL_UNC_REGEX.test(inputPath)
+}
+
+/**
+ * Parse a WSL UNC path into its distro and Linux path components.
+ * Returns null if the path is not a WSL path.
+ */
+export function parseWslPath(inputPath: string): { distro: string; linuxPath: string } | null {
+  const match = inputPath.match(WSL_UNC_REGEX)
+  if (!match) return null
+
+  const distro = match[1]
+  const remainder = (match[2] || '').replace(/\\/g, '/')
+  const linuxPath = remainder || '/'
+
+  return { distro, linuxPath }
+}
+
+/**
+ * Convert a Linux path and distro name to a WSL UNC path.
+ */
+export function toWslUncPath(linuxPath: string, distro: string): string {
+  const normalized = linuxPath.replace(/\//g, '\\')
+  return `\\\\wsl.localhost\\${distro}${normalized}`
+}
+
+// ============================================================================
 // Path Type Detection
 // ============================================================================
 
@@ -234,6 +312,19 @@ export function analyzePath(inputPath: string): PathInfo {
   }
 
   const original = inputPath
+
+  // Check for WSL UNC paths first (before SSH, since they contain backslashes)
+  const wslParsed = parseWslPath(inputPath)
+  if (wslParsed) {
+    return {
+      type: 'wsl',
+      original,
+      normalized: wslParsed.linuxPath,
+      isAbsolute: true,
+      wslDistro: wslParsed.distro,
+      linuxPath: wslParsed.linuxPath,
+    }
+  }
 
   // Check for SSH remote paths
   const sshMatch = inputPath.match(SSH_REMOTE_REGEX)
@@ -325,6 +416,11 @@ export function toFsPath(inputPath: string): string {
     return inputPath.replace(/\//g, '\\')
   }
 
+  // For WSL paths, return the original UNC path (Windows can access it natively)
+  if (info.type === 'wsl') {
+    return inputPath.replace(/\//g, '\\')
+  }
+
   // Fallback
   return inputPath
 }
@@ -337,6 +433,10 @@ export function toDisplayPath(inputPath: string): string {
 
   if (info.type === 'ssh-remote' && info.sshHost && info.remotePath) {
     return `SSH:${info.sshHost}:${info.remotePath}`
+  }
+
+  if (info.type === 'wsl' && info.wslDistro && info.linuxPath) {
+    return `WSL:${info.wslDistro}:${info.linuxPath}`
   }
 
   return info.normalized
@@ -656,6 +756,11 @@ export async function getExecutionContext(
     return 'ssh-remote'
   }
 
+  // Check for WSL paths
+  if (info.type === 'wsl') {
+    return 'wsl'
+  }
+
   // Check for impossible local paths (e.g., macOS paths on Windows)
   if (isImpossibleLocalPath(inputPath)) {
     return 'ssh-remote'
@@ -679,6 +784,10 @@ export function getExecutionContextSync(inputPath: string): ExecutionContext {
 
   if (info.type === 'ssh-remote') {
     return 'ssh-remote'
+  }
+
+  if (info.type === 'wsl') {
+    return 'wsl'
   }
 
   if (isImpossibleLocalPath(inputPath)) {
@@ -708,6 +817,11 @@ export const PathService = {
   // Git Bash
   getGitBashPath,
   clearGitBashCache,
+
+  // WSL
+  isWslPath,
+  parseWslPath,
+  toWslUncPath,
 
   // Platform
   getPlatformForInstall,

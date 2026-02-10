@@ -15,6 +15,8 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
   const [isSSHProject, setIsSSHProject] = useState(false)
   const [sshConnectionId, setSshConnectionId] = useState('')
   const [remotePath, setRemotePath] = useState('')
+  const [isWSLProject, setIsWSLProject] = useState(false)
+  const [wslDistro, setWslDistro] = useState('')
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -32,6 +34,8 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
       isSSHProject,
       sshConnectionId: isSSHProject ? sshConnectionId : undefined,
       remotePath: isSSHProject ? remotePath.trim() : undefined,
+      isWSLProject: isWSLProject || undefined,
+      wslDistro: isWSLProject ? wslDistro : undefined,
       gridTerminalIds: [],
       gridLayoutMode: 'auto',
       lastFocusedTerminalId: null,
@@ -51,6 +55,15 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
     const selectedPath = await window.electron.dialog.openDirectory()
     if (selectedPath) {
       setPath(selectedPath)
+      // Auto-detect WSL from UNC path (e.g., \\wsl.localhost\Ubuntu\home\user\project)
+      const wslMatch = selectedPath.match(/^[/\\][/\\]wsl(?:\$|\.localhost)[/\\]([^/\\]+)/i)
+      if (wslMatch) {
+        setIsWSLProject(true)
+        setWslDistro(wslMatch[1] || '')
+      } else {
+        setIsWSLProject(false)
+        setWslDistro('')
+      }
       if (!name) {
         // Extract folder name from path
         const folderName = selectedPath.split(/[/\\]/).pop() || 'project'
@@ -172,6 +185,11 @@ export function NewProjectModal({ onClose }: NewProjectModalProps) {
                 <p className="mt-1 text-xs text-zinc-600">
                   Default working directory for terminals. Leave empty to use shell defaults.
                 </p>
+                {isWSLProject && (
+                  <p className="mt-1 text-xs text-blue-400">
+                    WSL project detected ({wslDistro}). Terminals will open inside WSL.
+                  </p>
+                )}
               </div>
             </>
           )}

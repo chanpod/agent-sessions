@@ -286,6 +286,36 @@ async function execInContextAsync(
       }
     }
 
+    case 'wsl': {
+      // WSL project — run detection command inside WSL
+      const parsed = PathService.parseWslPath(projectPath)
+      const distro = parsed?.distro || PathService.getEnvironment().defaultWslDistro
+      const linuxPath = parsed?.linuxPath || '~'
+      if (!distro) {
+        throw new Error('No WSL distribution found for CLI detection')
+      }
+      const escapedCmd = command.replace(/'/g, "'\\''")
+      try {
+        const result = await execAsync(
+          `wsl -d ${distro} -- bash -l -c 'cd "${linuxPath}" && ${escapedCmd}'`,
+          { encoding: 'utf-8', timeout: 10000, windowsHide: true }
+        )
+        return { stdout: result.stdout, stderr: result.stderr }
+      } catch (error: unknown) {
+        const execError = error as { stdout?: string; stderr?: string; message?: string }
+        const stdout = execError.stdout || ''
+        const stderr = execError.stderr || ''
+        if (stdout || stderr) {
+          return { stdout, stderr }
+        }
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        if (errorMessage.includes('not found') || errorMessage.includes('ENOENT') || errorMessage.includes('command not found')) {
+          return { stdout: '', stderr: errorMessage }
+        }
+        throw error
+      }
+    }
+
     case 'local-windows': {
       // On Windows, prefer Git Bash for proper PATH handling
       const gitBashPath = getGitBashPath()
@@ -429,6 +459,7 @@ function getPathCommands(tool: CliToolDefinition, context: ExecutionContext): st
   switch (context) {
     case 'local-windows':
       return tool.pathCommands.windows
+    case 'wsl':
     case 'local-unix':
     case 'ssh-remote':
       return tool.pathCommands.unix

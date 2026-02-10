@@ -36,8 +36,10 @@ async function checkGitDirExists(
       }
     }
 
+    case 'wsl':
     case 'local-windows':
     case 'local-unix': {
+      // For WSL paths, Windows can access via UNC path (\\wsl.localhost\...)
       const fsPath = PathService.toFsPath(projectPath)
       const gitDir = PathService.join(fsPath, '.git')
       return fs.existsSync(gitDir)
@@ -266,6 +268,9 @@ export function registerGitHandlers(
     if (context === 'ssh-remote') {
       return { success: false, error: 'Git watching is not supported for SSH projects. Use git:get-info to poll for changes.' }
     }
+
+    // For WSL projects, fs.watch works via UNC path (\\wsl.localhost\...)
+    // so we fall through to the same local logic below
 
     // Don't double-watch
     if (gitWatchers.has(projectPath)) {
@@ -607,8 +612,10 @@ export function registerGitHandlers(
               break
             }
 
+            case 'wsl':
             case 'local-windows':
             case 'local-unix': {
+              // For WSL paths, Windows can access via UNC path
               const fsPath = PathService.toFsPath(projectPath)
               const fullPath = PathService.join(fsPath, filePath)
               if (fs.existsSync(fullPath)) {

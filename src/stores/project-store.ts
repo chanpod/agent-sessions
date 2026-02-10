@@ -23,6 +23,9 @@ export interface Project {
   isSSHProject?: boolean // Whether this project uses SSH
   sshConnectionId?: string // ID of the SSH connection to use
   remotePath?: string // Remote directory path on the SSH host
+  // WSL project fields
+  isWSLProject?: boolean // Whether this project lives in WSL
+  wslDistro?: string // WSL distribution name (e.g., "Ubuntu")
   // Connection state (runtime only, not persisted)
   connectionStatus?: 'disconnected' | 'connecting' | 'connected' | 'error'
   connectionError?: string
@@ -59,7 +62,7 @@ interface ProjectStore {
   setActiveProject: (id: string | null) => void
   toggleProjectExpanded: (id: string) => void
   setProjectTab: (id: string, tab: ProjectTab) => void
-  updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath' | 'shortcutKey'>>) => void
+  updateProject: (id: string, updates: Partial<Pick<Project, 'name' | 'path' | 'isSSHProject' | 'sshConnectionId' | 'remotePath' | 'isWSLProject' | 'wslDistro' | 'shortcutKey'>>) => void
   setProjectNotification: (projectId: string, notification: ProjectNotification) => void
   clearProjectNotification: (projectId: string) => void
   // SSH connection management
