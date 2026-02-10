@@ -451,8 +451,8 @@ const electronAPI = {
       ipcRenderer.invoke('docker:getLogs', serviceId, tail),
   },
   permission: {
-    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRule?: string[]): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('permission:respond', id, decision, reason, alwaysAllow, bashRule),
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRules?: string[][]): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke('permission:respond', id, decision, reason, alwaysAllow, bashRules),
     checkHook: (projectPath: string): Promise<boolean> =>
       ipcRenderer.invoke('permission:check-hook', projectPath),
     installHook: (projectPath: string): Promise<{ success: boolean; error?: string }> =>

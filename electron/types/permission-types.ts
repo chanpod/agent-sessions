@@ -19,10 +19,17 @@ export interface PendingPermission {
   timeoutHandle: NodeJS.Timeout
 }
 
+export interface SubCommandMatchInfo {
+  tokens: string[]
+  operator: string | null
+  matched: boolean
+}
+
 export interface PermissionRequestForUI {
   id: string
   sessionId: string
   toolName: string
   toolInput: Record<string, unknown>
   receivedAt: number
+  subCommandMatches?: SubCommandMatchInfo[]
 }

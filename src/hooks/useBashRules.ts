@@ -26,6 +26,49 @@ function tokenizeCommand(command: string): string[] {
   return tokens
 }
 
+const SHELL_OPERATORS = new Set(['&&', '||', '|', ';'])
+
+/**
+ * Split a token array into sub-commands at shell operators.
+ * Must stay in sync with the copies in permission-handler.cjs and permission-server.ts.
+ */
+function splitSubCommands(tokens: string[]): string[][] {
+  const subs: string[][] = []
+  let current: string[] = []
+  for (const tok of tokens) {
+    if (SHELL_OPERATORS.has(tok)) {
+      if (current.length) subs.push(current)
+      current = []
+    } else if (tok.endsWith(';') && tok.length > 1) {
+      current.push(tok.slice(0, -1))
+      if (current.length) subs.push(current)
+      current = []
+    } else {
+      current.push(tok)
+    }
+  }
+  if (current.length) subs.push(current)
+  return subs
+}
+
+function matchesSingleRule(tokens: string[], bashRules: string[][]): string[] | null {
+  for (const rule of bashRules) {
+    if (!Array.isArray(rule) || rule.length === 0) continue
+    const isWildcard = rule[rule.length - 1] === '*'
+    if (isWildcard) {
+      const prefixLen = rule.length - 1
+      if (tokens.length >= prefixLen && rule.slice(0, prefixLen).every((t, i) => t === tokens[i])) {
+        return rule
+      }
+    } else {
+      if (rule.length === tokens.length && rule.every((t, i) => t === tokens[i])) {
+        return rule
+      }
+    }
+  }
+  return null
+}
+
 /**
  * Tools that are hardcoded as always-safe in the hook script (Gate 2).
  * Must stay in sync with SAFE_TOOLS in permission-handler.cjs.
@@ -74,23 +117,23 @@ export function useBashRules(projectPath: string | null | undefined) {
       }
 
       // Gate 3a: for Bash, check granular rules first (same priority as the hook)
+      // Compound commands are split at shell operators; every sub-command must match.
       if (toolName === 'Bash') {
         try {
           const parsed = JSON.parse(inputJson)
           if (typeof parsed.command === 'string' && bashRules.length > 0) {
             const tokens = tokenizeCommand(parsed.command.trim())
-            for (const rule of bashRules) {
-              if (!Array.isArray(rule) || rule.length === 0) continue
-              const isWildcard = rule[rule.length - 1] === '*'
-              if (isWildcard) {
-                const prefixLen = rule.length - 1
-                if (tokens.length >= prefixLen && rule.slice(0, prefixLen).every((t, i) => t === tokens[i])) {
-                  return { type: 'bash-rule', rule }
-                }
-              } else {
-                if (rule.length === tokens.length && rule.every((t, i) => t === tokens[i])) {
-                  return { type: 'bash-rule', rule }
-                }
+            const subCommands = splitSubCommands(tokens)
+            if (subCommands.length > 0) {
+              let allMatched = true
+              let firstRule: string[] | null = null
+              for (const sub of subCommands) {
+                const rule = matchesSingleRule(sub, bashRules)
+                if (!rule) { allMatched = false; break }
+                if (!firstRule) firstRule = rule
+              }
+              if (allMatched && firstRule) {
+                return { type: 'bash-rule', rule: firstRule }
               }
             }
           }

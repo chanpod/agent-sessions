@@ -204,12 +204,19 @@ export interface ServiceInfo {
   command?: string
 }
 
+export interface SubCommandMatchInfo {
+  tokens: string[]
+  operator: string | null
+  matched: boolean
+}
+
 export interface PermissionRequestForUI {
   id: string
   sessionId: string
   toolName: string
   toolInput: Record<string, unknown>
   receivedAt: number
+  subCommandMatches?: SubCommandMatchInfo[]
 }
 
 export interface ElectronAPI {
@@ -350,7 +357,7 @@ export interface ElectronAPI {
     getLogs: (serviceId: string, tail?: number) => Promise<{ success: boolean; logs: string; error?: string }>
   }
   permission: {
-    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRule?: string[]) => Promise<{ success: boolean; error?: string }>
+    respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRules?: string[][]) => Promise<{ success: boolean; error?: string }>
     checkHook: (projectPath: string) => Promise<boolean>
     installHook: (projectPath: string) => Promise<{ success: boolean; error?: string }>
     getBashRules: (projectPath: string) => Promise<string[][]>

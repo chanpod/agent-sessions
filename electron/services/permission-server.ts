@@ -11,6 +11,7 @@ import type {
   PermissionResponse,
   PendingPermission,
   PermissionRequestForUI,
+  SubCommandMatchInfo,
 } from '../types/permission-types.js'
 
 const IPC_DIR_NAME = '.permission-ipc'
@@ -92,6 +93,42 @@ function matchesBashCommand(command: string, bashRules: string[][]): boolean {
   if (subCommands.length === 0) return false
   return subCommands.every((sub) => matchesSingleRule(sub, bashRules))
 }
+/**
+ * Split tokens into sub-commands, preserving the operator that precedes each.
+ * Used to build SubCommandMatchInfo for the renderer.
+ */
+function splitSubCommandsWithOperators(tokens: string[]): Array<{ tokens: string[]; operator: string | null }> {
+  const subs: Array<{ tokens: string[]; operator: string | null }> = []
+  let current: string[] = []
+  let nextOperator: string | null = null
+  for (const tok of tokens) {
+    if (SHELL_OPERATORS.has(tok)) {
+      if (current.length) subs.push({ tokens: current, operator: nextOperator })
+      nextOperator = tok
+      current = []
+    } else if (tok.endsWith(';') && tok.length > 1) {
+      current.push(tok.slice(0, -1))
+      if (current.length) subs.push({ tokens: current, operator: nextOperator })
+      nextOperator = ';'
+      current = []
+    } else {
+      current.push(tok)
+    }
+  }
+  if (current.length) subs.push({ tokens: current, operator: nextOperator })
+  return subs
+}
+
+function buildSubCommandMatches(command: string, bashRules: string[][]): SubCommandMatchInfo[] {
+  const tokens = tokenizeCommand(command.trim())
+  const subs = splitSubCommandsWithOperators(tokens)
+  return subs.map(sub => ({
+    tokens: sub.tokens,
+    operator: sub.operator,
+    matched: matchesSingleRule(sub.tokens, bashRules),
+  }))
+}
+
 const HEARTBEAT_FILENAME = '.active'
 const HEARTBEAT_INTERVAL_MS = 3000
 
@@ -158,16 +195,18 @@ export class PermissionServer {
     console.log('[PermissionServer] Stopped')
   }
 
-  resolvePermission(id: string, response: PermissionResponse, alwaysAllow?: boolean, bashRule?: string[]): boolean {
+  resolvePermission(id: string, response: PermissionResponse, alwaysAllow?: boolean, bashRules?: string[][]): boolean {
     const pending = this.pending.get(id)
     if (!pending) return false
 
     const projectPath = path.dirname(path.dirname(pending.ipcDir))
 
     if (response.decision === 'allow') {
-      if (bashRule && bashRule.length > 0) {
-        // Granular bash rule — save the specific token pattern
-        PermissionServer.addBashRule(projectPath, bashRule)
+      if (bashRules && bashRules.length > 0) {
+        // Granular bash rules — save each token pattern
+        for (const rule of bashRules) {
+          if (rule.length > 0) PermissionServer.addBashRule(projectPath, rule)
+        }
       } else if (alwaysAllow) {
         // Blanket tool allow (non-Bash tools)
         PermissionServer.addToAllowlist(projectPath, pending.request.tool_name)
@@ -177,7 +216,7 @@ export class PermissionServer {
     clearTimeout(pending.timeoutHandle)
     pending.resolveHttp(response)
     this.pending.delete(id)
-    const suffix = bashRule ? ` (bash rule: ${bashRule.join(' ')})` : alwaysAllow ? ' (always)' : ''
+    const suffix = bashRules?.length ? ` (bash rules: ${bashRules.map(r => r.join(' ')).join(', ')})` : alwaysAllow ? ' (always)' : ''
     console.log(`[PermissionServer] Resolved ${id}: ${response.decision}${suffix}`)
     return true
   }
@@ -275,6 +314,14 @@ export class PermissionServer {
       toolName: request.tool_name,
       toolInput: request.tool_input,
       receivedAt: now,
+    }
+
+    // For compound Bash commands, tell the renderer which sub-commands already match rules
+    if (request.tool_name === 'Bash' && request.tool_input?.command) {
+      const matches = buildSubCommandMatches(String(request.tool_input.command), config.bashRules)
+      if (matches.length > 1) {
+        uiRequest.subCommandMatches = matches
+      }
     }
 
     this.sendToRenderer('permission:request', uiRequest)

@@ -100,6 +100,32 @@ export async function execInContextAsync(command: string, projectPath: string, p
       }
     }
 
+    case 'wsl': {
+      // WSL project — route commands through wsl.exe into the correct distro
+      const parsed = PathService.parseWslPath(projectPath)
+      const distro = parsed?.distro || PathService.getEnvironment().defaultWslDistro
+      const linuxPath = parsed?.linuxPath || projectPath
+      if (!distro) {
+        throw new Error('No WSL distribution found for path: ' + projectPath)
+      }
+      const escapedPath = linuxPath.replace(/'/g, "'\\''")
+      const escapedCmd = command.replace(/'/g, "'\\''")
+      return new Promise((resolve, reject) => {
+        exec(
+          `wsl -d ${distro} -- bash -c 'cd "${escapedPath}" && ${escapedCmd}'`,
+          { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
+          (error, stdout) => {
+            if (error) {
+              console.error(`[execInContextAsync] WSL command failed: ${command.substring(0, 50)}...`, error.message)
+              reject(error)
+            } else {
+              resolve(stdout)
+            }
+          }
+        )
+      })
+    }
+
     case 'local-windows':
     case 'local-unix': {
       // Execute directly on local system
@@ -1174,7 +1200,10 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       })
     }
   } else {
-    // Local project — spawn directly
+    // Local or WSL project — spawn directly (pty-manager auto-detects WSL from cwd)
+    if (process.platform === 'win32' && PathService.isWslPath(cwd)) {
+      console.log(`[Agent] Routing agent through WSL for cwd: ${cwd}`)
+    }
     terminalInfo = ptyManager.createTerminal({
       cwd,
       initialCommand: command,
@@ -1296,7 +1325,7 @@ ipcMain.handle('agent:generate-title', async (_event, options: { userMessages: s
 // Permission Hook IPC Handlers
 // ============================================================================
 
-ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRule?: string[]) => {
+ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRules?: string[][]) => {
   // Codex approval requests use a composite ID: "codex:<terminalId>:<jsonRpcId>"
   // Route these to the PTY stdin instead of the file-based permission server.
   if (id.startsWith('codex:')) {
@@ -1322,7 +1351,7 @@ ipcMain.handle('permission:respond', async (_event, id: string, decision: 'allow
 
   // Claude file-based permission flow
   if (!permissionServer) return { success: false, error: 'Permission server not running' }
-  const resolved = permissionServer.resolvePermission(id, { decision, reason }, alwaysAllow, bashRule)
+  const resolved = permissionServer.resolvePermission(id, { decision, reason }, alwaysAllow, bashRules)
   return { success: resolved }
 })
 

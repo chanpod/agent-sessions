@@ -6,6 +6,7 @@ interface PermissionRequestForUI {
   toolName: string
   toolInput: Record<string, unknown>
   receivedAt: number
+  subCommandMatches?: Array<{ tokens: string[]; operator: string | null; matched: boolean }>
 }
 
 interface PermissionState {
