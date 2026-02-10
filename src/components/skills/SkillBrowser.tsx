@@ -558,6 +558,20 @@ function McpServerCard({ server }: { server: McpServerStatus }) {
           {config.label}
         </span>
       </div>
+      {server.status === 'needs_auth' && (
+        <div className="mt-3 rounded-md bg-amber-500/5 px-3 py-2 ring-1 ring-inset ring-amber-500/10">
+          <p className="text-[11px] text-amber-400/80">
+            Run <code className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-300">/mcp</code> in your Claude Code session and select &ldquo;Authenticate&rdquo; to connect this server.
+          </p>
+        </div>
+      )}
+      {server.status === 'failed' && (
+        <div className="mt-3 rounded-md bg-red-500/5 px-3 py-2 ring-1 ring-inset ring-red-500/10">
+          <p className="text-[11px] text-red-400/80">
+            Connection failed. Check the server URL or run <code className="rounded bg-red-500/10 px-1.5 py-0.5 font-mono text-[10px] text-red-300">/mcp</code> in your Claude Code session for details.
+          </p>
+        </div>
+      )}
     </div>
   )
 }

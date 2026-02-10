@@ -239,8 +239,15 @@ export function PermissionModal() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && request) {
+      if (!request) return
+      // Ignore shortcuts when typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      if (e.key === 'Escape' || e.key === 'd' || e.key === 'D') {
         respond('deny')
+      } else if (e.key === 'a' || e.key === 'A') {
+        respond('allow')
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -309,7 +316,7 @@ export function PermissionModal() {
           <div className="flex items-center justify-end gap-2">
             <Button variant="destructive" size="sm" onClick={() => respond('deny')}>
               <IconShieldX className="size-4" />
-              Deny
+              Deny <kbd className="ml-1 text-[10px] opacity-60">D</kbd>
             </Button>
             {isBash ? (
               <Button
@@ -333,7 +340,7 @@ export function PermissionModal() {
             )}
             <Button variant="default" size="sm" className="bg-emerald-600 hover:bg-emerald-500" onClick={() => respond('allow')}>
               <IconShieldCheck className="size-4" />
-              Allow
+              Allow <kbd className="ml-1 text-[10px] opacity-60">A</kbd>
             </Button>
           </div>
           {isBash && (
