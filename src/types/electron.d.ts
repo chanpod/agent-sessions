@@ -353,8 +353,14 @@ export interface ElectronAPI {
     list: (projectId?: string) => Promise<{ success: boolean; services: ServiceInfo[]; error?: string }>
   }
   docker: {
-    isAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>
+    isAvailable: (projectPath?: string) => Promise<{ success: boolean; available: boolean; error?: string }>
     getLogs: (serviceId: string, tail?: number) => Promise<{ success: boolean; logs: string; error?: string }>
+    listStacks: (projectPath: string) => Promise<{ success: boolean; stacks: Array<{ name: string; status: string; configFiles: string }>; error?: string }>
+    getStackContainers: (stackName: string, projectPath: string) => Promise<{ success: boolean; containers: Array<{ name: string; service: string; state: string; status: string; ports: string; image: string }>; error?: string }>
+    upStack: (stackName: string, configFiles: string, projectPath: string) => Promise<{ success: boolean; output?: string; error?: string }>
+    stopStack: (stackName: string, configFiles: string, projectPath: string) => Promise<{ success: boolean; output?: string; error?: string }>
+    downStack: (stackName: string, configFiles: string, projectPath: string) => Promise<{ success: boolean; output?: string; error?: string }>
+    restartStack: (stackName: string, configFiles: string, projectPath: string) => Promise<{ success: boolean; output?: string; error?: string }>
   }
   permission: {
     respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRules?: string[][]) => Promise<{ success: boolean; error?: string }>

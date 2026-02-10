@@ -64,6 +64,7 @@ interface GitWatcherSet {
 
 const gitWatchers = new Map<string, GitWatcherSet>()
 const GIT_DEBOUNCE_MS = 500 // Debounce rapid changes (increased to allow git operations to complete)
+const WSL_POLL_INTERVAL_MS = 3000 // Polling interval for WSL projects (fs.watch doesn't work on UNC paths)
 
 /**
  * Register all git-related IPC handlers
@@ -269,14 +270,83 @@ export function registerGitHandlers(
       return { success: false, error: 'Git watching is not supported for SSH projects. Use git:get-info to poll for changes.' }
     }
 
-    // For WSL projects, fs.watch works via UNC path (\\wsl.localhost\...)
-    // so we fall through to the same local logic below
-
     // Don't double-watch
     if (gitWatchers.has(projectPath)) {
       return { success: true }
     }
 
+    // For WSL projects, fs.watch() fails on UNC paths (EISDIR error).
+    // Use polling via execInContextAsync instead.
+    if (context === 'wsl') {
+      try {
+        // Verify it's a git repo first
+        const gitExists = await checkGitDirExists(projectPath, actualProjectId, sshManager, execInContextAsync)
+        if (!gitExists) {
+          return { success: false, error: 'Not a git repository' }
+        }
+
+        // Get initial state for comparison
+        let lastGitStatus = ''
+        let lastHeadContent = ''
+        try {
+          lastGitStatus = (await execInContextAsync('git status --porcelain', projectPath, actualProjectId)).trim()
+        } catch { /* ignore */ }
+        try {
+          lastHeadContent = (await execInContextAsync('git rev-parse --abbrev-ref HEAD', projectPath, actualProjectId)).trim()
+        } catch { /* ignore */ }
+
+        const pollingInterval = setInterval(async () => {
+          const watcherSet = gitWatchers.get(projectPath)
+          if (!watcherSet) {
+            return
+          }
+          try {
+            let hasChanged = false
+
+            // Check branch
+            try {
+              const currentHead = (await execInContextAsync('git rev-parse --abbrev-ref HEAD', projectPath, actualProjectId)).trim()
+              if (currentHead !== watcherSet.lastHeadContent) {
+                watcherSet.lastHeadContent = currentHead
+                hasChanged = true
+              }
+            } catch { /* ignore */ }
+
+            // Check status (staging, working tree changes)
+            try {
+              const currentStatus = (await execInContextAsync('git status --porcelain', projectPath, actualProjectId)).trim()
+              if (currentStatus !== watcherSet.lastGitStatus) {
+                watcherSet.lastGitStatus = currentStatus
+                hasChanged = true
+              }
+            } catch { /* ignore */ }
+
+            if (hasChanged && mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('git:changed', projectPath)
+            }
+          } catch (err) {
+            console.error('[Git Watch] WSL polling error for', projectPath, ':', err)
+          }
+        }, WSL_POLL_INTERVAL_MS)
+
+        gitWatchers.set(projectPath, {
+          watcher: null,
+          debounceTimer: null,
+          pollingInterval,
+          lastHeadContent,
+          lastIndexMtime: 0,
+          lastLogsHeadMtime: 0,
+          lastGitStatus,
+        })
+
+        return { success: true }
+      } catch (err) {
+        console.error('Failed to start WSL git watching:', err)
+        return { success: false, error: String(err) }
+      }
+    }
+
+    // Local projects: use fs.watch() on the .git directory
     const fsPath = PathService.toFsPath(projectPath)
     const gitDir = PathService.join(fsPath, '.git')
     const headPath = PathService.join(gitDir, 'HEAD')

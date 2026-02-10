@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { execSync } from 'child_process'
@@ -41,6 +41,7 @@ import { installCliTool } from './services/cli-installer.js'
 import { PermissionServer } from './services/permission-server.js'
 import { serviceManager } from './services/service-manager.js'
 import { dockerComposeHandler } from './services/docker/docker-compose-handler.js'
+import { dockerCli } from './services/docker/docker-cli.js'
 import { ptyServiceHandler, setPtyManager } from './services/pty/pty-service-handler.js'
 import { logger, getLogPath } from './utils/logger.js'
 
@@ -101,18 +102,17 @@ export async function execInContextAsync(command: string, projectPath: string, p
     }
 
     case 'wsl': {
-      // WSL project — route commands through wsl.exe into the correct distro
+      // WSL project — run command inside WSL via execFile (bypasses cmd.exe quoting issues)
       const parsed = PathService.parseWslPath(projectPath)
       const distro = parsed?.distro || PathService.getEnvironment().defaultWslDistro
       const linuxPath = parsed?.linuxPath || projectPath
       if (!distro) {
         throw new Error('No WSL distribution found for path: ' + projectPath)
       }
-      const escapedPath = linuxPath.replace(/'/g, "'\\''")
-      const escapedCmd = command.replace(/'/g, "'\\''")
       return new Promise((resolve, reject) => {
-        exec(
-          `wsl -d ${distro} -- bash -c 'cd "${escapedPath}" && ${escapedCmd}'`,
+        execFile(
+          'wsl',
+          ['-d', distro, '--cd', linuxPath, '--', 'bash', '-lc', command],
           { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
           (error, stdout) => {
             if (error) {
@@ -490,6 +490,10 @@ async function createWindow() {
   setPtyManager(ptyManager)
   serviceManager.registerHandler(ptyServiceHandler)
   serviceManager.registerHandler(dockerComposeHandler)
+
+  // Wire up context-aware command execution for Docker CLI
+  // This routes docker commands through Git Bash (Windows) or WSL bash as appropriate
+  dockerCli.setExecInContext((cmd, projectPath) => execInContextAsync(cmd, projectPath))
 
   // Initialize BackgroundClaudeManager
   backgroundClaude = new BackgroundClaudeManager(ptyManager)
@@ -1507,9 +1511,9 @@ ipcMain.handle('service:list', async (_event, projectId?: string) => {
 // Docker IPC Handlers
 // ============================================================================
 
-ipcMain.handle('docker:isAvailable', async () => {
+ipcMain.handle('docker:isAvailable', async (_event, projectPath?: string) => {
   try {
-    const available = await dockerComposeHandler.isDockerAvailable()
+    const available = await dockerCli.isAvailable(projectPath)
     return { success: true, available }
   } catch (error: unknown) {
     console.error('[Docker] Availability check failed:', error)
@@ -1525,6 +1529,30 @@ ipcMain.handle('docker:getLogs', async (_event, serviceId: string, tail?: number
     console.error('[Docker] Get logs failed:', error)
     return { success: false, logs: '', error: error instanceof Error ? error.message : String(error) }
   }
+})
+
+ipcMain.handle('docker:listStacks', async (_event, projectPath: string) => {
+  return dockerCli.listStacks(projectPath)
+})
+
+ipcMain.handle('docker:getStackContainers', async (_event, stackName: string, projectPath: string) => {
+  return dockerCli.getStackContainers(stackName, projectPath)
+})
+
+ipcMain.handle('docker:upStack', async (_event, stackName: string, configFiles: string, projectPath: string) => {
+  return dockerCli.upStack(stackName, configFiles, projectPath)
+})
+
+ipcMain.handle('docker:stopStack', async (_event, stackName: string, configFiles: string, projectPath: string) => {
+  return dockerCli.stopStack(stackName, configFiles, projectPath)
+})
+
+ipcMain.handle('docker:downStack', async (_event, stackName: string, configFiles: string, projectPath: string) => {
+  return dockerCli.downStack(stackName, configFiles, projectPath)
+})
+
+ipcMain.handle('docker:restartStack', async (_event, stackName: string, configFiles: string, projectPath: string) => {
+  return dockerCli.restartStack(stackName, configFiles, projectPath)
 })
 
 // ─── Skill/Plugin Management IPC ──────────────────────────────────

@@ -445,10 +445,22 @@ const electronAPI = {
       ipcRenderer.invoke('service:list', projectId),
   },
   docker: {
-    isAvailable: (): Promise<{ success: boolean; available: boolean; error?: string }> =>
-      ipcRenderer.invoke('docker:isAvailable'),
+    isAvailable: (projectPath?: string): Promise<{ success: boolean; available: boolean; error?: string }> =>
+      ipcRenderer.invoke('docker:isAvailable', projectPath),
     getLogs: (serviceId: string, tail?: number): Promise<{ success: boolean; logs: string; error?: string }> =>
       ipcRenderer.invoke('docker:getLogs', serviceId, tail),
+    listStacks: (projectPath: string): Promise<{ success: boolean; stacks: Array<{ name: string; status: string; configFiles: string }>; error?: string }> =>
+      ipcRenderer.invoke('docker:listStacks', projectPath),
+    getStackContainers: (stackName: string, projectPath: string): Promise<{ success: boolean; containers: Array<{ name: string; service: string; state: string; status: string; ports: string; image: string }>; error?: string }> =>
+      ipcRenderer.invoke('docker:getStackContainers', stackName, projectPath),
+    upStack: (stackName: string, configFiles: string, projectPath: string): Promise<{ success: boolean; output?: string; error?: string }> =>
+      ipcRenderer.invoke('docker:upStack', stackName, configFiles, projectPath),
+    stopStack: (stackName: string, configFiles: string, projectPath: string): Promise<{ success: boolean; output?: string; error?: string }> =>
+      ipcRenderer.invoke('docker:stopStack', stackName, configFiles, projectPath),
+    downStack: (stackName: string, configFiles: string, projectPath: string): Promise<{ success: boolean; output?: string; error?: string }> =>
+      ipcRenderer.invoke('docker:downStack', stackName, configFiles, projectPath),
+    restartStack: (stackName: string, configFiles: string, projectPath: string): Promise<{ success: boolean; output?: string; error?: string }> =>
+      ipcRenderer.invoke('docker:restartStack', stackName, configFiles, projectPath),
   },
   permission: {
     respond: (id: string, decision: 'allow' | 'deny', reason?: string, alwaysAllow?: boolean, bashRules?: string[][]): Promise<{ success: boolean; error?: string }> =>

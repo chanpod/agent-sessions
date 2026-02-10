@@ -9,7 +9,7 @@
  * - L2: SQLite persistent cache for fast startup across sessions
  */
 
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -287,19 +287,29 @@ async function execInContextAsync(
     }
 
     case 'wsl': {
-      // WSL project — run detection command inside WSL
+      // WSL project — run detection command inside WSL via execFile (bypasses cmd.exe quoting issues)
       const parsed = PathService.parseWslPath(projectPath)
       const distro = parsed?.distro || PathService.getEnvironment().defaultWslDistro
       const linuxPath = parsed?.linuxPath || '~'
       if (!distro) {
         throw new Error('No WSL distribution found for CLI detection')
       }
-      const escapedCmd = command.replace(/'/g, "'\\''")
       try {
-        const result = await execAsync(
-          `wsl -d ${distro} -- bash -l -c 'cd "${linuxPath}" && ${escapedCmd}'`,
-          { encoding: 'utf-8', timeout: 10000, windowsHide: true }
-        )
+        const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execFile(
+            'wsl',
+            ['-d', distro, '--cd', linuxPath, '--', 'bash', '-lc', command],
+            { encoding: 'utf-8', timeout: 10000, windowsHide: true },
+            (error, stdout, stderr) => {
+              if (error) {
+                const execError = error as { stdout?: string; stderr?: string }
+                reject(Object.assign(error, { stdout: execError.stdout || stdout, stderr: execError.stderr || stderr }))
+              } else {
+                resolve({ stdout, stderr })
+              }
+            }
+          )
+        })
         return { stdout: result.stdout, stderr: result.stderr }
       } catch (error: unknown) {
         const execError = error as { stdout?: string; stderr?: string; message?: string }

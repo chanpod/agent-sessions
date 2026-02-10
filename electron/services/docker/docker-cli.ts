@@ -6,12 +6,21 @@ import {
   toFsPath,
   analyzePath,
   getExecutionContextSync,
+  getEnvironment,
+  toWslUncPath,
   dirname as pathServiceDirname,
   basename as pathServiceBasename,
   join as pathServiceJoin,
 } from '../../utils/path-service.js'
 
 const execAsync = promisify(exec)
+
+/**
+ * Function type for context-aware command execution.
+ * Implementations route commands through the correct shell based on project path
+ * (Git Bash for native Windows, wsl.exe for WSL projects, SSH for remote, etc.)
+ */
+export type ExecInContext = (command: string, projectPath: string) => Promise<string>
 
 export interface DockerComposeService {
   name: string
@@ -45,22 +54,60 @@ export interface ComposeCommandResult {
   error?: string
 }
 
+export interface DockerStack {
+  name: string
+  status: string
+  configFiles: string
+}
+
+export interface DockerContainer {
+  name: string
+  service: string
+  state: string
+  status: string
+  ports: string
+  image: string
+}
+
 export class DockerCli {
   private dockerPath: string = 'docker'
   private composeCommand: string | null = null
+  private execInContext: ExecInContext | null = null
+
+  /**
+   * Set the context-aware executor. Must be called before any Docker commands.
+   * This routes commands through the correct shell (Git Bash, WSL, SSH)
+   * based on the project path.
+   */
+  setExecInContext(fn: ExecInContext): void {
+    this.execInContext = fn
+  }
+
+  /**
+   * Run a command in the correct shell context for the given project path.
+   * Falls back to bare execAsync if no context executor is set.
+   */
+  private async execInProjectContext(cmd: string, projectPath: string): Promise<string> {
+    if (this.execInContext) {
+      return this.execInContext(cmd, projectPath)
+    }
+    // Fallback — should not happen in production
+    const { stdout } = await execAsync(cmd, { cwd: projectPath, encoding: 'utf-8' })
+    return stdout
+  }
 
   /**
    * Detect which compose command is available (v2 plugin or v1 standalone)
    * Caches the result for subsequent calls
    */
-  private async detectComposeCommand(): Promise<string> {
+  private async detectComposeCommand(projectPath: string): Promise<string> {
     if (this.composeCommand !== null) {
       return this.composeCommand
     }
 
     // Try v2 plugin first: docker compose
     try {
-      await execAsync('docker compose --version')
+      await this.execInProjectContext('docker compose --version', projectPath)
       this.composeCommand = 'docker compose'
       return this.composeCommand
     } catch {
@@ -69,7 +116,7 @@ export class DockerCli {
 
     // Fall back to v1 standalone: docker-compose
     try {
-      await execAsync('docker-compose --version')
+      await this.execInProjectContext('docker-compose --version', projectPath)
       this.composeCommand = 'docker-compose'
       return this.composeCommand
     } catch {
@@ -82,8 +129,8 @@ export class DockerCli {
   /**
    * Build a compose command with the detected compose variant
    */
-  private async buildComposeCommand(args: string): Promise<string> {
-    const compose = await this.detectComposeCommand()
+  private async buildComposeCommand(args: string, projectPath: string): Promise<string> {
+    const compose = await this.detectComposeCommand(projectPath)
     return `${compose} ${args}`
   }
 
@@ -124,10 +171,7 @@ export class DockerCli {
 
   /**
    * Execute a docker command in the appropriate context.
-   *
-   * @param cmd - The docker command to execute
-   * @param execInfo - Execution info from getComposePathsForExecution
-   * @returns Promise with stdout and stderr
+   * Routes through the context-aware executor using the compose file's directory.
    */
   private async execDockerCommand(
     cmd: string,
@@ -137,19 +181,21 @@ export class DockerCli {
       context: ReturnType<typeof getExecutionContextSync>;
       pathInfo: ReturnType<typeof analyzePath>;
     }
-  ): Promise<{ stdout: string; stderr: string }> {
-    const { cwd } = execInfo
-
-    // Execute directly with cwd
-    return execAsync(cmd, { cwd })
+  ): Promise<string> {
+    return this.execInProjectContext(cmd, execInfo.dockerDir)
   }
 
   /**
    * Check if Docker CLI is available
    */
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(projectPath?: string): Promise<boolean> {
     try {
-      await execAsync(`${this.dockerPath} --version`)
+      if (projectPath) {
+        await this.execInProjectContext(`${this.dockerPath} --version`, projectPath)
+      } else {
+        // Fallback for callers that don't have a project path
+        await execAsync(`${this.dockerPath} --version`)
+      }
       return true
     } catch {
       return false
@@ -196,9 +242,9 @@ export class DockerCli {
   async parseComposeFile(composePath: string): Promise<DockerComposeConfig | null> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" config --format json`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" config --format json`, composePath)
 
-      const { stdout } = await this.execDockerCommand(cmd, execInfo)
+      const stdout = await this.execDockerCommand(cmd, execInfo)
 
       return JSON.parse(stdout)
     } catch (error) {
@@ -213,9 +259,9 @@ export class DockerCli {
   async getComposeStatus(composePath: string): Promise<ComposeStatusResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" ps --format json`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" ps --format json`, composePath)
 
-      const { stdout } = await this.execDockerCommand(cmd, execInfo)
+      const stdout = await this.execDockerCommand(cmd, execInfo)
 
       // Docker compose ps can return multiple JSON objects, one per line
       const services: DockerComposeService[] = []
@@ -257,11 +303,11 @@ export class DockerCli {
   async startService(composePath: string, serviceName: string): Promise<ComposeCommandResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" start "${serviceName}"`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" start "${serviceName}"`, composePath)
 
-      const { stdout, stderr } = await this.execDockerCommand(cmd, execInfo)
+      const output = await this.execDockerCommand(cmd, execInfo)
 
-      return { success: true, output: stdout || stderr }
+      return { success: true, output }
     } catch (error: any) {
       return { success: false, error: error.message || String(error) }
     }
@@ -273,11 +319,11 @@ export class DockerCli {
   async stopService(composePath: string, serviceName: string): Promise<ComposeCommandResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" stop "${serviceName}"`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" stop "${serviceName}"`, composePath)
 
-      const { stdout, stderr } = await this.execDockerCommand(cmd, execInfo)
+      const output = await this.execDockerCommand(cmd, execInfo)
 
-      return { success: true, output: stdout || stderr }
+      return { success: true, output }
     } catch (error: any) {
       return { success: false, error: error.message || String(error) }
     }
@@ -289,11 +335,11 @@ export class DockerCli {
   async restartService(composePath: string, serviceName: string): Promise<ComposeCommandResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" restart "${serviceName}"`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" restart "${serviceName}"`, composePath)
 
-      const { stdout, stderr } = await this.execDockerCommand(cmd, execInfo)
+      const output = await this.execDockerCommand(cmd, execInfo)
 
-      return { success: true, output: stdout || stderr }
+      return { success: true, output }
     } catch (error: any) {
       return { success: false, error: error.message || String(error) }
     }
@@ -305,11 +351,11 @@ export class DockerCli {
   async getServiceLogs(composePath: string, serviceName: string, tail: number = 100): Promise<ComposeCommandResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" logs "${serviceName}" --tail ${tail}`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" logs "${serviceName}" --tail ${tail}`, composePath)
 
-      const { stdout, stderr } = await this.execDockerCommand(cmd, execInfo)
+      const output = await this.execDockerCommand(cmd, execInfo)
 
-      return { success: true, output: stdout || stderr }
+      return { success: true, output }
     } catch (error: any) {
       return { success: false, error: error.message || String(error) }
     }
@@ -321,11 +367,11 @@ export class DockerCli {
   async upAll(composePath: string): Promise<ComposeCommandResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" up -d`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" up -d`, composePath)
 
-      const { stdout, stderr } = await this.execDockerCommand(cmd, execInfo)
+      const output = await this.execDockerCommand(cmd, execInfo)
 
-      return { success: true, output: stdout || stderr }
+      return { success: true, output }
     } catch (error: any) {
       return { success: false, error: error.message || String(error) }
     }
@@ -337,14 +383,145 @@ export class DockerCli {
   async downAll(composePath: string): Promise<ComposeCommandResult> {
     try {
       const execInfo = this.getComposePathsForExecution(composePath)
-      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" down`)
+      const cmd = await this.buildComposeCommand(`-f "${execInfo.file}" down`, composePath)
 
-      const { stdout, stderr } = await this.execDockerCommand(cmd, execInfo)
+      const output = await this.execDockerCommand(cmd, execInfo)
 
-      return { success: true, output: stdout || stderr }
+      return { success: true, output }
     } catch (error: any) {
       return { success: false, error: error.message || String(error) }
     }
+  }
+
+  /**
+   * List all Docker Compose stacks on the system.
+   * Uses `docker compose ls --format json`.
+   * Requires projectPath to determine the correct shell context (Git Bash vs WSL).
+   */
+  async listStacks(projectPath: string): Promise<{ success: boolean; stacks: DockerStack[]; error?: string }> {
+    try {
+      const available = await this.isAvailable(projectPath)
+      if (!available) {
+        return { success: false, stacks: [], error: 'Docker is not available' }
+      }
+
+      const cmd = await this.buildComposeCommand('ls -a --format json', projectPath)
+      const stdout = await this.execInProjectContext(cmd, projectPath)
+
+      if (!stdout.trim()) {
+        return { success: true, stacks: [] }
+      }
+
+      // docker compose ls --format json returns a JSON array
+      const parsed = JSON.parse(stdout)
+      const stacks: DockerStack[] = (Array.isArray(parsed) ? parsed : [parsed]).map((item: any) => ({
+        name: item.Name || 'unknown',
+        status: item.Status || 'unknown',
+        configFiles: item.ConfigFiles || '',
+      }))
+
+      return { success: true, stacks }
+    } catch (error: any) {
+      return { success: false, stacks: [], error: error.message || String(error) }
+    }
+  }
+
+  /**
+   * Get containers for a specific Compose stack by project name.
+   * Uses `docker compose -p <name> ps --format json`.
+   * Requires projectPath to determine the correct shell context.
+   */
+  async getStackContainers(stackName: string, projectPath: string): Promise<{ success: boolean; containers: DockerContainer[]; error?: string }> {
+    try {
+      const cmd = await this.buildComposeCommand(`-p "${stackName}" ps -a --format json`, projectPath)
+      const stdout = await this.execInProjectContext(cmd, projectPath)
+
+      if (!stdout.trim()) {
+        return { success: true, containers: [] }
+      }
+
+      // docker compose ps returns one JSON object per line (NDJSON)
+      const containers: DockerContainer[] = []
+      const lines = stdout.trim().split('\n').filter(line => line.trim())
+
+      for (const line of lines) {
+        try {
+          const item = JSON.parse(line)
+          containers.push({
+            name: item.Name || 'unknown',
+            service: item.Service || '',
+            state: item.State || 'unknown',
+            status: item.Status || '',
+            ports: item.Ports || '',
+            image: item.Image || '',
+          })
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      return { success: true, containers }
+    } catch (error: any) {
+      // No containers is not an error
+      if (error.stderr?.includes('no containers') || error.stdout?.trim() === '') {
+        return { success: true, containers: [] }
+      }
+      return { success: false, containers: [], error: error.message || String(error) }
+    }
+  }
+
+  /**
+   * Resolve the configFiles path from `docker compose ls` into a context path
+   * that execInContextAsync can route correctly.
+   *
+   * `docker compose ls` returns Linux-native paths (e.g. /home/user/project/docker-compose.yml)
+   * even when queried from Windows. On Windows with WSL, we convert these to WSL UNC paths
+   * so execInContextAsync routes through WSL instead of cmd.exe.
+   */
+  private resolveConfigFilesContextPath(configFiles: string): string {
+    const env = getEnvironment()
+    const info = analyzePath(configFiles)
+
+    // Bare Linux path on Windows = WSL path, convert to UNC so exec routes through WSL
+    if (env.isWindows && info.type === 'unix' && info.isAbsolute && env.defaultWslDistro) {
+      const dir = configFiles.substring(0, configFiles.lastIndexOf('/'))
+      return toWslUncPath(dir, env.defaultWslDistro)
+    }
+
+    // Otherwise use the config file's directory as-is
+    return pathServiceDirname(configFiles)
+  }
+
+  /**
+   * Run a stack action using -p (project name).
+   * Routes the command through the correct execution context derived from the
+   * stack's configFiles path, not the app's project path.
+   */
+  private async runStackAction(stackName: string, configFiles: string, action: string, _projectPath: string): Promise<ComposeCommandResult> {
+    try {
+      const contextPath = this.resolveConfigFilesContextPath(configFiles)
+      const cmd = await this.buildComposeCommand(`-p "${stackName}" ${action}`, contextPath)
+      const output = await this.execInProjectContext(cmd, contextPath)
+      return { success: true, output }
+    } catch (error: any) {
+      return { success: false, error: error.message || String(error) }
+    }
+  }
+
+  async upStack(stackName: string, configFiles: string, projectPath: string): Promise<ComposeCommandResult> {
+    return this.runStackAction(stackName, configFiles, 'up -d', projectPath)
+  }
+
+  async stopStack(stackName: string, configFiles: string, projectPath: string): Promise<ComposeCommandResult> {
+    return this.runStackAction(stackName, configFiles, 'stop', projectPath)
+  }
+
+  async downStack(stackName: string, configFiles: string, projectPath: string): Promise<ComposeCommandResult> {
+    return this.runStackAction(stackName, configFiles, 'down', projectPath)
+  }
+
+  async restartStack(stackName: string, configFiles: string, projectPath: string): Promise<ComposeCommandResult> {
+    return this.runStackAction(stackName, configFiles, 'restart', projectPath)
   }
 }
 

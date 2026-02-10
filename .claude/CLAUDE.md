@@ -40,26 +40,74 @@ tail -n 100 .dev.log  # Last 100 lines
 
 The log file is wiped on each server start, so it won't grow indefinitely.
 
-## Windows Development Requirements
+## Windows Shell & Process Spawning
 
-### Always Use Git Bash
-This project assumes Git Bash is available on Windows. All terminal operations, including:
-- Regular terminals
-- Agent terminals (Claude, Codex, Gemini)
-- Background processes
+This app runs on Windows and spawns terminals/agents in two environments: **native Windows** (Git Bash) and **WSL** (Linux inside Windows). Picking the wrong shell for the environment silently breaks everything.
 
-**MUST** use Git Bash (`bash.exe`), never PowerShell or cmd.exe directly. This ensures:
-- Consistent PATH resolution for npm/pip installed tools
-- Unix-like command compatibility
-- Proper handling of CLI tools like `claude`, `codex`, `gemini`
+### The Golden Rule: Match the Shell to the Project's Filesystem
 
-When spawning processes on Windows, always use:
+| Project path looks like | Environment | Shell to use | CWD for node-pty |
+|---|---|---|---|
+| `C:\Users\...` | Native Windows | Git Bash (`getGitBashPath()`) | The path as-is |
+| `\\wsl.localhost\Ubuntu\home\...` | WSL | `wsl.exe -d <distro>` | The UNC path as-is |
+| `user@host:/path` | SSH remote | SSH via `sshManager` | `process.cwd()` fallback |
+
+### Git Bash for Native Windows Projects
+
+All **native Windows** terminal and agent operations use Git Bash, never PowerShell or cmd.exe:
 ```typescript
-shell = 'bash.exe'
-shellArgs = ['-c', command]
+// MUST use getGitBashPath() — bare 'bash.exe' resolves to WSL bash on systems with WSL installed
+shellExecutable = getGitBashPath() || 'bash.exe'
+shellArgs = ['-l', '-i', '-c', command]
 ```
 
-Do NOT attempt to spawn CLI tools directly on Windows - they won't be found in the system PATH.
+**Why `getGitBashPath()`?** On machines with WSL installed, `bash.exe` in the system PATH resolves to `C:\Windows\System32\bash.exe` which is the WSL launcher, NOT Git Bash. Always use the full path from `getGitBashPath()` (searches `Program Files\Git\bin\bash.exe`).
+
+### WSL for WSL Projects
+
+When the project CWD is a WSL UNC path (`\\wsl.localhost\...` or `\\wsl$\...`), spawn processes **inside WSL**:
+```typescript
+// Agent/command terminals
+shellExecutable = 'wsl.exe'
+shellArgs = ['-d', distro, '--cd', linuxPath, '--', 'bash', '-l', '-i', '-c', command]
+
+// Interactive terminals (no command)
+shellExecutable = 'wsl.exe'
+shellArgs = ['-d', distro, '--cd', linuxPath]
+```
+
+**Key WSL helpers** (in `electron/utils/path-service.ts`):
+- `isWslPath(path)` — returns true for WSL UNC paths
+- `parseWslPath(path)` — extracts `{ distro, linuxPath }` from UNC path
+- `getEnvironment().defaultWslDistro` — cached default distro name
+
+### Execution Context for Commands (git, CLI detection, etc.)
+
+`execInContextAsync()` in `main.ts` routes shell commands based on `getExecutionContext()`:
+
+| Context | How commands run |
+|---|---|
+| `'local-windows'` | `exec(command, { cwd: projectPath })` — runs in Windows cmd.exe |
+| `'wsl'` | `exec('wsl -d <distro> -- bash -c "cd <linuxPath> && <command>"')` |
+| `'ssh-remote'` | `sshManager.execViaProjectMaster(projectId, "cd <path> && <command>")` |
+| `'local-unix'` | `exec(command, { cwd: projectPath })` — runs in native Unix shell |
+
+**Exhaustive switches:** Several files use `const _exhaustive: never = context` to enforce that all contexts are handled. Adding a new context will cause TS errors everywhere it's missing — this is intentional.
+
+### File System Access for WSL Projects
+
+Windows can read/write WSL files natively through UNC paths (`\\wsl.localhost\Ubuntu\home\...`). This means:
+- `fs.existsSync()`, `fs.readFileSync()`, etc. work on WSL UNC paths
+- `fs.watch()` does **NOT** work on WSL UNC paths (EISDIR error)
+- For git watching on WSL projects, use **polling via `execInContextAsync()`** instead of `fs.watch()`
+
+### Common Mistakes to Avoid
+
+1. **Using bare `bash.exe`** — Resolves to WSL bash, not Git Bash. Always use `getGitBashPath()`.
+2. **Using Git Bash for WSL projects** — Git Bash has its own filesystem root and can't navigate WSL paths. Use `wsl.exe`.
+3. **Using `fs.watch()` on WSL UNC paths** — Fails silently or throws EISDIR. Poll with git commands instead.
+4. **Forgetting the `'wsl'` case in switches** — If you switch on `ExecutionContext`, handle all four values or the `never` check will fail.
+5. **Path translation overkill** — Don't convert between UNC and Linux paths for file I/O. Windows handles UNC paths natively. Only convert to Linux paths when passing to `wsl.exe` (which expects Linux-native paths).
 
 ## Agent Session Architecture (Event Flow & Persistence)
 
@@ -71,20 +119,23 @@ The codebase has two agent event delivery systems. **Only the PTY/Detector path 
 
 | Path | IPC Channel | Used? | Source |
 |------|-------------|-------|--------|
-| **PTY + Detector** | `detector:event` | **YES** | `pty-manager.ts` -> `StreamJsonDetector` -> renderer |
-| AgentProcessManager | `agent:stream-event` | NO | `agent-process-manager.ts` (unused for spawning) |
+| **PTY + Detector** | `detector:events-batch` | **YES** | `pty-manager.ts` -> `StreamJsonDetector` -> batched IPC -> renderer |
+| AgentProcessManager | `agent:stream-event` | NO | `agent-process-manager.ts` (created but `.spawn()` never called) |
 
-**Do NOT try to capture data from `window.electron.agent.onStreamEvent` in the renderer** -- it receives nothing for agent sessions. All agent events arrive via `window.electron.detector.onEvent`.
+**Do NOT try to capture data from `window.electron.agent.onStreamEvent` in the renderer** -- it receives nothing for agent sessions. All agent events arrive via `window.electron.detector.onEventBatch` (batched, 50ms window) with `onEvent` as fallback.
 
 ### Agent Spawn Flow
 
 ```
 electron/main.ts  ipcMain.handle('agent:spawn')
   -> ptyManager.createTerminal({ hidden: true, initialCommand: 'cat | claude -p ...' })
+     (for WSL projects, spawns via wsl.exe; for SSH, via sshManager.buildSSHCommandForAgent)
   -> PTY output flows through DetectorManager
   -> StreamJsonDetector parses NDJSON lines from Claude CLI
-  -> Emits DetectorEvent objects on 'detector:event' IPC channel
-  -> Renderer receives via window.electron.detector.onEvent()
+  -> Events batched in PtyManager (50ms window)
+  -> Flushed as single 'detector:events-batch' IPC message
+  -> Renderer receives via window.electron.detector.onEventBatch()
+  -> agent-stream-store processes batch in single Zustand set() call
 ```
 
 ### Session ID Lifecycle

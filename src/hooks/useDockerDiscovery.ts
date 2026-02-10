@@ -43,7 +43,7 @@ export function useDockerDiscovery({
 
       // Check Docker availability
       try {
-        const dockerResult = await window.electron!.docker.isAvailable()
+        const dockerResult = await window.electron!.docker.isAvailable(projectPath)
         console.log('[useDockerDiscovery] Docker available:', dockerResult.available)
 
         if (cancelled) return

@@ -4,6 +4,7 @@ import { AgentTerminalsSection } from './AgentTerminalsSection'
 import { ArchivedSessionsSheet } from './ArchivedSessionsSheet'
 import { ProjectSwitcher } from './ProjectSwitcher'
 import { ServicesSection } from '@/components/ServicesSection'
+import { DockerStacksSection } from './DockerStacksSection'
 import { PasswordDialog } from './PasswordDialog'
 import { useProjectStore } from '../stores/project-store'
 import { useTerminalStore } from '../stores/terminal-store'
@@ -234,6 +235,10 @@ export function Sidebar(props: SidebarProps) {
                 onStopServer={onStopServer}
                 onDeleteServer={onDeleteServer}
               />
+
+              {!activeProject.isSSHProject && (
+                <DockerStacksSection projectPath={activeProject.path} />
+              )}
             </>
           )}
           </div>
