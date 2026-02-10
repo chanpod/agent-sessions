@@ -37,6 +37,10 @@ function getToolSummary(toolName: string, toolInput: Record<string, unknown>): s
   }
 }
 
+// Shell operators that separate independent commands.
+// Mirrors the logic in permission-handler.cjs.
+const SHELL_OPERATORS = new Set(['&&', '||', '|', ';'])
+
 /**
  * Tokenize a shell command string into an array of tokens.
  * Mirrors the logic in permission-handler.cjs.
@@ -82,6 +86,38 @@ function tokenizeCommand(command: string): string[] {
   return tokens
 }
 
+interface SubCommand {
+  tokens: string[]
+  operator: string | null // operator that precedes this sub-command (null for the first)
+}
+
+/**
+ * Split a token array into sub-commands at shell operators (&&, ||, |, ;).
+ * Mirrors the logic in permission-handler.cjs.
+ */
+function splitSubCommands(tokens: string[]): SubCommand[] {
+  const subs: SubCommand[] = []
+  let current: string[] = []
+  let nextOperator: string | null = null
+
+  for (const tok of tokens) {
+    if (SHELL_OPERATORS.has(tok)) {
+      if (current.length) subs.push({ tokens: current, operator: nextOperator })
+      nextOperator = tok
+      current = []
+    } else if (tok.endsWith(';') && tok.length > 1) {
+      current.push(tok.slice(0, -1))
+      if (current.length) subs.push({ tokens: current, operator: nextOperator })
+      nextOperator = ';'
+      current = []
+    } else {
+      current.push(tok)
+    }
+  }
+  if (current.length) subs.push({ tokens: current, operator: nextOperator })
+  return subs
+}
+
 /**
  * Interactive token selector for building bash rules.
  * Tokens form a contiguous prefix — click a token to set the boundary.
@@ -96,22 +132,35 @@ function BashTokenSelector({
   command: string
   onRuleChange: (selectedTokens: string[] | null) => void
 }) {
+  // Parse into flat tokens and structured sub-commands
   const tokens = useMemo(() => tokenizeCommand(command), [command])
-  // selectedCount = number of tokens included from the start (prefix length)
-  const [selectedCount, setSelectedCount] = useState<number>(tokens.length)
+  const subs = useMemo(() => splitSubCommands(tokens), [tokens])
+  const isCompound = subs.length > 1
+
+  // Build a flat list of non-operator tokens (operators are excluded from rules)
+  const flatTokens = useMemo(() => {
+    const flat: string[] = []
+    for (const sub of subs) {
+      for (const tok of sub.tokens) flat.push(tok)
+    }
+    return flat
+  }, [subs])
+
+  // selectedCount = number of non-operator tokens included from the start (prefix length)
+  const [selectedCount, setSelectedCount] = useState<number>(flatTokens.length)
   const [wildcard, setWildcard] = useState(false)
 
   // Reset when command changes
   useEffect(() => {
-    setSelectedCount(tokens.length)
+    setSelectedCount(flatTokens.length)
     setWildcard(false)
-    onRuleChange(tokens.length > 0 ? tokens : null)
+    onRuleChange(flatTokens.length > 0 ? flatTokens : null)
   }, [command]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const emitRule = (count: number, wc: boolean) => {
     if (count <= 0) { onRuleChange(null); return }
-    const prefix = tokens.slice(0, count)
-    onRuleChange(wc && count < tokens.length ? [...prefix, '*'] : prefix)
+    const prefix = flatTokens.slice(0, count)
+    onRuleChange(wc && count < flatTokens.length ? [...prefix, '*'] : prefix)
   }
 
   const setPrefix = (count: number) => {
@@ -133,9 +182,44 @@ function BashTokenSelector({
     }
   }
 
-  const selectedTokens = tokens.slice(0, selectedCount)
-  const allSelected = selectedCount === tokens.length
+  const selectedTokens = flatTokens.slice(0, selectedCount)
+  const allSelected = selectedCount === flatTokens.length
   const showWildcard = !allSelected
+
+  // Render tokens grouped by sub-command with operator dividers
+  let flatIndex = 0
+  const renderGroups = subs.map((sub, si) => {
+    const groupStart = flatIndex
+    const groupTokens = sub.tokens.map((token, ti) => {
+      const fi = groupStart + ti
+      return (
+        <button
+          key={fi}
+          onClick={() => handleTokenClick(fi)}
+          className={cn(
+            'rounded-md px-2 py-1 text-xs font-mono transition-all border',
+            'hover:scale-105 active:scale-95',
+            fi < selectedCount
+              ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+              : 'bg-zinc-800/50 border-zinc-700/30 text-zinc-500 line-through'
+          )}
+        >
+          {token}
+        </button>
+      )
+    })
+    flatIndex += sub.tokens.length
+    return (
+      <div key={si} className="flex flex-wrap items-center gap-1.5">
+        {sub.operator && (
+          <span className="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">
+            {sub.operator}
+          </span>
+        )}
+        {groupTokens}
+      </div>
+    )
+  })
 
   return (
     <div className="mt-3 space-y-2">
@@ -162,41 +246,43 @@ function BashTokenSelector({
           {!allSelected && (
             <button
               className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-              onClick={() => { setWildcard(false); setPrefix(tokens.length) }}
+              onClick={() => { setWildcard(false); setPrefix(flatTokens.length) }}
             >
               Select all
             </button>
           )}
         </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {tokens.map((token, i) => (
-          <button
-            key={i}
-            onClick={() => handleTokenClick(i)}
-            className={cn(
-              'rounded-md px-2 py-1 text-xs font-mono transition-all border',
-              'hover:scale-105 active:scale-95',
-              i < selectedCount
-                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                : 'bg-zinc-800/50 border-zinc-700/30 text-zinc-500 line-through'
-            )}
-          >
-            {token}
-          </button>
-        ))}
-        {showWildcard && wildcard && (
-          <span className="rounded-md px-2 py-1 text-xs font-mono bg-amber-500/20 border border-amber-500/40 text-amber-300">
-            *
-          </span>
-        )}
-      </div>
+      {isCompound ? (
+        <div className="space-y-1.5">
+          {renderGroups}
+          {showWildcard && wildcard && (
+            <span className="rounded-md px-2 py-1 text-xs font-mono bg-amber-500/20 border border-amber-500/40 text-amber-300">
+              *
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {renderGroups}
+          {showWildcard && wildcard && (
+            <span className="rounded-md px-2 py-1 text-xs font-mono bg-amber-500/20 border border-amber-500/40 text-amber-300">
+              *
+            </span>
+          )}
+        </div>
+      )}
       <p className="text-xs text-zinc-500 font-mono">
         Rule: <span className="text-emerald-400">{selectedTokens.join(' ')}{showWildcard && wildcard ? ' *' : ''}</span>
         {allSelected && <span className="text-zinc-600 ml-1">(exact command)</span>}
         {!allSelected && wildcard && <span className="text-zinc-600 ml-1">(matches prefix + any additional args)</span>}
         {!allSelected && !wildcard && <span className="text-zinc-600 ml-1">(matches only this, extra args will still prompt)</span>}
       </p>
+      {isCompound && (
+        <p className="text-[11px] text-amber-400/70">
+          Compound command — each sub-command must match a rule independently.
+        </p>
+      )}
     </div>
   )
 }
@@ -225,6 +311,12 @@ export function PermissionModal() {
     : 0
 
   const isBash = request?.toolName === 'Bash'
+  const subCommands = useMemo(() => {
+    if (!isBash || !request) return []
+    const cmd = String(request.toolInput.command ?? '')
+    if (!cmd) return []
+    return splitSubCommands(tokenizeCommand(cmd))
+  }, [isBash, request])
 
   const respond = useCallback(
     (decision: 'allow' | 'deny', alwaysAllow?: boolean, rule?: string[]) => {
@@ -281,14 +373,37 @@ export function PermissionModal() {
 
         {/* Content */}
         <div className="px-5 py-4">
-          <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-3">
-            <pre className={cn(
-              'overflow-x-auto whitespace-pre-wrap break-all text-sm',
-              request.toolName === 'Bash' ? 'font-mono text-emerald-300' : 'text-zinc-300'
-            )}>
-              {summary}
-            </pre>
-          </div>
+          {isBash && subCommands.length > 1 ? (
+            <div className="space-y-1.5">
+              {subCommands.map((sub, i) => (
+                <div key={i}>
+                  {sub.operator && (
+                    <div className="flex items-center gap-2 py-1">
+                      <div className="h-px flex-1 bg-zinc-700/50" />
+                      <span className="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        {sub.operator}
+                      </span>
+                      <div className="h-px flex-1 bg-zinc-700/50" />
+                    </div>
+                  )}
+                  <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-3">
+                    <pre className="overflow-x-auto whitespace-pre-wrap break-all text-sm font-mono text-emerald-300">
+                      {sub.tokens.join(' ')}
+                    </pre>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-3">
+              <pre className={cn(
+                'overflow-x-auto whitespace-pre-wrap break-all text-sm',
+                request.toolName === 'Bash' ? 'font-mono text-emerald-300' : 'text-zinc-300'
+              )}>
+                {summary}
+              </pre>
+            </div>
+          )}
 
           {/* Bash token selector */}
           {isBash && summary && (
