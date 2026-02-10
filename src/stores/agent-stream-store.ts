@@ -319,7 +319,15 @@ function applyAgentEvent(
     case 'agent-message-start': {
       const data = event.data as AgentMessageStartData
 
-      if (data.messageId && terminalState.messages.some((m) => m.id === data.messageId)) {
+      // Dedup: skip if this message ID is already completed OR currently streaming.
+      // The CLI emits both streaming events (message_start → content_block_* → message_stop)
+      // and a complete print-mode 'assistant' event for the same message. Without checking
+      // currentMessage, the duplicate message-start overwrites the in-progress streaming
+      // message with an empty one, destroying all accumulated content.
+      if (data.messageId && (
+        terminalState.messages.some((m) => m.id === data.messageId) ||
+        terminalState.currentMessage?.id === data.messageId
+      )) {
         newState = terminalState
         break
       }

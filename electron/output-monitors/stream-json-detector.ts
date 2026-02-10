@@ -217,8 +217,10 @@ export class StreamJsonDetector implements OutputDetector {
               messageId: state.messageId,
               blockIndex: state.currentBlockIndex,
               blockType: state.currentBlockType,
-              blockId: event.content_block.id,
-              toolName: event.content_block.name,
+              // Use 'toolId' and 'name' to match AgentToolStartData interface
+              // (print-mode 'assistant' path already uses these field names)
+              toolId: event.content_block.id,
+              name: event.content_block.name,
               // Include initial content if present
               text: event.content_block.text,
               thinking: event.content_block.thinking,
@@ -361,8 +363,17 @@ export class StreamJsonDetector implements OutputDetector {
 
         if (assistantEvent.message) {
           const msgId = assistantEvent.message.id
-          if (msgId && state.processedMessageIds.has(msgId)) {
-            // Already processed via the streaming path — skip to avoid duplicates
+
+          // Skip if this message was already fully processed via streaming, OR if
+          // streaming is currently in progress for this message. The CLI emits both
+          // streaming events and a complete 'assistant' event. When the 'assistant'
+          // event arrives mid-stream (between message_delta and message_stop), its
+          // state reset (messageId=null, stopReason=null, etc.) corrupts the
+          // streaming state, causing message_stop to emit stopReason=null.
+          if (msgId && (
+            state.processedMessageIds.has(msgId) ||
+            state.messageId === msgId
+          )) {
             break
           }
           const msg = assistantEvent.message

@@ -418,6 +418,44 @@ const KNOWN_TOOLS = [
   'Task',
 ] as const
 
+/** Preset groups of commonly-safe bash rules */
+const BASH_PRESETS: { label: string; description: string; rules: string[][] }[] = [
+  {
+    label: 'Read-only',
+    description: 'cat, ls, head, tail, wc, find, grep, file, which, echo, pwd',
+    rules: [
+      ['cat', '*'], ['ls', '*'], ['head', '*'], ['tail', '*'], ['wc', '*'],
+      ['find', '*'], ['grep', '*'], ['file', '*'], ['which', '*'],
+      ['echo', '*'], ['pwd'],
+    ],
+  },
+  {
+    label: 'Git (safe)',
+    description: 'status, diff, log, branch, show, stash list, remote -v',
+    rules: [
+      ['git', 'status', '*'], ['git', 'diff', '*'], ['git', 'log', '*'],
+      ['git', 'branch', '*'], ['git', 'show', '*'], ['git', 'stash', 'list'],
+      ['git', 'remote', '-v'],
+    ],
+  },
+  {
+    label: 'Git (write)',
+    description: 'add, commit, tag, stash, pull, fetch, checkout, switch',
+    rules: [
+      ['git', 'add', '*'], ['git', 'commit', '*'], ['git', 'tag', '*'],
+      ['git', 'stash', '*'], ['git', 'pull', '*'], ['git', 'fetch', '*'],
+      ['git', 'checkout', '*'], ['git', 'switch', '*'],
+    ],
+  },
+  {
+    label: 'Node.js',
+    description: 'npm, npx, pnpm, yarn, node',
+    rules: [
+      ['npm', '*'], ['npx', '*'], ['pnpm', '*'], ['yarn', '*'], ['node', '*'],
+    ],
+  },
+]
+
 function ToolIcon({ tool }: { tool: string }) {
   if (tool === 'Bash') return <Terminal className="w-3.5 h-3.5" />
   if (['Edit', 'Write', 'NotebookEdit'].includes(tool)) return <FileEdit className="w-3.5 h-3.5" />
@@ -512,6 +550,26 @@ function PermissionsTabContent() {
       }
     } catch (e: any) {
       setError(e.message || 'Failed to add bash rule')
+    }
+  }
+
+  const ruleKey = (r: string[]) => JSON.stringify(r)
+  const existingKeys = new Set(bashRules.map(ruleKey))
+
+  const handleAddPreset = async (preset: typeof BASH_PRESETS[number]) => {
+    if (!projectPath) return
+    const newRules = preset.rules.filter((r) => !existingKeys.has(ruleKey(r)))
+    if (newRules.length === 0) return
+    try {
+      const config = await window.electron?.permission.getAllowlistConfig(projectPath)
+      if (config) {
+        const merged = [...(config.bashRules || []), ...newRules]
+        const configPath = projectPath.replace(/\\/g, '/') + '/.claude/permission-allowlist.json'
+        await window.electron?.fs.writeFile(configPath, JSON.stringify({ tools: config.tools, bashRules: merged }, null, 2))
+        setBashRules(merged)
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to add preset rules')
     }
   }
 
@@ -689,6 +747,38 @@ function PermissionsTabContent() {
           <p className="text-[11px] text-amber-300/50 leading-relaxed">
             Bash rules auto-allow specific commands. A trailing <code className="text-amber-300/70 bg-amber-500/10 px-1 rounded">*</code> matches any additional arguments.
           </p>
+        </div>
+
+        {/* Quick presets */}
+        <div className="mb-3">
+          <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/40 mb-2">
+            Quick Presets
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {BASH_PRESETS.map((preset) => {
+              const newCount = preset.rules.filter((r) => !existingKeys.has(ruleKey(r))).length
+              const allAdded = newCount === 0
+              return (
+                <button
+                  key={preset.label}
+                  onClick={() => handleAddPreset(preset)}
+                  disabled={allAdded}
+                  title={allAdded ? 'All rules already added' : preset.description}
+                  className={cn(
+                    'px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all duration-150',
+                    allAdded
+                      ? 'border-white/[0.04] bg-white/[0.01] text-muted-foreground/25 cursor-default'
+                      : 'border-violet-500/20 bg-violet-500/[0.06] text-violet-300/80 hover:bg-violet-500/15 hover:text-violet-300 hover:border-violet-500/30'
+                  )}
+                >
+                  {preset.label}
+                  {!allAdded && (
+                    <span className="ml-1.5 text-[9px] opacity-60">+{newCount}</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         {bashRules.length === 0 && !addingBashRule && (

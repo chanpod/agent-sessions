@@ -719,11 +719,17 @@ function App() {
     const handleTabCycle = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || e.ctrlKey || e.altKey || e.metaKey) return
 
-      // Don't intercept Tab in regular inputs or contenteditable (e.g. rename fields)
-      // DO intercept from textareas — that's the agent input where you'll be pressing Tab
-      const tag = (e.target as HTMLElement)?.tagName
+      // Don't intercept Tab in contexts where native Tab behavior is needed
+      const target = e.target as HTMLElement
+      const tag = target?.tagName
       if (tag === 'INPUT') return
-      if ((e.target as HTMLElement)?.isContentEditable) return
+      if (target?.isContentEditable) return
+
+      // Don't intercept Tab inside dialogs (need Tab to navigate between buttons)
+      if (target?.closest('[role="dialog"], [role="alertdialog"], dialog')) return
+
+      // Don't intercept Tab inside terminals (need Tab for shell completion)
+      if (target?.closest('.xterm')) return
 
       if (!activeProjectId) return
 
