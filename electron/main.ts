@@ -1106,10 +1106,10 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 })
 
 // Agent Process handlers (PTY-based for true streaming support)
-ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[], projectId?: string }) => {
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[], projectId?: string, contextContent?: string, skipPermissions?: boolean }) => {
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
-  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools, projectId } = options
+  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools, projectId, contextContent, skipPermissions } = options
 
   // Build the CLI command based on agent type
   let command: string
@@ -1138,6 +1138,17 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
       }
       if (allowedTools && allowedTools.length > 0) {
         claudeCmd += ' --allowedTools ' + allowedTools.map(t => `"${t}"`).join(' ')
+      }
+      if (contextContent) {
+        const escapedContext = contextContent
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\$/g, '\\$')
+          .replace(/`/g, '\\`')
+        claudeCmd += ` --append-system-prompt "${escapedContext}"`
+      }
+      if (skipPermissions) {
+        claudeCmd += ' --dangerously-skip-permissions'
       }
       command = `stty -icanon && cat | ${claudeCmd}`
       break

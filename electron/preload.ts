@@ -400,7 +400,7 @@ const electronAPI = {
     injectContext: (terminalId: string, context: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('agent:inject-context', terminalId, context),
     // Agent process API
-    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[] }) =>
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[]; contextContent?: string; skipPermissions?: boolean }) =>
       ipcRenderer.invoke('agent:spawn', options),
     sendMessage: (id: string, message: Record<string, unknown>) =>
       ipcRenderer.invoke('agent:send-message', id, message),

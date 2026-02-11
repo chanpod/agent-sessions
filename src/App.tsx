@@ -777,13 +777,21 @@ function App() {
     projectId: string,
     agentType: 'claude' | 'codex' | 'gemini',
     cwd: string,
-    _contextContent?: string | null,
-    model?: string | null
+    contextContent?: string | null,
+    model?: string | null,
+    skipPermissions?: boolean
   ): Promise<string | null> => {
     if (!window.electron?.agent?.spawn) return null
 
     try {
-      const result = await window.electron.agent.spawn({ agentType, cwd, projectId, ...(model ? { model } : {}) })
+      const result = await window.electron.agent.spawn({
+        agentType,
+        cwd,
+        projectId,
+        ...(model ? { model } : {}),
+        ...(contextContent ? { contextContent } : {}),
+        ...(skipPermissions ? { skipPermissions } : {}),
+      })
       if (result.success && result.process) {
         // Track the agent process
         setAgentProcesses(prev => {
@@ -899,7 +907,8 @@ function App() {
         agentId as 'claude' | 'codex' | 'gemini',
         agentCwd,
         combinedContext,
-        model
+        model,
+        skipPermissions
       )
 
       if (processId) {
