@@ -9,6 +9,7 @@ import { ServerDetector } from './output-monitors/server-detector'
 import { StreamJsonDetector } from './output-monitors/stream-json-detector'
 import { CodexStreamDetector } from './output-monitors/codex-stream-detector'
 import { getGitBashPath, isWslPath, parseWslPath, getEnvironment } from './utils/path-service.js'
+import { logDetectorEvents } from './utils/event-logger.js'
 
 const execAsync = promisify(exec)
 
@@ -139,6 +140,8 @@ export class PtyManager {
   private flushDetectorEvents(): void {
     this.detectorFlushTimer = null
     if (this.pendingDetectorEvents.length > 0 && !this.window.isDestroyed()) {
+      // Log full event data to file before sending to renderer
+      logDetectorEvents(this.pendingDetectorEvents)
       this.window.webContents.send('detector:events-batch', this.pendingDetectorEvents)
       this.pendingDetectorEvents = []
     }

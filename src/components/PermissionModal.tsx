@@ -237,6 +237,23 @@ export function PermissionModal() {
     [request, removeRequest]
   )
 
+  // When the permission modal is visible, blur any focused input/textarea so
+  // keyboard shortcuts (A/D) work immediately without clicking the modal first.
+  // Uses a focusin listener to catch delayed auto-focus (e.g. AgentInputArea's
+  // 50ms setTimeout) that might fire after the initial blur.
+  useEffect(() => {
+    if (!request) return
+    const blurIfInput = () => {
+      const el = document.activeElement
+      if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+        el.blur()
+      }
+    }
+    blurIfInput()
+    document.addEventListener('focusin', blurIfInput)
+    return () => document.removeEventListener('focusin', blurIfInput)
+  }, [request?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!request) return

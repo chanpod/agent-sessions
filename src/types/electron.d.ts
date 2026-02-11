@@ -387,6 +387,8 @@ export interface ElectronAPI {
     openLogsFolder: () => Promise<void>
     getLogPath: () => Promise<string>
     reportRendererError: (errorData: { message: string; stack?: string; componentStack?: string }) => Promise<void>
+    getEventLogPath: () => Promise<string>
+    openEventLogFolder: () => Promise<void>
   }
 }
 

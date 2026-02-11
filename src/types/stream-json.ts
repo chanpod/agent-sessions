@@ -469,6 +469,18 @@ export interface DebugEventEntry {
   isActiveAfter: boolean
   /** Current processExited value AFTER this event was processed */
   processExitedAfter: boolean
+  /** The terminal/process ID this event belongs to */
+  terminalId?: string
+  /** Full event data payload for detailed inspection */
+  rawData?: unknown
+  /** Additional state flags captured at event time */
+  stateSnapshot?: {
+    isWaitingForResponse: boolean
+    isWaitingForQuestion: boolean
+    currentMessageId: string | null
+    messageCount: number
+    currentBlockCount: number
+  }
 }
 
 /**

@@ -236,9 +236,9 @@ function updateBlock(
 }
 
 /** Max debug events kept per terminal to avoid memory bloat */
-const DEBUG_EVENT_CAP = 200
+const DEBUG_EVENT_CAP = 1000
 
-/** Delta event types that fire very frequently during streaming - skip debug logging for these */
+/** Delta event types that fire very frequently during streaming */
 const DELTA_EVENT_TYPES = new Set(['agent-text-delta', 'agent-thinking-delta', 'agent-tool-input-delta'])
 
 /** Monotonic counter for debug event ordering */
@@ -255,28 +255,32 @@ function summarizeEvent(type: string, data: unknown): string {
     case 'agent-message-start':
       return `msgId=${d.messageId} model=${d.model}`
     case 'agent-message-end':
-      return `stopReason=${d.stopReason}`
+      return `stopReason=${d.stopReason} usage={in:${(d.usage as Record<string, unknown>)?.inputTokens ?? '?'},out:${(d.usage as Record<string, unknown>)?.outputTokens ?? '?'}}`
     case 'agent-tool-start':
-      return `tool=${d.name} id=${d.toolId}`
+      return `tool=${d.name} id=${d.toolId} blk=${d.blockIndex}`
     case 'agent-block-end':
     case 'agent-tool-end':
       return `blockIndex=${d.blockIndex}`
     case 'agent-tool-result':
-      return `toolId=${d.toolId} isError=${d.isError}`
+      return `toolId=${d.toolId} isError=${d.isError} len=${(d.result as string)?.length ?? 0}`
     case 'agent-error':
       return `${d.errorType}: ${d.message}`
     case 'agent-process-exit':
       return `exitCode=${d.exitCode}`
     case 'agent-session-init':
       return `sessionId=${d.sessionId}`
+    case 'agent-session-result':
+      return `subtype=${d.subtype} cost=$${d.totalCostUsd ?? '?'} duration=${d.durationMs ?? '?'}ms`
+    case 'agent-system-event':
+      return `subtype=${d.subtype}`
     case 'agent-text-delta':
-      return `blockIndex=${d.blockIndex} len=${(d.text as string)?.length ?? 0}`
+      return `blk=${d.blockIndex} +${(d.text as string)?.length ?? 0}ch`
     case 'agent-thinking-delta':
-      return `blockIndex=${d.blockIndex} len=${(d.text as string)?.length ?? 0}`
+      return `blk=${d.blockIndex} +${(d.text as string)?.length ?? 0}ch`
     case 'agent-tool-input-delta':
-      return `blockIndex=${d.blockIndex}`
+      return `blk=${d.blockIndex} +${(d.partialJson as string)?.length ?? 0}ch`
     default:
-      return JSON.stringify(d).substring(0, 80)
+      return JSON.stringify(d).substring(0, 120)
   }
 }
 
@@ -290,7 +294,20 @@ function appendDebugEvent(
   data: unknown,
   isActiveAfter: boolean,
   processExitedAfter: boolean,
+  terminalId?: string,
+  termState?: TerminalAgentState,
 ): DebugEventEntry[] {
+  // For delta events, store a lightweight data snapshot (no full text/json)
+  const isDelta = DELTA_EVENT_TYPES.has(type)
+  let rawData: unknown
+  if (isDelta) {
+    // Keep structure info but skip the actual content to avoid memory bloat
+    const d = data as Record<string, unknown>
+    rawData = { blockIndex: d.blockIndex, chunkLength: ((d.text ?? d.partialJson ?? d.thinking) as string)?.length ?? 0 }
+  } else {
+    rawData = data
+  }
+
   const entry: DebugEventEntry = {
     index: debugEventCounter++,
     type,
@@ -298,6 +315,15 @@ function appendDebugEvent(
     summary: summarizeEvent(type, data),
     isActiveAfter,
     processExitedAfter,
+    terminalId,
+    rawData,
+    stateSnapshot: termState ? {
+      isWaitingForResponse: termState.isWaitingForResponse,
+      isWaitingForQuestion: termState.isWaitingForQuestion,
+      currentMessageId: termState.currentMessage?.id ?? null,
+      messageCount: termState.messages.length,
+      currentBlockCount: termState.currentMessage?.blocks.length ?? 0,
+    } : undefined,
   }
   const prev = existing ?? []
   const next = [...prev, entry]
@@ -312,6 +338,7 @@ function appendDebugEvent(
 function applyAgentEvent(
   terminalState: TerminalAgentState,
   event: AgentStreamEvent,
+  terminalId?: string,
 ): TerminalAgentState {
   let newState: TerminalAgentState
 
@@ -665,18 +692,18 @@ function applyAgentEvent(
       newState = terminalState
   }
 
-  // Skip debug event tracking for high-frequency delta events to reduce overhead
-  if (!DELTA_EVENT_TYPES.has(event.type)) {
-    newState = {
-      ...newState,
-      debugEvents: appendDebugEvent(
-        newState.debugEvents,
-        event.type,
-        event.data,
-        newState.isActive,
-        newState.processExited,
-      ),
-    }
+  // Always track debug events (including deltas) — delta entries are lightweight
+  newState = {
+    ...newState,
+    debugEvents: appendDebugEvent(
+      newState.debugEvents,
+      event.type,
+      event.data,
+      newState.isActive,
+      newState.processExited,
+      terminalId,
+      newState,
+    ),
   }
 
   return newState
@@ -771,7 +798,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         set((state) => {
           const terminals = new Map(state.terminals)
           const terminalState = getOrCreateTerminalState(terminals, terminalId)
-          const newState = applyAgentEvent(terminalState, event)
+          const newState = applyAgentEvent(terminalState, event, terminalId)
           terminals.set(terminalId, newState)
 
           // Update latestContextUsage on message start/end
@@ -986,7 +1013,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           const terminals = new Map(state.terminals)
           for (const { terminalId: tid, event } of allEvents) {
             const terminalState = getOrCreateTerminalState(terminals, tid)
-            terminals.set(tid, applyAgentEvent(terminalState, event))
+            terminals.set(tid, applyAgentEvent(terminalState, event, tid))
           }
           return { terminals }
         })
@@ -1345,7 +1372,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 // Apply agent events
                 for (const { terminalId, event } of agentEvents) {
                   const terminalState = getOrCreateTerminalState(terminals, terminalId)
-                  terminals.set(terminalId, applyAgentEvent(terminalState, event))
+                  terminals.set(terminalId, applyAgentEvent(terminalState, event, terminalId))
 
                   // Track context usage from message start/end events
                   if (event.type === 'agent-message-start' || event.type === 'agent-message-end') {

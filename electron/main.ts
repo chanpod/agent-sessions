@@ -44,6 +44,7 @@ import { dockerComposeHandler } from './services/docker/docker-compose-handler.j
 import { dockerCli } from './services/docker/docker-cli.js'
 import { ptyServiceHandler, setPtyManager } from './services/pty/pty-service-handler.js'
 import { logger, getLogPath } from './utils/logger.js'
+import { initEventLogger, getEventLogPath, closeEventLogger } from './utils/event-logger.js'
 
 // Global crash handlers - must be set up early
 process.on('uncaughtException', (error) => {
@@ -1452,6 +1453,17 @@ ipcMain.handle('log:report-renderer-error', (_event, errorData: { message: strin
   logger.error('Renderer', `${errorData.message}${errorData.stack ? '\n' + errorData.stack : ''}${errorData.componentStack ? '\nComponent Stack:\n' + errorData.componentStack : ''}`)
 })
 
+// Event log IPC handlers
+ipcMain.handle('log:get-event-log-path', () => {
+  return getEventLogPath()
+})
+
+ipcMain.handle('log:open-event-log-folder', async () => {
+  const logPath = getEventLogPath()
+  const logDir = path.dirname(logPath)
+  await shell.openPath(logDir)
+})
+
 // ============================================================================
 // Service Manager IPC Handlers
 // ============================================================================
@@ -1715,12 +1727,14 @@ ipcMain.handle('skill:toggle', async (_event, pluginId: string, enabled: boolean
 })
 
 app.whenReady().then(() => {
+  initEventLogger()
   createMenu()
   createWindow()
   setupAutoUpdater()
 })
 
 app.on('window-all-closed', () => {
+  closeEventLogger()
   if (process.platform !== 'darwin') {
     app.quit()
   }

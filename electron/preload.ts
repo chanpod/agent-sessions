@@ -511,6 +511,8 @@ const electronAPI = {
     getLogPath: () => ipcRenderer.invoke('log:get-path') as Promise<string>,
     reportRendererError: (errorData: { message: string; stack?: string; componentStack?: string }) =>
       ipcRenderer.invoke('log:report-renderer-error', errorData),
+    getEventLogPath: () => ipcRenderer.invoke('log:get-event-log-path') as Promise<string>,
+    openEventLogFolder: () => ipcRenderer.invoke('log:open-event-log-folder'),
   },
 }
 
