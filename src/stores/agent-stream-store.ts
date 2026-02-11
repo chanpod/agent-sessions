@@ -599,6 +599,13 @@ function applyAgentEvent(
           }
         }
       }
+
+      // Clear isWaitingForQuestion if an AskUserQuestion tool result arrives with an error.
+      // This happens when the permission hook denies the tool — the question card won't be
+      // interactive, so the flag would stay stuck forever since handleAnswerQuestion never fires.
+      if (data.isError && newState.isWaitingForQuestion && matchingToolBlock?.toolName === 'AskUserQuestion') {
+        newState = { ...newState, isWaitingForQuestion: false }
+      }
       break
     }
 
@@ -633,11 +640,19 @@ function applyAgentEvent(
         completedAt: Date.now(),
       }
 
+      // If the agent ends the turn (end_turn), clear isWaitingForQuestion.
+      // This handles the case where AskUserQuestion was attempted but failed/errored,
+      // and the agent gave up and ended its turn without successfully asking.
+      const clearQuestion = !stillActive && terminalState.isWaitingForQuestion
+        ? { isWaitingForQuestion: false as const }
+        : {}
+
       newState = {
         ...terminalState,
         currentMessage: null,
         messages: [...terminalState.messages, completedMessage],
         isActive: stillActive,
+        ...clearQuestion,
       }
       break
     }
@@ -1414,6 +1429,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                         currentMessage: null,
                         isActive: false,
                         isWaitingForResponse: false,
+                        isWaitingForQuestion: false,
                         processExited: true,
                         exitCode,
                       }
@@ -1421,6 +1437,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                         ...termState,
                         isActive: false,
                         isWaitingForResponse: false,
+                        isWaitingForQuestion: false,
                         processExited: true,
                         exitCode,
                       }
@@ -1571,6 +1588,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                       currentMessage: null,
                       isActive: false,
                       isWaitingForResponse: false,
+                      isWaitingForQuestion: false,
                       processExited: true,
                       exitCode,
                     }
@@ -1578,6 +1596,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                       ...termState,
                       isActive: false,
                       isWaitingForResponse: false,
+                      isWaitingForQuestion: false,
                       processExited: true,
                       exitCode,
                     }

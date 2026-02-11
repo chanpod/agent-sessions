@@ -17,6 +17,8 @@ vi.mock('../terminal-store', () => ({
   useTerminalStore: {
     getState: () => ({
       updateConfigSessionId: vi.fn(),
+      sessions: [],
+      activeAgentSessionId: null,
     }),
   },
 }))
@@ -334,6 +336,107 @@ describe('agent-stream-store persistence', () => {
     expect(persisted!.messages).toHaveLength(4)
     expect(persisted!.messages.map((m) => m.id)).toEqual(['msg_1', 'msg_2', 'msg_3', 'msg_4'])
     expect(persisted!.userMessages).toHaveLength(2)
+  })
+
+  it('clears isWaitingForQuestion when AskUserQuestion tool result is an error', () => {
+    const terminalId = 'term-q-error'
+
+    // Simulate: message starts, AskUserQuestion tool starts (sets isWaitingForQuestion),
+    // then tool result arrives with isError: true (permission denied)
+    const store = useAgentStreamStore.getState()
+
+    // 1. Message starts
+    store.processEvent(terminalId, {
+      type: 'agent-message-start',
+      data: { messageId: 'msg_q1', model: 'claude-test', usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    })
+
+    let state = store.getTerminalState(terminalId)!
+    expect(state.currentMessage?.id).toBe('msg_q1')
+    expect(state.isWaitingForQuestion).toBe(false)
+
+    // 2. AskUserQuestion tool starts → sets isWaitingForQuestion: true
+    store.processEvent(terminalId, {
+      type: 'agent-tool-start',
+      data: { toolId: 'toolu_ask1', name: 'AskUserQuestion', blockIndex: 0 },
+    })
+
+    state = store.getTerminalState(terminalId)!
+    expect(state.isWaitingForQuestion).toBe(true)
+    expect(state.currentMessage!.blocks).toHaveLength(1)
+
+    // 3. Tool result arrives with error (permission hook denied)
+    store.processEvent(terminalId, {
+      type: 'agent-tool-result',
+      data: { toolId: 'toolu_ask1', result: 'Answer questions?', isError: true },
+    })
+
+    state = store.getTerminalState(terminalId)!
+    expect(state.isWaitingForQuestion).toBe(false)
+  })
+
+  it('clears isWaitingForQuestion on end_turn when agent gives up after question errors', () => {
+    const terminalId = 'term-q-end'
+    const store = useAgentStreamStore.getState()
+
+    // 1. Message starts
+    store.processEvent(terminalId, {
+      type: 'agent-message-start',
+      data: { messageId: 'msg_q2', model: 'claude-test', usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    })
+
+    // 2. AskUserQuestion tool starts
+    store.processEvent(terminalId, {
+      type: 'agent-tool-start',
+      data: { toolId: 'toolu_ask2', name: 'AskUserQuestion', blockIndex: 0 },
+    })
+
+    // 3. Tool block ends
+    store.processEvent(terminalId, {
+      type: 'agent-tool-end',
+      data: { blockIndex: 0 },
+    })
+
+    let state = store.getTerminalState(terminalId)!
+    expect(state.isWaitingForQuestion).toBe(true)
+
+    // 4. Message ends with end_turn (agent gave up asking)
+    store.processEvent(terminalId, {
+      type: 'agent-message-end',
+      data: { stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    })
+
+    state = store.getTerminalState(terminalId)!
+    expect(state.isWaitingForQuestion).toBe(false)
+    expect(state.isActive).toBe(false)
+  })
+
+  it('preserves isWaitingForQuestion on tool_use stop (agent continues with more tools)', () => {
+    const terminalId = 'term-q-tooluse'
+    const store = useAgentStreamStore.getState()
+
+    // 1. Message starts
+    store.processEvent(terminalId, {
+      type: 'agent-message-start',
+      data: { messageId: 'msg_q3', model: 'claude-test', usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    })
+
+    // 2. AskUserQuestion tool starts
+    store.processEvent(terminalId, {
+      type: 'agent-tool-start',
+      data: { toolId: 'toolu_ask3', name: 'AskUserQuestion', blockIndex: 0 },
+    })
+
+    // 3. Message ends with tool_use stop (still active, waiting for tool result)
+    store.processEvent(terminalId, {
+      type: 'agent-message-end',
+      data: { stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    })
+
+    const state = store.getTerminalState(terminalId)!
+    // Should preserve isWaitingForQuestion because the agent is still active (tool_use)
+    expect(state.isWaitingForQuestion).toBe(true)
+    expect(state.isActive).toBe(true)
   })
 
   it('falls back to previously persisted messages when terminal state is cleared', () => {
