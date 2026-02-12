@@ -400,7 +400,7 @@ const electronAPI = {
     injectContext: (terminalId: string, context: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('agent:inject-context', terminalId, context),
     // Agent process API
-    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[]; contextContent?: string; skipPermissions?: boolean }) =>
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[]; contextContent?: string; skipPermissions?: boolean; sessionTitle?: string }) =>
       ipcRenderer.invoke('agent:spawn', options),
     sendMessage: (id: string, message: Record<string, unknown>) =>
       ipcRenderer.invoke('agent:send-message', id, message),
@@ -511,8 +511,9 @@ const electronAPI = {
     getLogPath: () => ipcRenderer.invoke('log:get-path') as Promise<string>,
     reportRendererError: (errorData: { message: string; stack?: string; componentStack?: string }) =>
       ipcRenderer.invoke('log:report-renderer-error', errorData),
-    getEventLogPath: () => ipcRenderer.invoke('log:get-event-log-path') as Promise<string>,
-    openEventLogFolder: () => ipcRenderer.invoke('log:open-event-log-folder'),
+    getEventLogPath: (terminalId?: string) => ipcRenderer.invoke('log:get-event-log-path', terminalId) as Promise<string>,
+    openEventLogFolder: (terminalId?: string) => ipcRenderer.invoke('log:open-event-log-folder', terminalId),
+    renameSessionLog: (terminalId: string, newTitle: string) => ipcRenderer.invoke('log:rename-session-log', terminalId, newTitle),
   },
 }
 

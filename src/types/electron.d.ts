@@ -331,7 +331,7 @@ export interface ElectronAPI {
     injectContext: (terminalId: string, context: string) => Promise<{ success: boolean; error?: string }>
 
     // Agent process methods (JSON streaming)
-    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[]; projectId?: string }) => Promise<{ success: boolean; process?: AgentProcessInfo; error?: string }>
+    spawn: (options: { agentType: 'claude' | 'codex' | 'gemini'; cwd: string; sessionId?: string; resumeSessionId?: string; prompt?: string; model?: string; allowedTools?: string[]; projectId?: string; sessionTitle?: string }) => Promise<{ success: boolean; process?: AgentProcessInfo; error?: string }>
     sendMessage: (id: string, message: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
     kill: (id: string) => Promise<{ success: boolean; error?: string }>
     list: () => Promise<{ success: boolean; processes?: AgentProcessInfo[]; error?: string }>
@@ -387,8 +387,9 @@ export interface ElectronAPI {
     openLogsFolder: () => Promise<void>
     getLogPath: () => Promise<string>
     reportRendererError: (errorData: { message: string; stack?: string; componentStack?: string }) => Promise<void>
-    getEventLogPath: () => Promise<string>
-    openEventLogFolder: () => Promise<void>
+    getEventLogPath: (terminalId?: string) => Promise<string>
+    openEventLogFolder: (terminalId?: string) => Promise<void>
+    renameSessionLog: (terminalId: string, newTitle: string) => Promise<void>
   }
 }
 

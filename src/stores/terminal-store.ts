@@ -261,7 +261,7 @@ export const useTerminalStore = create<TerminalStore>()(
       setActiveAgentSession: (id) =>
         set({ activeAgentSessionId: id }),
 
-      updateSessionTitle: (id, title) =>
+      updateSessionTitle: (id, title) => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
             s.id === id ? { ...s, title } : s
@@ -270,7 +270,10 @@ export const useTerminalStore = create<TerminalStore>()(
           savedConfigs: state.savedConfigs.map((c) =>
             c.id === id ? { ...c, shellName: title } : c
           ),
-        })),
+        }))
+        // Rename the per-session event log file to keep filename in sync with title
+        window.electron?.log?.renameSessionLog?.(id, title)
+      },
 
       updateSessionPid: (id, pid) =>
         set((state) => ({

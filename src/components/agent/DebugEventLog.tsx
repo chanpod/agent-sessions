@@ -288,7 +288,9 @@ export function DebugEventSheet({ open, onOpenChange, processIds }: DebugEventSh
 
   const handleOpenLogFolder = async () => {
     try {
-      await window.electron?.log.openEventLogFolder()
+      // Open the folder for this specific session's log file
+      const firstProcessId = processIds.values().next().value as string | undefined
+      await window.electron?.log.openEventLogFolder(firstProcessId)
     } catch {
       // fallback — log folder might not exist yet
     }

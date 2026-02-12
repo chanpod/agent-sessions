@@ -83,7 +83,11 @@ export function ContextUsageIndicator({
 }: ContextUsageIndicatorProps) {
   const { percentage, totalTokens, contextLimit, colors } = useMemo(() => {
     const limit = getContextLimit(model)
-    const total = usage.inputTokens + usage.outputTokens
+    // Context percentage uses input tokens only (matching Claude CLI's used_percentage):
+    // input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+    const total = usage.inputTokens
+      + (usage.cacheCreationInputTokens ?? 0)
+      + (usage.cacheReadInputTokens ?? 0)
     const pct = Math.min((total / limit) * 100, 100)
     const lvl = getUsageLevel(pct)
 

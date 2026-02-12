@@ -44,7 +44,7 @@ import { dockerComposeHandler } from './services/docker/docker-compose-handler.j
 import { dockerCli } from './services/docker/docker-cli.js'
 import { ptyServiceHandler, setPtyManager } from './services/pty/pty-service-handler.js'
 import { logger, getLogPath } from './utils/logger.js'
-import { initEventLogger, getEventLogPath, closeEventLogger } from './utils/event-logger.js'
+import { initEventLogger, getEventLogPath, getEventLogDir, getSessionLogPath, registerSessionLog, renameSessionLog, closeEventLogger } from './utils/event-logger.js'
 
 // Global crash handlers - must be set up early
 process.on('uncaughtException', (error) => {
@@ -1107,10 +1107,10 @@ ipcMain.handle('agent:inject-context', async (_event, terminalId: string, contex
 })
 
 // Agent Process handlers (PTY-based for true streaming support)
-ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[], projectId?: string, contextContent?: string, skipPermissions?: boolean }) => {
+ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'codex' | 'gemini', cwd: string, sessionId?: string, resumeSessionId?: string, prompt?: string, model?: string, allowedTools?: string[], projectId?: string, contextContent?: string, skipPermissions?: boolean, sessionTitle?: string }) => {
   if (!ptyManager) throw new Error('PTY manager not initialized')
 
-  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools, projectId, contextContent, skipPermissions } = options
+  const { agentType, cwd, resumeSessionId, prompt, model, allowedTools, projectId, contextContent, skipPermissions, sessionTitle } = options
 
   // Build the CLI command based on agent type
   let command: string
@@ -1237,6 +1237,14 @@ ipcMain.handle('agent:spawn', async (_event, options: { agentType: 'claude' | 'c
     createdAt: Date.now(),
   }
   agentTerminals.set(terminalInfo.id, agentInfo)
+
+  // Register per-session event log file.
+  // Project name = last directory segment of cwd (e.g. "my-project" from "/home/user/my-project").
+  // For multi-turn resumes, the renderer passes the existing sessionTitle so we reuse the same file.
+  // For new sessions, we use a timestamp-based default that gets renamed when the auto-title arrives.
+  const projectName = path.basename(cwd) || 'Unknown Project'
+  const logTitle = sessionTitle || `${agentType} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`
+  registerSessionLog(terminalInfo.id, projectName, logTitle)
 
   return {
     success: true,
@@ -1454,14 +1462,21 @@ ipcMain.handle('log:report-renderer-error', (_event, errorData: { message: strin
 })
 
 // Event log IPC handlers
-ipcMain.handle('log:get-event-log-path', () => {
-  return getEventLogPath()
+ipcMain.handle('log:get-event-log-path', (_event, terminalId?: string) => {
+  return terminalId ? getSessionLogPath(terminalId) : getEventLogDir()
 })
 
-ipcMain.handle('log:open-event-log-folder', async () => {
-  const logPath = getEventLogPath()
-  const logDir = path.dirname(logPath)
-  await shell.openPath(logDir)
+ipcMain.handle('log:open-event-log-folder', async (_event, terminalId?: string) => {
+  if (terminalId) {
+    const logPath = getSessionLogPath(terminalId)
+    await shell.openPath(path.dirname(logPath))
+  } else {
+    await shell.openPath(getEventLogDir())
+  }
+})
+
+ipcMain.handle('log:rename-session-log', (_event, terminalId: string, newTitle: string) => {
+  renameSessionLog(terminalId, newTitle)
 })
 
 // ============================================================================

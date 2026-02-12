@@ -15,7 +15,7 @@ interface TerminalStreamState {
   model: string | null
   currentBlockIndex: number
   currentBlockType: 'text' | 'thinking' | 'tool_use' | null
-  usage: { inputTokens: number; outputTokens: number } | null
+  usage: { inputTokens: number; outputTokens: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number } | null
   stopReason: string | null
   lastEventTime: number
   /** Message IDs that have been fully processed via the streaming path (message_start -> message_stop). */
@@ -187,6 +187,8 @@ export class StreamJsonDetector implements OutputDetector {
             state.usage = {
               inputTokens: event.message.usage.input_tokens,
               outputTokens: event.message.usage.output_tokens,
+              cacheReadInputTokens: event.message.usage.cache_read_input_tokens,
+              cacheCreationInputTokens: event.message.usage.cache_creation_input_tokens,
             }
           }
 
@@ -356,7 +358,7 @@ export class StreamJsonDetector implements OutputDetector {
             model?: string
             content?: Array<{ type: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown }>
             stop_reason?: string
-            usage?: { input_tokens?: number; output_tokens?: number }
+            usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
           }
           session_id?: string
         }
@@ -391,6 +393,8 @@ export class StreamJsonDetector implements OutputDetector {
               usage: msg.usage ? {
                 inputTokens: msg.usage.input_tokens || 0,
                 outputTokens: msg.usage.output_tokens || 0,
+                cacheReadInputTokens: msg.usage.cache_read_input_tokens,
+                cacheCreationInputTokens: msg.usage.cache_creation_input_tokens,
               } : undefined,
             },
           })
@@ -464,6 +468,8 @@ export class StreamJsonDetector implements OutputDetector {
               usage: msg.usage ? {
                 inputTokens: msg.usage.input_tokens || 0,
                 outputTokens: msg.usage.output_tokens || 0,
+                cacheReadInputTokens: msg.usage.cache_read_input_tokens,
+                cacheCreationInputTokens: msg.usage.cache_creation_input_tokens,
               } : undefined,
             },
           })

@@ -682,9 +682,16 @@ function App() {
     }
   }, [isElectron, markSessionExited, updateSessionTitle, updateServerStatus])
 
-  // Keyboard shortcuts: Ctrl+N for assigned project shortcut, Alt+N for terminal focus
+  // Keyboard shortcuts: Ctrl+N for assigned project shortcut, Alt+N for terminal focus, Ctrl+` for terminal dock
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+` (Backquote): Toggle terminal dock
+      if (e.key === '`' && e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault()
+        setTerminalDockOpen(!isTerminalDockOpen)
+        return
+      }
+
       const num = parseInt(e.key, 10)
       if (isNaN(num) || num < 1 || num > 9) return
 
@@ -712,7 +719,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal])
+  }, [projects, dashboard, setActiveProject, setDashboardFocusedTerminal, isTerminalDockOpen, setTerminalDockOpen])
 
   // Keyboard shortcut: Tab / Shift+Tab to cycle agent sessions in current project
   useEffect(() => {

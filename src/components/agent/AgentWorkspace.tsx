@@ -345,6 +345,8 @@ export function AgentWorkspace({
       if (!window.electron?.agent) return
 
       const store = useAgentStreamStore.getState()
+      // Get the current session title so multi-turn spawns reuse the same log file
+      const currentTitle = useTerminalStore.getState().sessions.find(s => s.id === initialProcessId)?.title
 
       // Add user message to the store (persists across session switching)
       store.addConversationUserMessage(initialProcessId, {
@@ -381,6 +383,7 @@ export function AgentWorkspace({
             prompt: message,
             ...(configuredModel ? { model: configuredModel } : {}),
             ...(projectId ? { projectId } : {}),
+            ...(currentTitle ? { sessionTitle: currentTitle } : {}),
           })
           if (result.success && result.process) {
             store.addConversationProcessId(initialProcessId, result.process.id)
@@ -415,6 +418,7 @@ export function AgentWorkspace({
             cwd,
             resumeSessionId: sessionId,
             ...(projectId ? { projectId } : {}),
+            ...(currentTitle ? { sessionTitle: currentTitle } : {}),
           })
           if (result.success && result.process) {
             // Track the new process ID in the store
@@ -489,6 +493,7 @@ export function AgentWorkspace({
       const messageText = `Here are my answers to your questions:\n\n${answerLines}`
 
       const store = useAgentStreamStore.getState()
+      const currentTitle = useTerminalStore.getState().sessions.find(s => s.id === initialProcessId)?.title
 
       // Clear the waiting-for-question flag on all processes in this conversation
       for (const pid of activeProcessIds) {
@@ -517,6 +522,7 @@ export function AgentWorkspace({
             cwd,
             resumeSessionId: sessionId,
             ...(projectId ? { projectId } : {}),
+            ...(currentTitle ? { sessionTitle: currentTitle } : {}),
           })
           if (result.success && result.process) {
             store.addConversationProcessId(initialProcessId, result.process.id)

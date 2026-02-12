@@ -82,7 +82,8 @@ interface AgentStreamStore {
   queuedMessages: Map<string, string[]>
 
   // Runtime: latest context window usage per session (sessionId -> TokenUsage)
-  // Updated on every message_start (input_tokens = full context) and message_end (final output_tokens)
+  // Updated from result events which include cache tokens for accurate context percentage.
+  // Falls back to message_start/end events (which lack cache tokens) if no result has arrived yet.
   latestContextUsage: Map<string, TokenUsage>
 
   // Runtime: accumulated session cost per session (sessionId -> cost in USD)
@@ -816,8 +817,8 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           const newState = applyAgentEvent(terminalState, event, terminalId)
           terminals.set(terminalId, newState)
 
-          // Update latestContextUsage on message start/end
-          // input_tokens from the API = full context window, so latest value is the true usage
+          // Update latestContextUsage on message start/end as an early estimate
+          // (these events lack cache tokens, so the percentage will be approximate)
           if (event.type === 'agent-message-start' || event.type === 'agent-message-end') {
             const eventData = event.data as { usage?: TokenUsage }
             if (eventData.usage) {
@@ -830,16 +831,31 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             }
           }
 
-          // Handle session result events (cost tracking)
+          // Handle session result events (cost tracking + authoritative context usage)
           if (event.type === 'agent-session-result') {
             const resultData = event.data as AgentSessionResultData
-            if (resultData.totalCostUsd != null) {
-              const sessionId = state.terminalToSession.get(terminalId)
-              if (sessionId) {
-                const sessionCosts = new Map(state.sessionCosts)
+            const sessionId = state.terminalToSession.get(terminalId)
+            if (sessionId) {
+              let latestContextUsage: Map<string, TokenUsage> | undefined
+              let sessionCosts: Map<string, number> | undefined
+
+              // The result event includes cache tokens, giving the most accurate
+              // context window usage. This overwrites the earlier message-level estimate.
+              if (resultData.usage) {
+                latestContextUsage = new Map(state.latestContextUsage)
+                latestContextUsage.set(sessionId, resultData.usage)
+              }
+
+              if (resultData.totalCostUsd != null) {
+                sessionCosts = new Map(state.sessionCosts)
                 const existing = sessionCosts.get(sessionId) ?? 0
                 sessionCosts.set(sessionId, existing + resultData.totalCostUsd)
-                return { terminals, sessionCosts }
+              }
+
+              return {
+                terminals,
+                ...(latestContextUsage && { latestContextUsage }),
+                ...(sessionCosts && { sessionCosts }),
               }
             }
           }
@@ -1389,7 +1405,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                   const terminalState = getOrCreateTerminalState(terminals, terminalId)
                   terminals.set(terminalId, applyAgentEvent(terminalState, event, terminalId))
 
-                  // Track context usage from message start/end events
+                  // Track context usage from message start/end events (early estimate, no cache tokens)
                   if (event.type === 'agent-message-start' || event.type === 'agent-message-end') {
                     const eventData = event.data as { usage?: TokenUsage }
                     if (eventData.usage) {
@@ -1401,12 +1417,17 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                     }
                   }
 
-                  // Track session costs from result events
+                  // Track session costs + authoritative context usage from result events
                   if (event.type === 'agent-session-result') {
                     const resultData = event.data as AgentSessionResultData
-                    if (resultData.totalCostUsd != null) {
-                      const sid = state.terminalToSession.get(terminalId)
-                      if (sid) {
+                    const sid = state.terminalToSession.get(terminalId)
+                    if (sid) {
+                      // Result event has cache tokens — most accurate context usage
+                      if (resultData.usage) {
+                        if (!latestContextUsage) latestContextUsage = new Map(state.latestContextUsage)
+                        latestContextUsage.set(sid, resultData.usage)
+                      }
+                      if (resultData.totalCostUsd != null) {
                         if (!sessionCosts) sessionCosts = new Map(state.sessionCosts)
                         const existing = sessionCosts.get(sid) ?? 0
                         sessionCosts.set(sid, existing + resultData.totalCostUsd)

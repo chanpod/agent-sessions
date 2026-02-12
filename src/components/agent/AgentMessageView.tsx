@@ -256,6 +256,8 @@ function groupIntoDisplayItems(allMessages: AgentMessage[]): DisplayItem[] {
       contextUsage = {
         inputTokens: usage.inputTokens || 0,
         outputTokens: usage.outputTokens || 0,
+        ...(usage.cacheCreationInputTokens != null && { cacheCreationInputTokens: usage.cacheCreationInputTokens }),
+        ...(usage.cacheReadInputTokens != null && { cacheReadInputTokens: usage.cacheReadInputTokens }),
       }
     }
 
