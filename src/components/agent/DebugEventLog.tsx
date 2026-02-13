@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { IconBug, IconTrash, IconX, IconChevronDown, IconChevronRight, IconFolderOpen, IconSearch, IconFilter } from '@tabler/icons-react'
 import { useShallow } from 'zustand/react/shallow'
-import { useAgentStreamStore } from '@/stores/agent-stream-store'
+import { useAgentStreamStore, setDebugDeltaTracking } from '@/stores/agent-stream-store'
 import {
   Sheet,
   SheetContent,
@@ -198,6 +198,14 @@ export function DebugEventSheet({ open, onOpenChange, processIds }: DebugEventSh
   const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set())
   const [autoScroll, setAutoScroll] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Enable delta debug event tracking while the panel is open.
+  // When closed (default), delta events skip recording entirely to
+  // avoid ~100 object allocations + array spreads per second per agent.
+  useEffect(() => {
+    setDebugDeltaTracking(open)
+    return () => setDebugDeltaTracking(false)
+  }, [open])
 
   // Gather debug events from all active processes.
   const perProcessEvents = useAgentStreamStore(

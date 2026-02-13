@@ -145,6 +145,22 @@ let listenerSetup = false
 let unsubscribe: (() => void) | null = null
 
 /**
+ * Debounced persist scheduler.
+ *
+ * During a tool-use chain the agent emits many message-end events in rapid
+ * succession (one per tool call). Each `persistSession()` call:
+ * 1. Iterates all processes and messages to build the persisted data
+ * 2. Calls `set()` which spreads the entire `sessions` Record
+ * 3. Triggers zustand persist middleware → IPC to main → SQLite write
+ *
+ * This debouncer collapses those calls: it schedules one persist 2 seconds
+ * after the last request. Process-exit persists bypass the debounce entirely
+ * (they're critical for data safety).
+ */
+const PERSIST_DEBOUNCE_MS = 2000
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
  * Background delta buffer.
  *
  * When multiple agent sessions are streaming simultaneously, delta events
@@ -244,6 +260,23 @@ const DELTA_EVENT_TYPES = new Set(['agent-text-delta', 'agent-thinking-delta', '
 
 /** Monotonic counter for debug event ordering */
 let debugEventCounter = 0
+
+/**
+ * Module-level flag: whether to record debug events for delta types.
+ *
+ * When the debug panel is closed (default), delta events (~100/sec per
+ * agent) skip the appendDebugEvent path entirely — no object allocation,
+ * no array spread, no Date.now() calls. Structural events are always
+ * recorded regardless of this flag.
+ *
+ * Toggle via setDebugDeltaTracking() exported below.
+ */
+let debugDeltaTrackingEnabled = false
+
+/** Toggle delta debug event recording. Called by DebugEventSheet on open/close. */
+export function setDebugDeltaTracking(enabled: boolean): void {
+  debugDeltaTrackingEnabled = enabled
+}
 
 /**
  * Create a short summary string from event data for the debug panel.
@@ -708,18 +741,23 @@ function applyAgentEvent(
       newState = terminalState
   }
 
-  // Always track debug events (including deltas) — delta entries are lightweight
-  newState = {
-    ...newState,
-    debugEvents: appendDebugEvent(
-      newState.debugEvents,
-      event.type,
-      event.data,
-      newState.isActive,
-      newState.processExited,
-      terminalId,
-      newState,
-    ),
+  // Track debug events. Skip deltas when the debug panel is closed —
+  // they fire ~100/sec per agent and the appendDebugEvent call allocates
+  // a new DebugEventEntry + spreads the array on every invocation.
+  const isDelta = DELTA_EVENT_TYPES.has(event.type)
+  if (!isDelta || debugDeltaTrackingEnabled) {
+    newState = {
+      ...newState,
+      debugEvents: appendDebugEvent(
+        newState.debugEvents,
+        event.type,
+        event.data,
+        newState.isActive,
+        newState.processExited,
+        terminalId,
+        newState,
+      ),
+    }
   }
 
   return newState
@@ -864,8 +902,14 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         })
 
         // Persist session to DB after message completes so it survives app restart
+        // Debounced — during tool-use chains, message-end fires rapidly.
         if (event.type === 'agent-message-end') {
-          get().persistSession(terminalId)
+          const existingTimer = persistTimers.get(terminalId)
+          if (existingTimer) clearTimeout(existingTimer)
+          persistTimers.set(terminalId, setTimeout(() => {
+            persistTimers.delete(terminalId)
+            get().persistSession(terminalId)
+          }, PERSIST_DEBOUNCE_MS))
 
           const endData = event.data as { stopReason?: string }
           const termStateAfter = get().terminals.get(terminalId)
@@ -1380,15 +1424,22 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
               }
             }
 
-            // Flush buffered deltas for terminals that have structural events
-            for (const tid of terminalsToFlush) {
-              const buffered = backgroundDeltaBuffer.get(tid)
-              if (buffered && buffered.length > 0) {
-                for (const event of buffered) {
-                  agentEvents.unshift({ terminalId: tid, event })
+            // Flush buffered deltas for terminals that have structural events.
+            // These must be inserted BEFORE the structural event (which is already
+            // in agentEvents) so deltas are applied in the correct order.
+            if (terminalsToFlush.size > 0) {
+              const flushed: Array<{ terminalId: string; event: AgentStreamEvent }> = []
+              for (const tid of terminalsToFlush) {
+                const buffered = backgroundDeltaBuffer.get(tid)
+                if (buffered && buffered.length > 0) {
+                  for (const event of buffered) {
+                    flushed.push({ terminalId: tid, event })
+                  }
+                  backgroundDeltaBuffer.delete(tid)
                 }
-                backgroundDeltaBuffer.delete(tid)
               }
+              // Prepend all flushed deltas at once to preserve their original order
+              agentEvents.unshift(...flushed)
             }
 
             // Process ALL agent events in a SINGLE set() call.
@@ -1482,17 +1533,33 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             // separate set() calls (turnTimings, notifiedTerminals add/delete)
             // — each triggering a full subscriber re-evaluation cycle.
 
-            // Defer persistSession calls to next microtask so they don't
-            // pile onto the synchronous batch handler. Persist triggers its
-            // own set() (updating the sessions Record), which causes all
-            // subscribers to re-evaluate. Deferring lets the main batch
-            // render cycle complete first, keeping the UI responsive.
-            if (messageEndTerminals.length > 0 || processExitTerminals.length > 0) {
+            // Persist session data — debounced for message-end events,
+            // immediate for process-exit events (data safety).
+            //
+            // During a tool-use chain, message-end fires many times in
+            // rapid succession. Each persist clones the sessions Record
+            // and triggers an IPC round-trip to SQLite. Debouncing
+            // collapses 10-20 rapid persists into a single one.
+            for (const { terminalId } of messageEndTerminals) {
+              // Cancel any pending debounce for this terminal
+              const existing = persistTimers.get(terminalId)
+              if (existing) clearTimeout(existing)
+              persistTimers.set(terminalId, setTimeout(() => {
+                persistTimers.delete(terminalId)
+                get().persistSession(terminalId)
+              }, PERSIST_DEBOUNCE_MS))
+            }
+            // Process exits persist immediately — the process is gone,
+            // so this is the last chance to capture its state.
+            if (processExitTerminals.length > 0) {
               queueMicrotask(() => {
-                for (const { terminalId } of messageEndTerminals) {
-                  get().persistSession(terminalId)
-                }
                 for (const { terminalId } of processExitTerminals) {
+                  // Cancel any pending debounce — we're persisting now
+                  const pending = persistTimers.get(terminalId)
+                  if (pending) {
+                    clearTimeout(pending)
+                    persistTimers.delete(terminalId)
+                  }
                   get().persistSession(terminalId)
                 }
               })
@@ -1628,6 +1695,12 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 })
                 return { terminals }
               })
+              // Cancel any debounced persist — process exit persists immediately
+              const pendingPersist = persistTimers.get(event.terminalId)
+              if (pendingPersist) {
+                clearTimeout(pendingPersist)
+                persistTimers.delete(event.terminalId)
+              }
               get().persistSession(event.terminalId)
 
               // Show error toast if process died unexpectedly

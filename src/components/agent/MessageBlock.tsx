@@ -1,10 +1,18 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { IconCopy, IconCheck } from '@tabler/icons-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type { TextBlock, CodeBlock } from '@/types/agent-ui'
 import { cn } from '@/lib/utils'
+
+/**
+ * Throttle interval for markdown rendering during streaming.
+ * ReactMarkdown re-parses the full string on every render, so limiting
+ * how often we feed it new content prevents the parser from overwhelming
+ * the main thread during fast streaming.
+ */
+const MARKDOWN_THROTTLE_MS = 120
 
 interface MessageBlockProps {
   block: TextBlock | CodeBlock
@@ -62,6 +70,53 @@ function TextContent({ block, className }: TextContentProps) {
     },
   }), [])
 
+  // Throttle markdown re-parsing during streaming.
+  // Without this, ReactMarkdown re-parses the entire (growing) string on
+  // every text delta (~50-100/sec), which gets progressively slower as
+  // the message grows. We keep a throttled snapshot for the parser and
+  // append the un-parsed tail as raw text for instant visual feedback.
+  const [throttledContent, setThrottledContent] = useState(block.content)
+  const lastUpdateRef = useRef(0)
+  const rafRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!block.isStreaming) {
+      // Not streaming — always use the final content
+      setThrottledContent(block.content)
+      return
+    }
+
+    const now = performance.now()
+    const elapsed = now - lastUpdateRef.current
+
+    if (elapsed >= MARKDOWN_THROTTLE_MS) {
+      // Enough time has passed — update immediately
+      lastUpdateRef.current = now
+      setThrottledContent(block.content)
+    } else {
+      // Schedule an update at the end of the throttle window
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        lastUpdateRef.current = performance.now()
+        setThrottledContent(block.content)
+      })
+    }
+
+    return () => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [block.content, block.isStreaming])
+
+  // The un-parsed tail: characters received since the last throttled snapshot.
+  // Rendered as raw text so the user sees keystrokes immediately.
+  const tail = block.isStreaming && block.content.length > throttledContent.length
+    ? block.content.slice(throttledContent.length)
+    : null
+
   return (
     <div
       className={cn(
@@ -73,8 +128,9 @@ function TextContent({ block, className }: TextContentProps) {
       )}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {block.content}
+        {throttledContent}
       </ReactMarkdown>
+      {tail && <span>{tail}</span>}
       {block.isStreaming && <StreamingCursor />}
     </div>
   )

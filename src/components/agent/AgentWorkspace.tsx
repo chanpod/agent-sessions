@@ -19,7 +19,6 @@ import type {
   ContentBlock as UIContentBlock,
 } from '@/types/agent-ui'
 import type {
-  TerminalAgentState,
   AgentMessage as StreamAgentMessage,
   ContentBlock as StreamContentBlock,
 } from '@/types/stream-json'
@@ -562,23 +561,73 @@ export function AgentWorkspace({
     [activeProcessIds, initialProcessId, agentType, cwd, sessionId]
   )
 
-  // Get state from all active processes in this conversation
-  // Use useShallow to prevent infinite re-renders from array creation
-  const allProcessStates = useAgentStreamStore(
-    useShallow((store) => {
-      const states: TerminalAgentState[] = []
-      for (const pid of activeProcessIds) {
-        const state = store.terminals.get(pid)
-        if (state) states.push(state)
+  // =====================================================================
+  // Optimized store selectors
+  //
+  // During streaming the TerminalAgentState object changes on every text
+  // delta (~50-100/sec). The old approach pulled the entire object array
+  // via useShallow, which always detected a change because the objects
+  // are new references. The conversation useMemo then re-mapped every
+  // completed message + sorted + deduped on every delta — O(n) wasted
+  // work that snowballs as the conversation grows.
+  //
+  // The fix: separate *completed* messages (stable — only changes when
+  // messages.length increases) from the *currentMessage* (changes on
+  // every delta, but only needs to map one message).
+  // =====================================================================
+
+  // Completed messages from all processes — changes only when a message
+  // finishes (message-end event pushes to messages[]). We compute a
+  // stable fingerprint so Zustand skips re-renders during delta events.
+  //
+  // The fingerprint encodes: number of processes, each process's message
+  // count, and the last message's blocks reference (for tool result updates).
+  // When the fingerprint changes, we pull fresh message arrays.
+  const completedMessageFingerprint = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+    let fp = ''
+    for (const pid of pids) {
+      const state = store.terminals.get(pid)
+      if (state) {
+        const lastBlocks = state.messages.length > 0
+          ? state.messages[state.messages.length - 1]!.blocks.length
+          : 0
+        fp += `${state.messages.length}:${lastBlocks},`
       }
-      return states
-    })
-  )
+    }
+    return fp
+  })
+
+  // Actually pull the message arrays — only re-runs when fingerprint changes
+  const completedMessageArrays = useMemo(() => {
+    // Read directly from store to get current arrays
+    const store = useAgentStreamStore.getState()
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+    const arrays: StreamAgentMessage[][] = []
+    for (const pid of pids) {
+      const state = store.terminals.get(pid)
+      if (state) arrays.push(state.messages)
+    }
+    return arrays
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completedMessageFingerprint, initialProcessId])
+
+  // The currently streaming message — changes on every delta but we only
+  // map ONE message, not all of them. Returns null when idle.
+  const currentStreamMessage = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+    // Most recent process with a currentMessage wins
+    for (let i = pids.length - 1; i >= 0; i--) {
+      const state = store.terminals.get(pids[i]!)
+      if (state?.currentMessage) return state.currentMessage
+    }
+    return null
+  })
 
   // Compute anyActive directly from the store to avoid stale closure issues.
-  // The previous approach derived this from allProcessStates, which depended on
-  // activeProcessIds captured in a closure. When a new multi-turn process was added,
-  // the closure would be stale until the next render, causing a brief "done" flash.
   const anyActive = useAgentStreamStore((store) => {
     const conv = store.conversations.get(initialProcessId)
     const pids = conv?.processIds ?? [initialProcessId]
@@ -591,8 +640,6 @@ export function AgentWorkspace({
       if (state.isActive || state.isWaitingForResponse) return true
 
       // Safety net: process still running and last message indicated tool execution.
-      // This handles cases where isActive might be incorrectly cleared during tool use
-      // (e.g., nested agent events from sub-agents leaking through the PTY).
       if (!state.processExited) {
         const lastMsg = state.messages[state.messages.length - 1]
         if (lastMsg?.stopReason === 'tool_use') return true
@@ -602,9 +649,6 @@ export function AgentWorkspace({
   })
 
   // Get error state from ONLY the most recent process in the conversation.
-  // Old process errors are stale — once we spawn a new --resume process,
-  // only the newest process's error matters. Without this, a transient exit
-  // code 256 on Windows permanently poisons the conversation status.
   const processError = useAgentStreamStore((store) => {
     const conv = store.conversations.get(initialProcessId)
     const pids = conv?.processIds ?? [initialProcessId]
@@ -614,7 +658,6 @@ export function AgentWorkspace({
   })
 
   // Clear isProcessing when agent starts responding (anyActive becomes true)
-  // This transitions from "waiting for agent" to "agent is responding"
   useEffect(() => {
     if (anyActive && isProcessing) {
       setIsProcessing(false)
@@ -643,40 +686,41 @@ export function AgentWorkspace({
     return () => clearTimeout(timeout)
   }, [isProcessing])
 
-  // Convert stream state to AgentConversation format, merging user messages
-  const conversation = useMemo(() => {
-    // Merge messages from all process states
-    const assistantMessages: UIAgentMessage[] = []
-    let currentMessage: UIAgentMessage | null = null
+  // =====================================================================
+  // Conversation assembly — split into stable + streaming parts
+  // =====================================================================
 
-    for (const processState of allProcessStates) {
-      // Add completed messages
-      for (const msg of processState.messages) {
+  // Map completed messages — only re-runs when completedMessageArrays changes
+  // (i.e. a new message finishes), NOT on every delta.
+  const mappedCompletedMessages = useMemo(() => {
+    const assistantMessages: UIAgentMessage[] = []
+    for (const msgs of completedMessageArrays) {
+      for (const msg of msgs) {
         assistantMessages.push(mapMessage(msg, agentType))
       }
-      // Track current streaming message (from most recent process)
-      if (processState.currentMessage) {
-        currentMessage = mapMessage(processState.currentMessage, agentType)
-      }
     }
-
     // Deduplicate by message ID (same message can appear across multiple process states)
     const seenIds = new Set<string>()
-    const dedupedMessages = assistantMessages.filter((msg) => {
+    return assistantMessages.filter((msg) => {
       if (seenIds.has(msg.id)) return false
       seenIds.add(msg.id)
       return true
     })
+  }, [completedMessageArrays, agentType])
 
-    // Merge user messages with assistant messages, sorted by timestamp
-    const allMessages = [...userMessages, ...dedupedMessages].sort(
+  // Map the streaming message — re-runs on every delta but only maps ONE message
+  const mappedCurrentMessage = useMemo(() => {
+    if (!currentStreamMessage) return null
+    return mapMessage(currentStreamMessage, agentType)
+  }, [currentStreamMessage, agentType])
+
+  // Assemble final conversation object
+  const conversation = useMemo(() => {
+    // Merge user messages with completed assistant messages, sorted by timestamp
+    const allMessages = [...userMessages, ...mappedCompletedMessages].sort(
       (a, b) => a.timestamp - b.timestamp
     )
 
-    // Determine status:
-    // - isProcessing: user sent message, waiting for agent to start
-    // - anyActive: agent is actively responding (from store's isActive)
-    // - processError: agent process died with an error
     let status: AgentConversation['status'] = 'idle'
     if (isProcessing || anyActive) {
       status = 'streaming'
@@ -690,24 +734,27 @@ export function AgentWorkspace({
       terminalId: initialProcessId,
       agentType,
       messages: allMessages,
-      currentMessage,
+      currentMessage: mappedCurrentMessage,
       status,
     }
-  }, [initialProcessId, agentType, allProcessStates, userMessages, isProcessing, anyActive, processError])
+  }, [initialProcessId, agentType, mappedCompletedMessages, mappedCurrentMessage, userMessages, isProcessing, anyActive, processError])
 
-  // Derive the latest model name from the most recent assistant message
-  const latestModel = useMemo(() => {
-    // Check current streaming message first, iterating from most recent process
-    for (let i = allProcessStates.length - 1; i >= 0; i--) {
-      const state = allProcessStates[i]!
+  // Derive the latest model name from the most recent assistant message.
+  // Uses a store selector that returns a stable string (model doesn't
+  // change mid-session), so this won't trigger re-renders during deltas.
+  const latestModel = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+    for (let i = pids.length - 1; i >= 0; i--) {
+      const state = store.terminals.get(pids[i]!)
+      if (!state) continue
       if (state.currentMessage?.model) return state.currentMessage.model
       for (let j = state.messages.length - 1; j >= 0; j--) {
-        const msg = state.messages[j]
-        if (msg?.model) return msg.model
+        if (state.messages[j]?.model) return state.messages[j]!.model
       }
     }
     return null
-  }, [allProcessStates])
+  })
 
   // Format full model ID to a short display name (e.g. "claude-opus-4-5-20251101" → "Opus 4.5")
   // Falls back to configured model from terminal store (useful for Codex which doesn't report model in events)
