@@ -83,11 +83,13 @@ export function ContextUsageIndicator({
 }: ContextUsageIndicatorProps) {
   const { percentage, totalTokens, contextLimit, colors } = useMemo(() => {
     const limit = getContextLimit(model)
-    // Context percentage uses input tokens only (matching Claude CLI's used_percentage):
-    // input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+    // Context = all input tokens (including cache) + output tokens for this message.
+    // inputTokens + cacheCreation + cacheRead = full input context size.
+    // outputTokens = tokens generated in the current message (also consumes context).
     const total = usage.inputTokens
       + (usage.cacheCreationInputTokens ?? 0)
       + (usage.cacheReadInputTokens ?? 0)
+      + usage.outputTokens
     const pct = Math.min((total / limit) * 100, 100)
     const lvl = getUsageLevel(pct)
 
