@@ -22,6 +22,7 @@ interface SidebarProps {
   onCreateAgentTerminal: (projectId: string, agentId: string, contextId: string | null, contextContent: string | null, skipPermissions?: boolean, model?: string | null) => void
   onRestoreArchivedSession: (sessionId: string) => void
   onPermanentDeleteArchivedSession: (sessionId: string) => void
+  onDeleteAllArchivedSessions: () => void
   onStartServer: (projectId: string, name: string, command: string) => void
   onStopServer: (serverId: string) => void
   onDeleteServer: (serverId: string) => void
@@ -35,7 +36,7 @@ const MAX_WIDTH = 420
 const DEFAULT_WIDTH = 280
 
 export function Sidebar(props: SidebarProps) {
-  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal, onRestoreArchivedSession, onPermanentDeleteArchivedSession, onStartServer, onStopServer, onDeleteServer, onCreateProject, onEditProject, onDeleteProject } = props
+  const { onCloseTerminal, onReconnectTerminal, onCreateAgentTerminal, onRestoreArchivedSession, onPermanentDeleteArchivedSession, onDeleteAllArchivedSessions, onStartServer, onStopServer, onDeleteServer, onCreateProject, onEditProject, onDeleteProject } = props
   const { projects, activeProjectId, connectProject, setProjectConnectionStatus, disconnectProject } = useProjectStore()
   const activeProject = projects.find(p => p.id === activeProjectId)
   const { getConnection } = useSSHStore()
@@ -267,6 +268,7 @@ export function Sidebar(props: SidebarProps) {
           archivedConfigs={projectArchivedConfigs}
           onRestore={onRestoreArchivedSession}
           onDelete={onPermanentDeleteArchivedSession}
+          onDeleteAll={onDeleteAllArchivedSessions}
         />
 
         <Separator />

@@ -3,7 +3,7 @@ import { IconTerminal2, IconMessage } from '@tabler/icons-react'
 
 import { Terminal } from '@/components/Terminal'
 import { AgentMessageView } from './AgentMessageView'
-import { useAgentStream } from '@/hooks/useAgentStream'
+import { useAgentStreamStore } from '@/stores/agent-stream-store'
 import type {
   AgentConversation,
   AgentMessage as UIAgentMessage,
@@ -198,8 +198,12 @@ export function AgentTerminalView({
   const isControlled = controlledViewMode !== undefined
   const viewMode = isControlled ? controlledViewMode : internalViewMode
 
-  // Subscribe to agent stream
-  const { state, isStreaming } = useAgentStream(sessionId)
+  // Subscribe to stream state for this terminal.
+  // Use the full state object here since this component does need to update
+  // when the conversation changes. The key improvement is that this component
+  // is only mounted when the user is actually viewing this terminal in the dock.
+  const state = useAgentStreamStore((s) => s.terminals.get(sessionId))
+  const isStreaming = state?.currentMessage?.status === 'streaming'
 
   // Convert stream state to AgentConversation format
   const conversation = useMemo(

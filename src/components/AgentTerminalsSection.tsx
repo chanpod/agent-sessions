@@ -84,11 +84,11 @@ const AgentSessionRow = memo(function AgentSessionRow({
   )
 
   // Get the actual model from stream messages.
-  // Optimization: once we find a model, return it as a stable string.
-  // The model doesn't change mid-session, so after the first message-start
-  // event this selector returns the same string on every call — Zustand
-  // sees referential equality and skips re-rendering.
+  // Once a model is discovered, cache it in a ref so the selector becomes O(1)
+  // on subsequent store updates (the model never changes mid-session).
+  const cachedModelRef = useRef<string | null>(null)
   const streamModel = useAgentStreamStore((store) => {
+    if (cachedModelRef.current) return cachedModelRef.current
     const conv = store.conversations.get(session.id)
     const pids = conv?.processIds ?? [session.id]
     for (let i = pids.length - 1; i >= 0; i--) {
@@ -96,10 +96,16 @@ const AgentSessionRow = memo(function AgentSessionRow({
       if (!pid) continue
       const state = store.terminals.get(pid)
       if (!state) continue
-      if (state.currentMessage?.model) return state.currentMessage.model
+      if (state.currentMessage?.model) {
+        cachedModelRef.current = state.currentMessage.model
+        return state.currentMessage.model
+      }
       for (let j = state.messages.length - 1; j >= 0; j--) {
         const msg = state.messages[j]
-        if (msg?.model) return msg.model
+        if (msg?.model) {
+          cachedModelRef.current = msg.model
+          return msg.model
+        }
       }
     }
     return null

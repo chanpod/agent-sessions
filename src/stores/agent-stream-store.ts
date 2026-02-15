@@ -114,6 +114,7 @@ interface AgentStreamStore {
   restoreSessionToTerminal(terminalId: string, sessionId: string): void
   persistSession(terminalId: string, agentType?: string, cwd?: string): void
   deletePersistedSession: (sessionId: string) => void
+  deletePersistedSessions: (sessionIds: string[]) => void
 
   // Title generation tracking (runtime only)
   markTitleGenerated(sessionId: string): void
@@ -1247,6 +1248,19 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
           return { sessions: remaining }
         })
         console.log('[AgentStreamStore] Permanently deleted persisted session:', sessionId)
+      },
+
+      deletePersistedSessions: (sessionIds: string[]) => {
+        if (sessionIds.length === 0) return
+        set((state) => {
+          const toDelete = new Set(sessionIds)
+          const remaining: typeof state.sessions = {}
+          for (const [key, value] of Object.entries(state.sessions)) {
+            if (!toDelete.has(key)) remaining[key] = value
+          }
+          return { sessions: remaining }
+        })
+        console.log(`[AgentStreamStore] Bulk deleted ${sessionIds.length} persisted sessions`)
       },
 
       markTitleGenerated: (sessionId: string) => {

@@ -31,6 +31,7 @@ interface ArchivedSessionsSheetProps {
   archivedConfigs: ArchivedSessionConfig[]
   onRestore: (sessionId: string) => void
   onDelete: (sessionId: string) => void
+  onDeleteAll: () => void
 }
 
 export function ArchivedSessionsSheet({
@@ -39,6 +40,7 @@ export function ArchivedSessionsSheet({
   archivedConfigs,
   onRestore,
   onDelete,
+  onDeleteAll,
 }: ArchivedSessionsSheetProps) {
   const sorted = [...archivedConfigs].sort((a, b) => b.archivedAt - a.archivedAt)
 
@@ -50,6 +52,21 @@ export function ArchivedSessionsSheet({
           <SheetDescription>
             {sorted.length} archived session{sorted.length !== 1 ? 's' : ''}
           </SheetDescription>
+          {sorted.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-red-400 hover:bg-red-400/10"
+              onClick={() => {
+                if (confirm(`Delete all ${sorted.length} archived sessions? This cannot be undone.`)) {
+                  onDeleteAll()
+                }
+              }}
+            >
+              <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+              Delete All
+            </Button>
+          )}
         </SheetHeader>
 
         <ScrollArea className="flex-1 -mx-4 px-4">

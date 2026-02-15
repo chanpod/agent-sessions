@@ -73,6 +73,7 @@ interface TerminalStore {
   archiveSession: (config: SavedTerminalConfig, title: string, agentType: string) => void
   restoreArchivedSession: (sessionId: string) => ArchivedSessionConfig | undefined
   permanentlyDeleteArchivedSession: (sessionId: string) => void
+  deleteAllArchivedForProject: (projectId: string) => string[]
   setActiveSession: (id: string | null) => void
   setActiveAgentSession: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
@@ -222,6 +223,20 @@ export const useTerminalStore = create<TerminalStore>()(
             (a) => a.config.sessionId !== sessionId
           ),
         }))
+      },
+
+      deleteAllArchivedForProject: (projectId) => {
+        const state = get()
+        const sessionIds = state.archivedConfigs
+          .filter((a) => a.config.projectId === projectId)
+          .map((a) => a.config.sessionId!)
+          .filter(Boolean)
+        set((state) => ({
+          archivedConfigs: state.archivedConfigs.filter(
+            (a) => a.config.projectId !== projectId
+          ),
+        }))
+        return sessionIds
       },
 
       removeSessionsByProject: (projectId) => {

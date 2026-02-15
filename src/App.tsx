@@ -38,7 +38,6 @@ import { useDetectedServers } from './hooks/useDetectedServers'
 import { BranchSwitcher } from './components/BranchSwitcher'
 import { AgentMessageView } from './components/agent'
 import { AgentWorkspace } from './components/agent/AgentWorkspace'
-import { useAgentStream } from './hooks/useAgentStream'
 import { useAgentStreamStore, waitForRehydration } from './stores/agent-stream-store'
 import type { AgentConversation, ContentBlock as UIContentBlock, AgentMessage as UIAgentMessage } from './types/agent-ui'
 import type { TerminalAgentState, AgentMessage as StreamAgentMessage, ContentBlock as StreamContentBlock } from './types/stream-json'
@@ -177,6 +176,20 @@ function mapToConversation(
   }
 }
 
+/**
+ * Wrapper for the legacy PTY-based AgentMessageView.
+ * Subscribes to the stream store only when this fallback path is actually rendered,
+ * preventing App.tsx from re-rendering on every streaming delta.
+ */
+function LegacyAgentMessageView({ terminalId, agentType, className }: { terminalId: string; agentType: string; className?: string }) {
+  const state = useAgentStreamStore((s) => s.terminals.get(terminalId))
+  const conversation = useMemo(
+    () => mapToConversation(terminalId, agentType, state),
+    [terminalId, agentType, state]
+  )
+  return <AgentMessageView conversation={conversation} className={className} />
+}
+
 function App() {
   const [isElectron, setIsElectron] = useState(false)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
@@ -255,15 +268,6 @@ function App() {
   const activeAgentSession = sessions.find(s => s.id === activeAgentSessionId)
   const isAgentTerminal = activeAgentSession?.terminalType === 'agent'
   const agentType = activeAgentSession?.agentId || 'claude'
-
-  // Get agent stream data for active agent session
-  const agentStream = useAgentStream(activeAgentSessionId || '')
-
-  // Map stream data to AgentConversation format for the UI
-  const agentConversation: AgentConversation | null = useMemo(() => {
-    if (!isAgentTerminal || !activeAgentSessionId || !agentStream.state) return null
-    return mapToConversation(activeAgentSessionId, agentType, agentStream.state)
-  }, [isAgentTerminal, activeAgentSessionId, agentStream.state, agentType])
 
   // Check if active agent session is an agent process (not PTY)
   const activeAgentProcess = agentProcesses.get(activeAgentSessionId || '')
@@ -429,20 +433,15 @@ function App() {
 
     // Subscribe to stream events for agent processes
     const unsubStream = window.electron.agent.onStreamEvent((id, event) => {
-      // Forward to agent stream store for processing
       const agentEvent = event as { type: string; data: unknown }
-      console.log(`[App] Received stream event:`, agentEvent.type, agentEvent)
       if (agentEvent.type?.startsWith('agent-')) {
-        console.log(`[App] Processing agent event:`, agentEvent.type)
         useAgentStreamStore.getState().processEvent(id, agentEvent as any)
       }
     })
 
     // Subscribe to process exit events
-    const unsubExit = window.electron.agent.onProcessExit((id, code) => {
+    const unsubExit = window.electron.agent.onProcessExit((_id, _code) => {
       // Don't remove from map - keep the UI visible so user can see the response
-      // Just log for now; multi-turn will spawn new processes with --resume
-      console.log(`[App] Agent process ${id} exited with code ${code}`)
     })
 
     // Subscribe to error events
@@ -1382,6 +1381,13 @@ function App() {
     useAgentStreamStore.getState().deletePersistedSession(sessionId)
   }
 
+  const handleDeleteAllArchivedSessions = () => {
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return
+    const sessionIds = useTerminalStore.getState().deleteAllArchivedForProject(projectId)
+    useAgentStreamStore.getState().deletePersistedSessions(sessionIds)
+  }
+
   const handleReconnectTerminal = async (id: string) => {
     if (!window.electron) return
 
@@ -1674,6 +1680,7 @@ function App() {
               onCreateAgentTerminal={handleCreateAgentTerminal}
               onRestoreArchivedSession={handleRestoreArchivedSession}
               onPermanentDeleteArchivedSession={handlePermanentDeleteArchivedSession}
+              onDeleteAllArchivedSessions={handleDeleteAllArchivedSessions}
               onStartServer={handleStartServer}
               onStopServer={handleStopServer}
               onDeleteServer={handleDeleteServer}
@@ -1736,11 +1743,12 @@ function App() {
                     projectId={activeProjectId ?? undefined}
                     className="h-full"
                   />
-                ) : isAgentTerminal && agentConversation ? (
+                ) : isAgentTerminal && activeAgentSessionId ? (
                   // Backwards compatible: PTY-based agent terminal
-                  <AgentMessageView
+                  <LegacyAgentMessageView
                     key={activeAgentSessionId}
-                    conversation={agentConversation}
+                    terminalId={activeAgentSessionId}
+                    agentType={agentType}
                     className="h-full"
                   />
                 ) : (
