@@ -1,0 +1,45 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for ToolChain",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "dialog:default",
+    "dialog:allow-open",
+    "fs:default",
+    "shell:default",
+    "shell:allow-open",
+    "store:default",
+    "core:window:default",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "git", "cmd": "git", "args": true },
+        { "name": "code", "cmd": "code", "args": true },
+        { "name": "cursor", "cmd": "cursor", "args": true },
+        { "name": "subl", "cmd": "subl", "args": true }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "git", "cmd": "git", "args": true },
+        { "name": "code", "cmd": "code", "args": true },
+        { "name": "cursor", "cmd": "cursor", "args": true },
+        { "name": "subl", "cmd": "subl", "args": true }
+      ]
+    }
+  ]
+}

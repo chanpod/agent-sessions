@@ -21,12 +21,11 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
   const menuRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  // Check if running in Electron
-  const isElectron = typeof window !== 'undefined' && !!window.electron
-  const isWindows = typeof navigator !== 'undefined' && navigator.platform?.toLowerCase().includes('win')
+  // Check if running in a desktop app (Electron or Tauri)
+  const isDesktopApp = typeof window !== 'undefined' && !!window.electron
 
   useEffect(() => {
-    if (!isElectron || !isWindows) return
+    if (!isDesktopApp) return
 
     // Check initial maximized state
     const checkMaximized = async () => {
@@ -47,7 +46,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
       unsubMaximize()
       unsubUnmaximize()
     }
-  }, [isElectron, isWindows])
+  }, [isDesktopApp])
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -75,19 +74,19 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
   }
 
   const handleMinimize = async () => {
-    if (isElectron) {
+    if (isDesktopApp) {
       await window.electron!.window.minimize()
     }
   }
 
   const handleMaximize = async () => {
-    if (isElectron) {
+    if (isDesktopApp) {
       await window.electron!.window.maximize()
     }
   }
 
   const handleClose = async () => {
-    if (isElectron) {
+    if (isDesktopApp) {
       await window.electron!.window.close()
     }
   }
@@ -100,7 +99,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
       return
     }
 
-    if (!isElectron || !window.electron || !role) return
+    if (!isDesktopApp || !window.electron || !role) return
 
     // Execute role-based actions via IPC
     if (window.electron.menu) {
@@ -194,7 +193,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
       {
         label: 'Check for Updates...',
         action: async () => {
-          if (isElectron && window.electron?.menu) {
+          if (isDesktopApp && window.electron?.menu) {
             await window.electron.menu.checkForUpdates()
           }
         }
@@ -202,13 +201,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
     ]
   }
 
-  // Only render on Windows in Electron
-  if (!isElectron || !isWindows) {
+  // Only render in desktop app (Tauri or Electron) with custom decorations
+  if (!isDesktopApp) {
     return null
   }
 
   return (
-    <div className={cn('h-8 bg-[#1e1e1e] border-b border-gray-800 flex items-center justify-between app-drag-region', className)}>
+    <div data-tauri-drag-region className={cn('h-8 bg-[#1e1e1e] border-b border-gray-800 flex items-center justify-between app-drag-region', className)}>
       {/* Left: App name and menu */}
       <div className="flex items-center h-full">
         {/* App Name/Logo */}

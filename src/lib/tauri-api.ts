@@ -163,15 +163,17 @@ export const tauriAPI = {
 
     openInEditor: async (projectPath: string): Promise<{ success: boolean; editor?: string; error?: string }> => {
       try {
-        // Try common editors
         const { Command } = await import('@tauri-apps/plugin-shell')
-        for (const editor of ['code', 'cursor', 'subl', 'atom']) {
+        // Try scoped editor commands (defined in tauri.conf.json shell scope)
+        for (const editor of ['code', 'cursor', 'subl']) {
           try {
-            await Command.create(editor, [projectPath]).execute()
-            return { success: true, editor }
+            const result = await Command.create(editor, [projectPath]).execute()
+            if (result.code === 0 || result.code === null) {
+              return { success: true, editor }
+            }
           } catch { continue }
         }
-        return { success: false, error: 'No editor found' }
+        return { success: false, error: 'No editor found (tried code, cursor, subl)' }
       } catch (e) {
         return { success: false, error: String(e) }
       }
@@ -232,7 +234,7 @@ export const tauriAPI = {
       contextContent?: string
       skipPermissions?: boolean
       sessionTitle?: string
-    }): Promise<{ success: boolean; terminal?: TerminalInfo; error?: string }> => {
+    }): Promise<{ success: boolean; process?: { id: string; agentType: string; cwd: string }; error?: string }> => {
       try {
         const terminal: TerminalInfo = await invoke('spawn_agent', {
           projectPath: options.cwd,
@@ -241,7 +243,14 @@ export const tauriAPI = {
           sessionId: options.resumeSessionId || null,
           context: options.contextContent || '',
         })
-        return { success: true, terminal }
+        return {
+          success: true,
+          process: {
+            id: terminal.id,
+            agentType: options.agentType || 'claude',
+            cwd: options.cwd,
+          },
+        }
       } catch (e) {
         return { success: false, error: String(e) }
       }
@@ -334,12 +343,108 @@ export const tauriAPI = {
   },
 
   // Stubs for features not in MVP
-  git: createStubNamespace('git'),
+  git: {
+    getInfo: async (projectPath: string, _projectId: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+
+        // Check if it's a git repo
+        const revParse = await Command.create('git', ['-C', projectPath, 'rev-parse', '--is-inside-work-tree']).execute()
+        if (revParse.code !== 0) {
+          return { isGitRepo: false }
+        }
+
+        // Get current branch
+        const branchResult = await Command.create('git', ['-C', projectPath, 'rev-parse', '--abbrev-ref', 'HEAD']).execute()
+        const branch = branchResult.stdout.trim()
+
+        // Check for changes
+        const statusResult = await Command.create('git', ['-C', projectPath, 'status', '--porcelain']).execute()
+        const hasChanges = statusResult.stdout.trim().length > 0
+
+        // Get ahead/behind counts
+        let ahead = 0
+        let behind = 0
+        try {
+          const abResult = await Command.create('git', ['-C', projectPath, 'rev-list', '--left-right', '--count', `HEAD...@{upstream}`]).execute()
+          if (abResult.code === 0) {
+            const parts = abResult.stdout.trim().split(/\s+/)
+            ahead = parseInt(parts[0]) || 0
+            behind = parseInt(parts[1]) || 0
+          }
+        } catch { /* no upstream */ }
+
+        return { isGitRepo: true, branch, hasChanges, ahead, behind, success: true }
+      } catch {
+        return { isGitRepo: false, success: false }
+      }
+    },
+
+    listBranches: async (projectPath: string, _projectId: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'branch', '--format=%(refname:short)']).execute()
+        if (result.code !== 0) return { success: false, localBranches: [] }
+        const localBranches = result.stdout.trim().split('\n').filter(Boolean)
+        return { success: true, localBranches }
+      } catch {
+        return { success: false, localBranches: [] }
+      }
+    },
+
+    getChangedFiles: async (projectPath: string, _projectId: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'status', '--porcelain=v1']).execute()
+        if (result.code !== 0) return { success: false, files: [] }
+
+        const files = result.stdout.trim().split('\n').filter(Boolean).map(line => {
+          const status = line.substring(0, 2).trim()
+          const filePath = line.substring(3)
+          let type: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' = 'modified'
+          if (status === '??') type = 'untracked'
+          else if (status.includes('A')) type = 'added'
+          else if (status.includes('D')) type = 'deleted'
+          else if (status.includes('R')) type = 'renamed'
+          return { path: filePath, status, type }
+        })
+
+        return { success: true, files }
+      } catch {
+        return { success: false, files: [] }
+      }
+    },
+
+    checkout: async (projectPath: string, branch: string, _projectId: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'checkout', branch]).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    // Event handlers
+    onGitChange: (_callback: () => void) => () => {},
+  },
   fs: createStubNamespace('fs'),
   ssh: createStubNamespace('ssh'),
   project: createStubNamespace('project'),
   cli: {
-    detectAll: async () => ({ success: true, tools: [] }),
+    detectAll: async () => ({
+      success: true,
+      tools: [
+        {
+          id: 'claude',
+          name: 'Claude',
+          installed: true,
+          version: 'latest',
+          installMethod: 'native' as const,
+          defaultModel: 'claude-sonnet-4-20250514',
+        },
+      ],
+    }),
     detect: async () => ({ id: 'claude', name: 'Claude', installed: true }),
     install: async () => ({ success: false, output: '', error: 'Not implemented' }),
     getPlatform: async () => (navigator.platform.includes('Mac') ? 'macos' as const : 'linux' as const),
