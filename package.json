@@ -14,7 +14,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "dev:frontend": "vite --config vite.config.tauri.ts",
+    "build:frontend": "vite build --config vite.config.tauri.ts",
+    "tauri:dev": "cargo tauri dev",
+    "tauri:build": "cargo tauri build"
   },
   "dependencies": {
     "@base-ui-components/react": "1.0.0-rc.0",
@@ -25,6 +29,11 @@
     "@monaco-editor/react": "^4.7.0",
     "@tabler/icons-react": "^3.36.1",
     "@tailwindcss/typography": "^0.5.19",
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-fs": "^2.4.5",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-store": "^2.4.2",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
