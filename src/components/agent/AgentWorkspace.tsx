@@ -657,12 +657,31 @@ export function AgentWorkspace({
     return state?.error ?? null
   })
 
+  // Detect terminal completion: the response finished (has messages, not active,
+  // not waiting) or the process exited. This handles the case where the entire
+  // response completes within a single event batch — anyActive never transitions
+  // to true from React's perspective because the batch applies all events in one
+  // set() call.
+  const hasTerminalCompleted = useAgentStreamStore((store) => {
+    const conv = store.conversations.get(initialProcessId)
+    const pids = conv?.processIds ?? [initialProcessId]
+    const latestPid = pids[pids.length - 1]!
+    const state = store.terminals.get(latestPid)
+    if (!state) return false
+    return state.processExited || (state.messages.length > 0 && !state.isActive && !state.isWaitingForResponse)
+  })
+
   // Clear isProcessing when agent starts responding (anyActive becomes true)
+  // OR when the response completed within a single batch (hasTerminalCompleted).
   useEffect(() => {
-    if (anyActive && isProcessing) {
-      setIsProcessing(false)
+    if (isProcessing) {
+      console.log('[AgentWorkspace] isProcessing check:', { anyActive, hasTerminalCompleted })
+      if (anyActive || hasTerminalCompleted) {
+        console.log('[AgentWorkspace] Clearing isProcessing')
+        setIsProcessing(false)
+      }
     }
-  }, [anyActive, isProcessing])
+  }, [anyActive, hasTerminalCompleted, isProcessing])
 
   // Clear isProcessing when an error is detected (process died before responding)
   useEffect(() => {

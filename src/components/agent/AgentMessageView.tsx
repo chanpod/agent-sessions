@@ -369,10 +369,18 @@ export const AgentMessageView = forwardRef<AgentMessageViewHandle, AgentMessageV
   }, [conversation.messages, conversation.currentMessage])
 
   // Group into display items (turns + standalone messages)
-  const displayItems = useMemo(
-    () => groupIntoDisplayItems(allMessages),
-    [allMessages]
-  )
+  const displayItems = useMemo(() => {
+    const items = groupIntoDisplayItems(allMessages)
+    // Debug: log rendering structure
+    console.log('[AgentMessageView] allMessages:', allMessages.length,
+      allMessages.map(m => `${m.role}:[${m.blocks.map(b => b.type).join(',')}]`).join(' | '))
+    console.log('[AgentMessageView] displayItems:', items.map(i =>
+      i.kind === 'assistant-turn'
+        ? `turn(activity=${i.activityBlocks.length}, response=${i.responseBlocks.length}, blocks=[${i.responseBlocks.map(b => b.type).join(',')}])`
+        : `standalone(${i.message.role})`
+    ).join(' | '))
+    return items
+  }, [allMessages])
 
   // Build card navigation entries — find the LAST display item index
   // for each special tool type

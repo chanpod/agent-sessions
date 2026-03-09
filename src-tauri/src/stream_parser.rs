@@ -117,6 +117,21 @@ struct TerminalStreamState {
     usage: Option<TokenUsage>,
     stop_reason: Option<String>,
     processed_message_ids: HashSet<String>,
+    /// Accumulated content blocks from chunked `assistant` events.
+    /// Claude CLI may emit the same message ID multiple times with different
+    /// content types (e.g. thinking, then tool_use, then text). We accumulate
+    /// all blocks and emit them together when the message ID changes or a
+    /// non-assistant event arrives.
+    pending_assistant: Option<PendingAssistant>,
+}
+
+/// Accumulated state for a chunked assistant message.
+struct PendingAssistant {
+    msg_id: String,
+    model: String,
+    stop_reason: Option<String>,
+    usage: Option<TokenUsage>,
+    blocks: Vec<Value>,
 }
 
 impl TerminalStreamState {
@@ -130,6 +145,7 @@ impl TerminalStreamState {
             usage: None,
             stop_reason: None,
             processed_message_ids: HashSet::new(),
+            pending_assistant: None,
         }
     }
 
@@ -351,7 +367,10 @@ impl StreamParser {
     pub fn handle_exit(&mut self, terminal_id: &str, exit_code: Option<i32>) -> Vec<AgentEvent> {
         let mut events: Vec<AgentEvent> = Vec::new();
 
-        if let Some(state) = self.states.get(terminal_id) {
+        if let Some(state) = self.states.get_mut(terminal_id) {
+            // Flush any accumulated assistant content before exit
+            events.append(&mut Self::flush_pending_assistant(state));
+
             if let Some(ref msg_id) = state.message_id {
                 events.push(AgentEvent::MessageEnd {
                     message_id: msg_id.clone(),
@@ -386,7 +405,16 @@ impl StreamParser {
             .entry(terminal_id.to_string())
             .or_insert_with(TerminalStreamState::new);
 
-        match event_type.as_str() {
+        // For non-assistant events, flush any accumulated assistant content first.
+        // Claude CLI emits the same msg_id as multiple `assistant` events (one per
+        // content type), so we accumulate and flush when a different event arrives.
+        let mut events = if event_type != "assistant" {
+            Self::flush_pending_assistant(state)
+        } else {
+            Vec::new()
+        };
+
+        let mut new_events = match event_type.as_str() {
             "message_start" => Self::handle_message_start(state, event),
             "content_block_start" => Self::handle_content_block_start(state, event),
             "content_block_delta" => Self::handle_content_block_delta(state, event),
@@ -398,7 +426,10 @@ impl StreamParser {
             "user" => Self::handle_user(event),
             "result" => Self::handle_result(event),
             _ => Vec::new(),
-        }
+        };
+
+        events.append(&mut new_events);
+        events
     }
 
     // -- message_start ------------------------------------------------------
@@ -443,6 +474,11 @@ impl StreamParser {
         state.current_block_index = index;
         let block_type = val_str(block, "type").unwrap_or_default();
         state.current_block_type = Some(block_type.clone());
+        log::info!(
+            "[parser] content_block_start: msg='{}' index={} type='{}'",
+            state.message_id.as_deref().unwrap_or("?")[..state.message_id.as_deref().unwrap_or("?").len().min(12)].to_string(),
+            index, block_type
+        );
 
         let msg_id = state.message_id.clone().unwrap_or_default();
         let idx = index as u32;
@@ -587,8 +623,13 @@ impl StreamParser {
     // -- message_stop -------------------------------------------------------
 
     fn handle_message_stop(state: &mut TerminalStreamState) -> Vec<AgentEvent> {
+        let msg_id = state.message_id.clone().unwrap_or_default();
+        log::info!(
+            "[parser] handle_message_stop: msg_id='{}' stop_reason={:?}",
+            &msg_id[..msg_id.len().min(12)], state.stop_reason
+        );
         let events = vec![AgentEvent::MessageEnd {
-            message_id: state.message_id.clone().unwrap_or_default(),
+            message_id: msg_id.clone(),
             model: state.model.clone().unwrap_or_default(),
             stop_reason: state.stop_reason.clone(),
             usage: state.usage.clone(),
@@ -624,6 +665,12 @@ impl StreamParser {
     }
 
     // -- assistant (print-mode complete message) ----------------------------
+    //
+    // Claude CLI may emit the same message ID as multiple `assistant` events,
+    // each carrying a different content-type slice (e.g. thinking, then
+    // tool_use, then text). We accumulate all content blocks and only emit
+    // events when the message ID changes or a non-assistant event arrives
+    // (via `flush_pending_assistant`).
 
     fn handle_assistant(state: &mut TerminalStreamState, event: &Value) -> Vec<AgentEvent> {
         let msg = match event.get("message") {
@@ -645,61 +692,128 @@ impl StreamParser {
         let usage = parse_usage_field(msg, "usage");
         let stop_reason = val_str(msg, "stop_reason");
 
-        state.message_id = Some(msg_id.clone());
-        state.model = Some(model.clone());
+        let new_blocks: Vec<Value> = msg
+            .get("content")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
 
-        let mut events = Vec::with_capacity(8);
+        let block_types: Vec<String> = new_blocks
+            .iter()
+            .filter_map(|b| val_str(b, "type"))
+            .collect();
+
+        // If there's already a pending assistant with a DIFFERENT msg_id, flush it first.
+        let mut flush_events = Vec::new();
+        if let Some(ref pending) = state.pending_assistant {
+            if pending.msg_id != msg_id {
+                flush_events = Self::flush_pending_assistant(state);
+            }
+        }
+
+        // Accumulate blocks into the pending assistant state.
+        if let Some(ref mut pending) = state.pending_assistant {
+            // Same msg_id — just append blocks and update metadata.
+            pending.blocks.extend(new_blocks);
+            // Keep the latest non-None stop_reason and usage.
+            if stop_reason.is_some() {
+                pending.stop_reason = stop_reason;
+            }
+            if usage.is_some() {
+                pending.usage = usage;
+            }
+        } else {
+            state.pending_assistant = Some(PendingAssistant {
+                msg_id: msg_id.clone(),
+                model,
+                stop_reason,
+                usage,
+                blocks: new_blocks,
+            });
+        }
+
+        log::info!(
+            "[parser] handle_assistant: ACCUMULATED msg_id='{}' new_blocks={:?} total_blocks={}",
+            &msg_id[..msg_id.len().min(12)],
+            block_types,
+            state.pending_assistant.as_ref().map(|p| p.blocks.len()).unwrap_or(0)
+        );
+
+        flush_events
+    }
+
+    /// Emit all accumulated assistant content as events (MessageStart + blocks + MessageEnd).
+    /// Called when a non-assistant event arrives or the message ID changes.
+    fn flush_pending_assistant(state: &mut TerminalStreamState) -> Vec<AgentEvent> {
+        let pending = match state.pending_assistant.take() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        if pending.blocks.is_empty() {
+            return Vec::new();
+        }
+
+        let msg_id = pending.msg_id;
+        let model = pending.model;
+
+        log::info!(
+            "[parser] flush_pending_assistant: msg_id='{}' blocks={} types={:?}",
+            &msg_id[..msg_id.len().min(12)],
+            pending.blocks.len(),
+            pending.blocks.iter().filter_map(|b| val_str(b, "type")).collect::<Vec<_>>()
+        );
+
+        let mut events = Vec::with_capacity(pending.blocks.len() * 2 + 2);
 
         // MessageStart
         events.push(AgentEvent::MessageStart {
             message_id: msg_id.clone(),
             model: model.clone(),
-            usage: usage.clone(),
+            usage: pending.usage.clone(),
         });
 
-        // Content blocks
-        if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
-            for (i, block) in content.iter().enumerate() {
-                let idx = i as u32;
-                let block_type = val_str(block, "type").unwrap_or_default();
-                match block_type.as_str() {
-                    "text" => {
-                        if let Some(text) = val_str(block, "text") {
-                            events.push(AgentEvent::TextDelta {
-                                message_id: msg_id.clone(),
-                                block_index: idx,
-                                text,
-                            });
-                        }
-                    }
-                    "thinking" => {
-                        if let Some(text) = val_str(block, "thinking") {
-                            events.push(AgentEvent::ThinkingDelta {
-                                message_id: msg_id.clone(),
-                                block_index: idx,
-                                text,
-                            });
-                        }
-                    }
-                    "tool_use" => {
-                        events.push(AgentEvent::ToolStart {
+        // Content blocks — index is the position in the accumulated array
+        for (i, block) in pending.blocks.iter().enumerate() {
+            let idx = i as u32;
+            let block_type = val_str(block, "type").unwrap_or_default();
+            match block_type.as_str() {
+                "text" => {
+                    if let Some(text) = val_str(block, "text") {
+                        events.push(AgentEvent::TextDelta {
                             message_id: msg_id.clone(),
                             block_index: idx,
-                            tool_id: val_str(block, "id").unwrap_or_default(),
-                            name: val_str(block, "name").unwrap_or_default(),
+                            text,
                         });
-                        if let Some(input) = block.get("input") {
-                            if let Ok(json_str) = serde_json::to_string(input) {
-                                events.push(AgentEvent::ToolInputDelta {
-                                    message_id: msg_id.clone(),
-                                    block_index: idx,
-                                    partial_json: json_str,
-                                });
-                            }
+                    }
+                }
+                "thinking" => {
+                    if let Some(text) = val_str(block, "thinking") {
+                        events.push(AgentEvent::ThinkingDelta {
+                            message_id: msg_id.clone(),
+                            block_index: idx,
+                            text,
+                        });
+                    }
+                }
+                "tool_use" => {
+                    events.push(AgentEvent::ToolStart {
+                        message_id: msg_id.clone(),
+                        block_index: idx,
+                        tool_id: val_str(block, "id").unwrap_or_default(),
+                        name: val_str(block, "name").unwrap_or_default(),
+                    });
+                    if let Some(input) = block.get("input") {
+                        if let Ok(json_str) = serde_json::to_string(input) {
+                            events.push(AgentEvent::ToolInputDelta {
+                                message_id: msg_id.clone(),
+                                block_index: idx,
+                                partial_json: json_str,
+                            });
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
 
@@ -707,8 +821,8 @@ impl StreamParser {
         events.push(AgentEvent::MessageEnd {
             message_id: msg_id.clone(),
             model,
-            stop_reason,
-            usage,
+            stop_reason: pending.stop_reason,
+            usage: pending.usage,
         });
 
         state.reset_message_state();

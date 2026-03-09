@@ -32,6 +32,7 @@ pub enum PtyEvent {
 
 /// Snapshot of terminal metadata (cheap to clone / serialize).
 #[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalInfo {
     pub id: String,
     pub pid: u32,
@@ -151,7 +152,10 @@ impl PtyManager {
         // Determine shell and arguments.
         let (shell_exe, shell_args) = if let Some(ref cmd) = options.initial_command {
             let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-            (sh, vec!["-l".into(), "-i".into(), "-c".into(), cmd.clone()])
+            // Use -l for login shell (to get PATH) but NOT -i (interactive) —
+            // interactive mode enables echo, prompts, and readline which
+            // interfere with JSON streaming for agent terminals.
+            (sh, vec!["-l".into(), "-c".into(), cmd.clone()])
         } else {
             let sh = options
                 .shell

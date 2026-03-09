@@ -37,6 +37,7 @@ pub fn start_event_pipeline(
 
     // Spawn a dedicated task to process all PTY events
     tauri::async_runtime::spawn(async move {
+        log::info!("[bridge] Event pipeline started, waiting for PTY events...");
         loop {
             match rx.recv().await {
                 Ok(event) => {
@@ -73,6 +74,15 @@ fn process_pty_event(
             data,
             hidden,
         } => {
+            let preview = String::from_utf8_lossy(&data[..data.len().min(200)]);
+            log::debug!(
+                "[bridge] PtyEvent::Data terminal={} len={} hidden={} preview='{}'",
+                &terminal_id[..8.min(terminal_id.len())],
+                data.len(),
+                hidden,
+                preview.replace('\n', "\\n").replace('\r', "\\r")
+            );
+
             // For non-hidden terminals, forward raw data to frontend for xterm.js
             if !hidden {
                 use tauri::Emitter;
@@ -91,8 +101,21 @@ fn process_pty_event(
                 p.process_output(terminal_id, data)
             };
 
+            if !agent_events.is_empty() {
+                log::info!(
+                    "[bridge] StreamParser produced {} events for terminal {}",
+                    agent_events.len(),
+                    &terminal_id[..8.min(terminal_id.len())]
+                );
+            }
+
             // Update session state and queue events for batched delivery
             for agent_event in agent_events {
+                log::debug!(
+                    "[bridge] Queuing event for terminal {}: {:?}",
+                    &terminal_id[..8.min(terminal_id.len())],
+                    std::mem::discriminant(&agent_event)
+                );
                 session_manager.process_event(terminal_id, &agent_event);
                 event_batcher.queue(terminal_id.clone(), agent_event);
             }
@@ -103,6 +126,13 @@ fn process_pty_event(
             exit_code,
             hidden,
         } => {
+            log::info!(
+                "[bridge] PtyEvent::Exit terminal={} code={:?} hidden={}",
+                &terminal_id[..8.min(terminal_id.len())],
+                exit_code,
+                hidden
+            );
+
             // Generate exit events from parser
             let exit_events = {
                 let mut p = parser.lock();

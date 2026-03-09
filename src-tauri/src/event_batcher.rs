@@ -43,8 +43,17 @@ impl EventBatcher {
                             let batches: Vec<EventBatch> = pending.drain()
                                 .map(|(terminal_id, events)| EventBatch { terminal_id, events })
                                 .collect();
+                            let total_events: usize = batches.iter().map(|b| b.events.len()).sum();
+                            log::info!(
+                                "[batcher] Flushing {} batches ({} total events) to frontend",
+                                batches.len(),
+                                total_events
+                            );
                             // Single IPC call for ALL terminals
-                            let _ = app_handle.emit("agent:events-batch", &batches);
+                            match app_handle.emit("agent:events-batch", &batches) {
+                                Ok(_) => log::debug!("[batcher] emit succeeded"),
+                                Err(e) => log::error!("[batcher] emit FAILED: {}", e),
+                            }
                         }
                     }
                 }

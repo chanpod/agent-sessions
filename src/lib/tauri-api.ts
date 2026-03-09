@@ -58,6 +58,23 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 /**
+ * Convert snake_case object keys to camelCase (shallow).
+ * Rust serde serializes struct fields as snake_case by default,
+ * but the frontend stores expect camelCase (messageId, blockIndex, etc.).
+ */
+function snakeToCamelCase(obj: unknown): unknown {
+  if (obj === null || obj === undefined || typeof obj !== 'object') return obj
+  if (Array.isArray(obj)) return obj.map(snakeToCamelCase)
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const camelKey = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+    // Recursively convert nested objects (e.g. usage { input_tokens → inputTokens })
+    result[camelKey] = (value !== null && typeof value === 'object') ? snakeToCamelCase(value) : value
+  }
+  return result
+}
+
+/**
  * The Tauri API object that replaces window.electron.
  * Compatible with the existing preload interface.
  */
@@ -123,17 +140,25 @@ export const tauriAPI = {
     },
 
     onEventBatch: (callback: (events: DetectorEvent[]) => void): (() => void) => {
+      console.log('[TauriAPI] onEventBatch: subscribing to agent:events-batch')
       let unlisten: UnlistenFn | null = null
       listen<AgentEventBatch[]>('agent:events-batch', (event) => {
-        // Convert Rust event batches to the DetectorEvent format the frontend expects
+        console.log('[TauriAPI] agent:events-batch received:', event.payload.length, 'batches',
+          event.payload.map(b => `${b.terminal_id}: ${b.events.length} events`))
+        // Convert Rust event batches to the DetectorEvent format the frontend expects.
+        // Rust serializes enum variants as e.g. "session_init", "text_delta"
+        // but the frontend expects "agent-session-init", "agent-text-delta", etc.
         const detectorEvents: DetectorEvent[] = []
         for (const batch of event.payload) {
           for (const agentEvent of batch.events) {
+            const frontendType = 'agent-' + agentEvent.type.replace(/_/g, '-')
+            // Convert snake_case data keys to camelCase (Rust serde → JS convention)
+            const camelData = snakeToCamelCase(agentEvent.data)
             detectorEvents.push({
               terminalId: batch.terminal_id,
-              type: agentEvent.type,
+              type: frontendType,
               timestamp: Date.now(),
-              data: agentEvent.data,
+              data: camelData,
             })
           }
         }
@@ -192,35 +217,56 @@ export const tauriAPI = {
     },
   },
 
-  store: {
-    get: async (key: string): Promise<unknown> => {
-      try {
-        const { load } = await import('@tauri-apps/plugin-store')
-        const store = await load('toolchain-store.json')
-        return await store.get(key)
-      } catch {
-        return undefined
+  store: (() => {
+    // Cache the store instance to avoid re-loading on every call
+    let storePromise: Promise<any> | null = null
+    async function getStore() {
+      if (!storePromise) {
+        storePromise = import('@tauri-apps/plugin-store').then(({ load }) =>
+          load('toolchain-store.json', { autoSave: true })
+        )
       }
-    },
-    set: async (key: string, value: unknown): Promise<void> => {
-      const { load } = await import('@tauri-apps/plugin-store')
-      const store = await load('toolchain-store.json')
-      await store.set(key, value)
-      await store.save()
-    },
-    delete: async (key: string): Promise<void> => {
-      const { load } = await import('@tauri-apps/plugin-store')
-      const store = await load('toolchain-store.json')
-      await store.delete(key)
-      await store.save()
-    },
-    clear: async (): Promise<void> => {
-      const { load } = await import('@tauri-apps/plugin-store')
-      const store = await load('toolchain-store.json')
-      await store.clear()
-      await store.save()
-    },
-  },
+      return storePromise
+    }
+    return {
+      get: async (key: string): Promise<unknown> => {
+        try {
+          const store = await getStore()
+          return await store.get(key)
+        } catch (e) {
+          console.error('[TauriStore] get error:', key, e)
+          return undefined
+        }
+      },
+      set: async (key: string, value: unknown): Promise<void> => {
+        try {
+          const store = await getStore()
+          await store.set(key, value)
+          await store.save()
+        } catch (e) {
+          console.error('[TauriStore] set error:', key, e)
+        }
+      },
+      delete: async (key: string): Promise<void> => {
+        try {
+          const store = await getStore()
+          await store.delete(key)
+          await store.save()
+        } catch (e) {
+          console.error('[TauriStore] delete error:', key, e)
+        }
+      },
+      clear: async (): Promise<void> => {
+        try {
+          const store = await getStore()
+          await store.clear()
+          await store.save()
+        } catch (e) {
+          console.error('[TauriStore] clear error:', e)
+        }
+      },
+    }
+  })(),
 
   agent: {
     spawn: async (options: {
@@ -257,10 +303,14 @@ export const tauriAPI = {
     },
 
     sendMessage: async (id: string, message: Record<string, unknown>): Promise<void> => {
-      // The message object has { role, content } — extract content for the Rust command
-      const content = typeof message.content === 'string'
-        ? message.content
-        : JSON.stringify(message.content)
+      // The message object is { type: 'user', message: { role: 'user', content: '...' } }
+      // Extract the actual content string for the Rust command
+      const innerMsg = (message as any).message
+      const content = typeof innerMsg?.content === 'string'
+        ? innerMsg.content
+        : typeof message.content === 'string'
+          ? message.content
+          : JSON.stringify(message)
       await invoke('send_agent_message', {
         terminalId: id,
         message: content,
@@ -425,8 +475,11 @@ export const tauriAPI = {
       }
     },
 
-    // Event handlers
+    // Event handlers / watchers
     onGitChange: (_callback: () => void) => () => {},
+    onChanged: (_callback: (path: string) => void) => () => {},
+    watch: (_projectPath: string) => {},
+    unwatch: (_projectPath: string) => {},
   },
   fs: createStubNamespace('fs'),
   ssh: createStubNamespace('ssh'),

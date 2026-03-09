@@ -386,10 +386,15 @@ function applyAgentEvent(
       // and a complete print-mode 'assistant' event for the same message. Without checking
       // currentMessage, the duplicate message-start overwrites the in-progress streaming
       // message with an empty one, destroying all accumulated content.
-      if (data.messageId && (
-        terminalState.messages.some((m) => m.id === data.messageId) ||
-        terminalState.currentMessage?.id === data.messageId
-      )) {
+      const alreadyCompleted = terminalState.messages.some((m) => m.id === data.messageId)
+      const currentlyStreaming = terminalState.currentMessage?.id === data.messageId
+      if (data.messageId && (alreadyCompleted || currentlyStreaming)) {
+        console.warn('[AgentStreamStore] MESSAGE START DEDUPED:', {
+          messageId: data.messageId,
+          alreadyCompleted,
+          currentlyStreaming,
+          completedMsgIds: terminalState.messages.map(m => m.id),
+        })
         newState = terminalState
         break
       }
@@ -413,7 +418,15 @@ function applyAgentEvent(
 
     case 'agent-text-delta': {
       const data = event.data as AgentTextDeltaData
+      const fullData = event.data as Record<string, unknown>
       if (!terminalState.currentMessage) {
+        console.warn('[AgentStreamStore] TEXT DELTA DROPPED — no currentMessage!', {
+          blockIndex: data.blockIndex,
+          textLen: data.text?.length,
+          textPreview: data.text?.slice(0, 80),
+          messageId: fullData.messageId,
+          completedMsgIds: terminalState.messages.map(m => m.id),
+        })
         newState = terminalState
         break
       }
@@ -734,6 +747,41 @@ function applyAgentEvent(
           isActive: false,
           error: `${data.errorType}: ${data.message}`,
         }
+      }
+      break
+    }
+
+    case 'agent-session-result': {
+      // session_result with subtype "success" is the definitive "agent is done" signal.
+      // Ensure the terminal state reflects completion: clear isActive, finalize
+      // any in-progress message, and mark waiting flags as resolved.
+      const resultData = event.data as AgentSessionResultData
+
+      if (resultData.subtype === 'success' || resultData.subtype === 'error') {
+        // If there's still a currentMessage in flight, finalize it
+        if (terminalState.currentMessage) {
+          const completedMessage: AgentMessage = {
+            ...terminalState.currentMessage,
+            blocks: terminalState.currentMessage.blocks.map((b) => ({ ...b, isComplete: true })),
+            status: 'completed',
+            completedAt: Date.now(),
+          }
+          newState = {
+            ...terminalState,
+            currentMessage: null,
+            messages: [...terminalState.messages, completedMessage],
+            isActive: false,
+            isWaitingForResponse: false,
+          }
+        } else {
+          newState = {
+            ...terminalState,
+            isActive: false,
+            isWaitingForResponse: false,
+          }
+        }
+      } else {
+        newState = terminalState
       }
       break
     }
@@ -1350,6 +1398,13 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
             // (their buffered deltas need flushing before the structural event)
             const terminalsToFlush = new Set<string>()
 
+            // Debug: log all event types in this batch
+            console.log('[AgentStreamStore] batch event types:', events.map(e => {
+              const d = e.data as Record<string, unknown> | undefined
+              const extra = d?.messageId ? ` msgId=${String(d.messageId).slice(0, 12)}` : ''
+              return `${e.type}${extra}`
+            }).join(', '))
+
             for (const event of events) {
               // Handle session init
               if (event.type === 'agent-session-init' && event.data?.sessionId) {
@@ -1401,6 +1456,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                 // streaming means ~1000 deltas/sec, but only the active
                 // session's ~100 deltas/sec hit the store.
                 if (DEFERRABLE_DELTA_TYPES.has(event.type) && !activePids.has(event.terminalId)) {
+                  console.warn('[AgentStreamStore] DEFERRING event as background:', event.type, 'terminal:', event.terminalId.slice(0, 8), 'activePids:', [...activePids].map(p => p.slice(0, 8)))
                   let buffer = backgroundDeltaBuffer.get(event.terminalId)
                   if (!buffer) {
                     buffer = []
@@ -1522,6 +1578,29 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
                   ...(sessionCosts ? { sessionCosts } : {}),
                 }
               })
+            }
+
+            // Debug: log terminal state after batch processing
+            if (agentEvents.length > 0) {
+              for (const tid of new Set(agentEvents.map(e => e.terminalId))) {
+                const state = get().terminals.get(tid)
+                if (state) {
+                  const msgDetails = state.messages.map((m, i) =>
+                    `msg[${i}](${m.id?.slice(0, 8)}): [${m.blocks.map(b => `${b.type}${b.type === 'text' ? `(${b.content.length}ch)` : ''}`).join(',')}]`
+                  ).join(' | ')
+                  console.log(`[AgentStreamStore] Post-batch state for ${tid.slice(0, 8)}:`,
+                    `msgs=${state.messages.length}`,
+                    `currentMsg=${state.currentMessage?.id?.slice(0, 8) ?? 'null'}`,
+                    `currentBlocks=[${state.currentMessage?.blocks.map(b => `${b.type}${b.type === 'text' ? `(${b.content.length}ch)` : ''}`).join(',') ?? ''}]`,
+                    `isActive=${state.isActive}`,
+                    `waiting=${state.isWaitingForResponse}`,
+                    `exited=${state.processExited}`,
+                  )
+                  if (msgDetails) {
+                    console.log(`[AgentStreamStore] Completed messages: ${msgDetails}`)
+                  }
+                }
+              }
             }
 
             // Post-processing: emit notifications and batch all remaining state
@@ -1863,14 +1942,26 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
   )
 )
 
-// Auto-subscribe to detector events when the store is created
-// This ensures the listener is set up BEFORE any component mounts,
-// preventing race conditions where events fire before subscription
-if (typeof window !== 'undefined' && (window.electron?.detector?.onEventBatch || window.electron?.detector?.onEvent)) {
-  // Defer subscription to next tick to ensure window.electron is fully initialized
-  setTimeout(() => {
-    useAgentStreamStore.getState().subscribeToEvents()
-  }, 0)
+// Auto-subscribe to detector events when the store is created.
+// window.electron may not exist yet (set asynchronously by tauri-api.ts),
+// so we poll until it's available.
+if (typeof window !== 'undefined') {
+  const trySubscribe = () => {
+    if (window.electron?.detector?.onEventBatch || window.electron?.detector?.onEvent) {
+      console.log('[AgentStreamStore] detector API found, subscribing to events')
+      useAgentStreamStore.getState().subscribeToEvents()
+      return true
+    }
+    return false
+  }
+  if (!trySubscribe()) {
+    // Poll for window.electron to be set (tauri-api.ts loads async)
+    const interval = setInterval(() => {
+      if (trySubscribe()) clearInterval(interval)
+    }, 50)
+    // Give up after 5 seconds
+    setTimeout(() => clearInterval(interval), 5000)
+  }
 }
 
 // Cleanup function for when the app unmounts

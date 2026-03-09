@@ -94,7 +94,7 @@ pub fn spawn_agent(
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--model".to_string(),
-        model,
+        model.clone(),
     ];
 
     if let Some(ref sid) = session_id {
@@ -103,12 +103,16 @@ pub fn spawn_agent(
     }
 
     if let Some(ref ctx) = context {
-        cmd_parts.push("--append-system-prompt".to_string());
-        // Quote the context string for shell safety
-        cmd_parts.push(format!("\"{}\"", ctx.replace('"', "\\\"")));
+        if !ctx.is_empty() {
+            cmd_parts.push("--append-system-prompt".to_string());
+            // Quote the context string for shell safety
+            cmd_parts.push(format!("\"{}\"", ctx.replace('"', "\\\"")));
+        }
     }
 
     let command = cmd_parts.join(" ");
+    log::info!("[spawn_agent] command: {}", command);
+    log::info!("[spawn_agent] cwd: {} model: {} session_id: {:?}", project_path, model, session_id);
 
     pty_manager.create_terminal(CreateTerminalOptions {
         cwd: Some(project_path),
@@ -127,6 +131,13 @@ pub async fn send_agent_message(
     message: String,
     session_id: String,
 ) -> Result<(), String> {
+    log::info!(
+        "[send_agent_message] terminal={} message_len={} session_id='{}'",
+        &terminal_id[..8.min(terminal_id.len())],
+        message.len(),
+        session_id
+    );
+
     // Build stream-json formatted message
     let payload = serde_json::json!({
         "type": "user",
@@ -140,6 +151,8 @@ pub async fn send_agent_message(
     let mut data = serde_json::to_string(&payload)
         .map_err(|e| format!("Failed to serialize message: {e}"))?;
     data.push('\n');
+
+    log::debug!("[send_agent_message] writing {} bytes to PTY", data.len());
 
     // Use chunked write for large messages to avoid overwhelming the PTY buffer
     pty_manager
@@ -204,6 +217,7 @@ pub fn get_default_shell() -> Result<String, String> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemInfo {
     pub platform: String,
     pub arch: String,
