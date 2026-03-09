@@ -1,9 +1,9 @@
 [package]
 name = "toolchain"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 description = "ToolChain - High-performance multi-terminal agent development environment"
-rust-version = "1.77"
+rust-version = "1.77.2"
 
 [lib]
 name = "toolchain_lib"
@@ -37,6 +37,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 dirs = "6"
 regex = "1"
 crossbeam-channel = "0.5"
+axum = "0.7"
+tower = "0.5"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2.3.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

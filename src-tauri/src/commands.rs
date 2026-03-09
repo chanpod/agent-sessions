@@ -3,6 +3,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::event_batcher::EventBatcher;
+use crate::permission_manager::{AllowlistConfig, PermissionDecision, PermissionManager, PermissionResponse};
 use crate::pty_manager::{CreateTerminalOptions, PtyManager, TerminalInfo};
 use crate::session_state::SessionManager;
 use crate::session_state::AgentMessage;
@@ -11,6 +12,7 @@ use crate::session_state::AgentMessage;
 pub type PtyManagerState = Arc<PtyManager>;
 pub type SessionManagerState = Arc<SessionManager>;
 pub type EventBatcherState = Arc<EventBatcher>;
+pub type PermissionManagerState = Arc<PermissionManager>;
 
 // ---------------------------------------------------------------------------
 // Terminal / PTY commands
@@ -262,4 +264,136 @@ pub fn get_system_info() -> Result<SystemInfo, String> {
         arch,
         hostname,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Permission commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn respond_to_permission(
+    perm_manager: State<'_, PermissionManagerState>,
+    id: String,
+    decision: String,
+    always_allow: Option<bool>,
+    bash_rules: Option<Vec<Vec<String>>>,
+    project_path: Option<String>,
+    tool_name: Option<String>,
+) -> Result<(), String> {
+    let perm_decision = match decision.as_str() {
+        "allow" => PermissionDecision::Allow,
+        "deny" => PermissionDecision::Deny,
+        _ => return Err(format!("Invalid decision: {}", decision)),
+    };
+
+    // If "always allow" was requested for a non-Bash tool, persist it
+    if always_allow == Some(true) {
+        if let (Some(ref project), Some(ref tool)) = (&project_path, &tool_name) {
+            perm_manager.add_allowed_tool(project, tool);
+        }
+    }
+
+    // If bash rules were provided, persist them
+    if let Some(rules) = bash_rules {
+        if let Some(ref project) = project_path {
+            for rule in rules {
+                perm_manager.add_bash_rule(project, rule);
+            }
+        }
+    }
+
+    perm_manager.resolve_pending(
+        &id,
+        PermissionResponse {
+            decision: perm_decision,
+            reason: None,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn install_hooks() -> Result<(), String> {
+    // Read current server info to get port/token
+    let server_info_path = dirs::data_dir()
+        .map(|d| d.join("toolchain").join("server.json"))
+        .ok_or("Cannot determine data directory")?;
+
+    let data = std::fs::read_to_string(&server_info_path)
+        .map_err(|e| format!("Cannot read server info: {}", e))?;
+    let info: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| format!("Invalid server info: {}", e))?;
+
+    let port = info
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .ok_or("Missing port in server info")? as u16;
+    let token = info
+        .get("auth_token")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing auth_token in server info")?;
+
+    crate::hook_installer::install_claude_hook(port, token)?;
+    // Gemini is placeholder for now
+    let _ = crate::hook_installer::install_gemini_hook(port, token);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn check_hooks_installed() -> Result<crate::hook_installer::HookStatus, String> {
+    Ok(crate::hook_installer::HookStatus {
+        claude: crate::hook_installer::check_claude_hook_installed(),
+        gemini: crate::hook_installer::check_gemini_hook_installed(),
+    })
+}
+
+#[tauri::command]
+pub fn uninstall_hooks() -> Result<(), String> {
+    crate::hook_installer::uninstall_claude_hook()?;
+    crate::hook_installer::uninstall_gemini_hook()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_permission_rules(
+    perm_manager: State<'_, PermissionManagerState>,
+    project_path: String,
+) -> Result<AllowlistConfig, String> {
+    Ok(perm_manager
+        .get_config(&project_path)
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn update_permission_rules(
+    perm_manager: State<'_, PermissionManagerState>,
+    project_path: String,
+    action: String,
+    tool_name: Option<String>,
+    bash_rule: Option<Vec<String>>,
+) -> Result<AllowlistConfig, String> {
+    match action.as_str() {
+        "add_tool" => {
+            let name = tool_name.ok_or("tool_name required for add_tool")?;
+            Ok(perm_manager.add_allowed_tool(&project_path, &name))
+        }
+        "remove_tool" => {
+            let name = tool_name.ok_or("tool_name required for remove_tool")?;
+            Ok(perm_manager.remove_allowed_tool(&project_path, &name))
+        }
+        "add_bash_rule" => {
+            let rule = bash_rule.ok_or("bash_rule required for add_bash_rule")?;
+            Ok(perm_manager.add_bash_rule(&project_path, rule))
+        }
+        "remove_bash_rule" => {
+            let rule = bash_rule.ok_or("bash_rule required for remove_bash_rule")?;
+            Ok(perm_manager.remove_bash_rule(&project_path, &rule))
+        }
+        _ => Err(format!("Unknown action: {}", action)),
+    }
+}
+
+#[tauri::command]
+pub fn cleanup_legacy_project_hooks(project_path: String) -> Result<(), String> {
+    crate::hook_installer::cleanup_legacy_hooks(&project_path);
+    Ok(())
 }

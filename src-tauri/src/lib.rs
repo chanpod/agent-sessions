@@ -3,6 +3,9 @@ pub mod stream_parser;
 pub mod session_state;
 pub mod event_batcher;
 pub mod commands;
+pub mod permission_manager;
+pub mod permission_server;
+pub mod hook_installer;
 mod bridge;
 
 use std::sync::Arc;
@@ -20,6 +23,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
 
@@ -44,10 +49,39 @@ pub fn run() {
                 event_batcher.clone(),
             );
 
+            // Initialize permission system
+            let permission_mgr = Arc::new(permission_manager::PermissionManager::new());
+            let perm_mgr_clone = permission_mgr.clone();
+            let perm_app_handle = app_handle.clone();
+
+            // Start permission HTTP server (runs in background)
+            tauri::async_runtime::spawn(async move {
+                match permission_server::start_server(perm_app_handle, perm_mgr_clone).await {
+                    Ok((port, auth_token)) => {
+                        log::info!(
+                            "[setup] Permission server started on port {}",
+                            port
+                        );
+                        // Install Claude CLI hook with new port/token
+                        if let Err(e) = hook_installer::install_claude_hook(port, &auth_token) {
+                            log::error!("[setup] Failed to install Claude hook: {}", e);
+                        }
+                        // Gemini hook (placeholder for now)
+                        if let Err(e) = hook_installer::install_gemini_hook(port, &auth_token) {
+                            log::error!("[setup] Failed to install Gemini hook: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[setup] Failed to start permission server: {}", e);
+                    }
+                }
+            });
+
             // Register state with Tauri so commands can access it
             app.manage(pty_manager);
             app.manage(session_manager);
             app.manage(event_batcher);
+            app.manage(permission_mgr);
 
             log::info!("ToolChain backend initialized");
             Ok(())
@@ -66,6 +100,13 @@ pub fn run() {
             commands::get_context_usage,
             commands::get_default_shell,
             commands::get_system_info,
+            commands::respond_to_permission,
+            commands::install_hooks,
+            commands::check_hooks_installed,
+            commands::uninstall_hooks,
+            commands::get_permission_rules,
+            commands::update_permission_rules,
+            commands::cleanup_legacy_project_hooks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ToolChain");

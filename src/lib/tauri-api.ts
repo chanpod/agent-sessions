@@ -508,10 +508,218 @@ export const tauriAPI = {
       { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', desc: 'Most capable' },
     ],
   },
-  updater: createStubNamespace('updater'),
+  updater: {
+    install: async () => {
+      try {
+        const { check } = await import('@tauri-apps/plugin-updater')
+        const update = await check()
+        if (update) {
+          await update.downloadAndInstall()
+          const { relaunch } = await import('@tauri-apps/plugin-process')
+          await relaunch()
+        }
+      } catch (e) {
+        console.error('[TauriAPI] updater.install error:', e)
+      }
+    },
+
+    dismiss: async (version: string) => {
+      // Store dismissal with timestamp so we can skip for 24 hours
+      try {
+        const store = await import('@tauri-apps/plugin-store').then(({ load }) =>
+          load('toolchain-store.json', { autoSave: true })
+        )
+        await store.set(`update-dismissed-${version}`, Date.now())
+        await store.save()
+      } catch (e) {
+        console.error('[TauriAPI] updater.dismiss error:', e)
+      }
+    },
+
+    onUpdateAvailable: (callback: (info: any) => void): (() => void) => {
+      // Start periodic update checks
+      let cancelled = false
+      const DISMISS_TIMEOUT = 24 * 60 * 60 * 1000 // 24 hours
+      const CHECK_INTERVAL = 5 * 60 * 1000 // 5 minutes
+
+      const checkForUpdate = async () => {
+        if (cancelled) return
+        try {
+          const { check } = await import('@tauri-apps/plugin-updater')
+          const update = await check()
+          if (update) {
+            // Check if this version was recently dismissed
+            try {
+              const store = await import('@tauri-apps/plugin-store').then(({ load }) =>
+                load('toolchain-store.json', { autoSave: true })
+              )
+              const dismissedAt = await store.get(`update-dismissed-${update.version}`) as number | undefined
+              if (dismissedAt && Date.now() - dismissedAt < DISMISS_TIMEOUT) {
+                return // Dismissed within 24 hours
+              }
+            } catch { /* store error, proceed */ }
+
+            callback({
+              version: update.version,
+              body: update.body,
+              date: update.date,
+            })
+          }
+        } catch (e) {
+          console.error('[TauriAPI] update check error:', e)
+        }
+      }
+
+      // Check immediately, then every 5 minutes
+      checkForUpdate()
+      const interval = setInterval(checkForUpdate, CHECK_INTERVAL)
+
+      return () => {
+        cancelled = true
+        clearInterval(interval)
+      }
+    },
+
+    onUpdateDownloaded: (callback: (info: any) => void): (() => void) => {
+      // In Tauri, download + install happen together via install()
+      // We use onUpdateAvailable to trigger the notification, then
+      // the user clicks "Update Now" which calls install()
+      // So onUpdateDownloaded maps to onUpdateAvailable
+      let cancelled = false
+      const DISMISS_TIMEOUT = 24 * 60 * 60 * 1000
+      const CHECK_INTERVAL = 5 * 60 * 1000
+
+      const checkForUpdate = async () => {
+        if (cancelled) return
+        try {
+          const { check } = await import('@tauri-apps/plugin-updater')
+          const update = await check()
+          if (update) {
+            try {
+              const store = await import('@tauri-apps/plugin-store').then(({ load }) =>
+                load('toolchain-store.json', { autoSave: true })
+              )
+              const dismissedAt = await store.get(`update-dismissed-${update.version}`) as number | undefined
+              if (dismissedAt && Date.now() - dismissedAt < DISMISS_TIMEOUT) {
+                return
+              }
+            } catch { /* proceed */ }
+
+            callback({
+              version: update.version,
+              body: update.body,
+              date: update.date,
+            })
+          }
+        } catch (e) {
+          console.error('[TauriAPI] update check error:', e)
+        }
+      }
+
+      checkForUpdate()
+      const interval = setInterval(checkForUpdate, CHECK_INTERVAL)
+
+      return () => {
+        cancelled = true
+        clearInterval(interval)
+      }
+    },
+
+    onDownloadProgress: (_callback: (progress: any) => void): (() => void) => {
+      // Tauri's updater handles download internally, no granular progress
+      return () => {}
+    },
+  },
   service: createStubNamespace('service'),
   docker: createStubNamespace('docker'),
-  permission: createStubNamespace('permission'),
+  permission: {
+    respond: async (
+      id: string,
+      decision: 'allow' | 'deny',
+      _reason?: string,
+      alwaysAllow?: boolean,
+      bashRules?: string[][],
+      projectPath?: string,
+      toolName?: string,
+    ) => {
+      try {
+        await invoke('respond_to_permission', { id, decision, alwaysAllow, bashRules, projectPath, toolName })
+        return { success: true }
+      } catch (e) {
+        console.error('[TauriAPI] permission.respond error:', e)
+        return { success: false, error: String(e) }
+      }
+    },
+
+    checkHook: async (_projectPath?: string) => {
+      try {
+        const status = await invoke<{ claude: boolean; gemini: boolean }>('check_hooks_installed')
+        return status.claude
+      } catch {
+        return false
+      }
+    },
+
+    installHook: async (_projectPath?: string) => {
+      try {
+        await invoke('install_hooks')
+        return { success: true }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    getAllowlistConfig: async (projectPath: string) => {
+      try {
+        return await invoke<{ tools: string[]; bashRules: string[][] }>('get_permission_rules', { projectPath })
+      } catch {
+        return { tools: [], bashRules: [] }
+      }
+    },
+
+    removeBashRule: async (projectPath: string, rule: string[]) => {
+      try {
+        await invoke('update_permission_rules', { projectPath, action: 'remove_bash_rule', bashRule: rule })
+        return { success: true }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    addAllowedTool: async (projectPath: string, toolName: string) => {
+      try {
+        await invoke('update_permission_rules', { projectPath, action: 'add_tool', toolName })
+        return { success: true }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    removeAllowedTool: async (projectPath: string, toolName: string) => {
+      try {
+        await invoke('update_permission_rules', { projectPath, action: 'remove_tool', toolName })
+        return { success: true }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    onRequest: (callback: (request: any) => void): (() => void) => {
+      let unlisten: UnlistenFn | null = null
+      listen<any>('permission:request', (event) => {
+        callback(event.payload)
+      }).then(fn => { unlisten = fn })
+      return () => { unlisten?.() }
+    },
+
+    onExpired: (callback: (id: string) => void): (() => void) => {
+      let unlisten: UnlistenFn | null = null
+      listen<string>('permission:expired', (event) => {
+        callback(event.payload)
+      }).then(fn => { unlisten = fn })
+      return () => { unlisten?.() }
+    },
+  },
   skill: createStubNamespace('skill'),
   log: createStubNamespace('log'),
   menu: createStubNamespace('menu'),

@@ -11,6 +11,8 @@ interface PermissionRequestForUI {
 
 interface PermissionState {
   pendingRequests: PermissionRequestForUI[]
+  hooksInstalled: boolean | null
+  // Legacy per-project cache kept for backward compat
   hookInstalledCache: Record<string, boolean>
   addRequest: (request: PermissionRequestForUI) => void
   removeRequest: (id: string) => void
@@ -18,12 +20,14 @@ interface PermissionState {
   getNextRequestForSession: (sessionId: string | null) => PermissionRequestForUI | null
   hasRequestsForSession: (sessionId: string | null) => boolean
   getSessionIdsWithPending: () => Set<string>
+  setHooksInstalled: (installed: boolean) => void
   setHookInstalled: (projectPath: string, installed: boolean) => void
   isHookInstalled: (projectPath: string) => boolean | undefined
 }
 
 export const usePermissionStore = create<PermissionState>((set, get) => ({
   pendingRequests: [],
+  hooksInstalled: null,
   hookInstalledCache: {},
 
   addRequest: (request) =>
@@ -52,10 +56,14 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
     return new Set(get().pendingRequests.map((r) => r.sessionId))
   },
 
-  setHookInstalled: (projectPath, installed) =>
+  setHooksInstalled: (installed) => set({ hooksInstalled: installed }),
+
+  // Legacy compat: maps per-project to global
+  setHookInstalled: (_projectPath, installed) =>
     set((state) => ({
-      hookInstalledCache: { ...state.hookInstalledCache, [projectPath]: installed },
+      hooksInstalled: installed,
+      hookInstalledCache: { ...state.hookInstalledCache, [_projectPath]: installed },
     })),
 
-  isHookInstalled: (projectPath) => get().hookInstalledCache[projectPath],
+  isHookInstalled: (_projectPath) => get().hooksInstalled ?? get().hookInstalledCache[_projectPath],
 }))
