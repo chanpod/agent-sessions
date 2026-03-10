@@ -23,7 +23,7 @@ import { EditProjectModal } from './components/EditProjectModal'
 import { PermissionModal } from './components/PermissionModal'
 import { HookInstallPrompt } from './components/HookInstallPrompt'
 import { usePermissionStore } from './stores/permission-store'
-import { useTerminalStore } from './stores/terminal-store'
+import { useTerminalStore, waitForTerminalRehydration } from './stores/terminal-store'
 import { useProjectStore } from './stores/project-store'
 import { useServerStore } from './stores/server-store'
 import { useGridStore } from './stores/grid-store'
@@ -463,23 +463,17 @@ function App() {
     // Prevent re-entry
     restoringRef.current = true
 
-    // Get configs snapshot from store directly
-    const configs = useTerminalStore.getState().savedConfigs
-    if (configs.length === 0) return
-
-    console.log(`Restoring ${configs.length} terminals...`)
-
     // Process all configs and batch the additions
     ;(async () => {
-      // IMPORTANT: Do NOT auto-connect SSH projects on startup
-      // SSH connections should only be established when user explicitly clicks "Connect"
-      // This prevents password prompts on app startup
+      // Wait for both stores to complete async rehydration before restoring.
+      // Without this, savedConfigs may still be [] (initial state) and we'd skip restoration.
+      await Promise.all([waitForTerminalRehydration(), waitForRehydration()])
+      console.log('[App] Stores rehydrated, proceeding with terminal restoration')
 
-      // Wait for agent stream store to complete async rehydration before restoring agent sessions
-      // This prevents a race condition where we try to restore sessions before the persisted
-      // session data has been loaded from storage
-      await waitForRehydration()
-      console.log('[App] Agent stream store rehydrated, proceeding with terminal restoration')
+      const configs = useTerminalStore.getState().savedConfigs
+      if (configs.length === 0) return
+
+      console.log(`Restoring ${configs.length} terminals...`)
 
       // Step 2: Now restore terminals with connections ready
       const sessionsToAdd: Parameters<typeof addSession>[0][] = []
@@ -1265,23 +1259,22 @@ function App() {
     // Get session to find its project
     const session = sessions.find((s) => s.id === id)
 
-    // Archive agent sessions that have a sessionId (for future restoration)
+    // Archive agent sessions that have conversation history (sessionId exists)
     if (session?.terminalType === 'agent') {
       const savedConfig = useTerminalStore.getState().savedConfigs.find((c) => c.id === id)
-      // Try savedConfig first, fall back to runtime mapping in agent-stream-store
       const sessionId = savedConfig?.sessionId || useAgentStreamStore.getState().getSessionId(id)
-      console.log('[App] Archiving check — terminalType:', session.terminalType, 'savedConfig:', !!savedConfig, 'sessionId:', sessionId)
+
       if (savedConfig && sessionId) {
+        // Session has conversation history - archive for future restoration
         const configToArchive = { ...savedConfig, sessionId }
         useTerminalStore.getState().archiveSession(
           configToArchive,
           session.title || session.shellName || 'Agent Session',
           savedConfig.agentId || 'unknown'
         )
-        console.log('[App] Session archived:', sessionId, 'title:', session.title)
-      } else {
-        console.warn('[App] Session NOT archived — missing savedConfig or sessionId. id:', id, 'sessionId:', sessionId)
+        console.log('[App] Session archived:', sessionId)
       }
+      // Sessions without sessionId are silently removed (no conversation to preserve)
     }
 
     // Remove from project grid if it belongs to one
@@ -1292,11 +1285,17 @@ function App() {
     // Remove from dashboard if it was pinned there
     cleanupTerminalReferences(id)
 
-    // Check if this is an agent process (JSON streaming) vs PTY terminal
+    // Kill the backend process (best-effort — may already be exited or never started
+    // for restored sessions). Frontend cleanup must proceed regardless.
     if (session?.isAgentProcess) {
-      // Kill the agent process
-      if (window.electron.agent?.kill) {
-        await window.electron.agent.kill(id)
+      // Kill the agent process — ignore errors (process may have already exited,
+      // or this is a restored session with no backend PTY)
+      try {
+        if (window.electron.agent?.kill) {
+          await window.electron.agent.kill(id)
+        }
+      } catch (err) {
+        console.log('[App] agent.kill skipped (already exited or restored):', id)
       }
       // Remove from agent processes state
       setAgentProcesses(prev => {
@@ -1304,12 +1303,18 @@ function App() {
         next.delete(id)
         return next
       })
+      // Persist any in-flight messages before clearing runtime state
+      useAgentStreamStore.getState().persistSession(id)
       // Clear from agent stream store (but don't delete persisted session data - it's archived)
       useAgentStreamStore.getState().clearTerminal(id)
     } else {
       // Dispose the xterm instance from registry (for PTY-based terminals)
       disposeTerminal(id)
-      await window.electron.pty.kill(id)
+      try {
+        await window.electron.pty.kill(id)
+      } catch (err) {
+        console.log('[App] pty.kill skipped (already exited):', id)
+      }
     }
 
     removeSession(id)

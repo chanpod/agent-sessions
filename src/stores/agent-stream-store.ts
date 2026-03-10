@@ -604,6 +604,14 @@ function applyAgentEvent(
         })
       }
 
+      // AskUserQuestion is denied by our permission hook so the CLI exits cleanly
+      // and the QuestionCard can remain interactive. Skip the error tool_result
+      // so the card stays usable — the user answers via --resume.
+      if (data.isError && matchingToolBlock?.toolName === 'AskUserQuestion' && terminalState.isWaitingForQuestion) {
+        newState = terminalState
+        break
+      }
+
       // Find the tool_use block with matching toolId across completed messages and currentMessage.
       // Tool results arrive in user messages AFTER the assistant message completes,
       // so the tool_use block will typically be in the completed messages array.
@@ -648,12 +656,6 @@ function applyAgentEvent(
         }
       }
 
-      // Clear isWaitingForQuestion if an AskUserQuestion tool result arrives with an error.
-      // This happens when the permission hook denies the tool — the question card won't be
-      // interactive, so the flag would stay stuck forever since handleAnswerQuestion never fires.
-      if (data.isError && newState.isWaitingForQuestion && matchingToolBlock?.toolName === 'AskUserQuestion') {
-        newState = { ...newState, isWaitingForQuestion: false }
-      }
       break
     }
 
@@ -1918,23 +1920,38 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
         sessions: state.sessions,
       }),
       // Reinitialize runtime Maps after rehydration
-      onRehydrateStorage: () => (state) => {
-        if (state) {
-          // Ensure runtime Maps are initialized (they won't be persisted)
-          state.terminals = new Map()
-          state.terminalToSession = new Map()
-          state.sessionToInitialProcess = new Map()
-          state.titleGeneratedSessions = new Set()
-          state.notifiedTerminals = new Set()
-          state.queuedMessages = new Map()
-          state.latestContextUsage = new Map()
-          state.sessionCosts = new Map()
-          state.turnTimings = new Map()
-          state.hasRehydrated = true
-          console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
-          // Resolve the rehydration promise so waitForRehydration() callers can proceed
-          if (rehydrationResolver) {
-            rehydrationResolver()
+      onRehydrateStorage: () => {
+        console.log('[AgentStreamStore] Starting hydration...')
+        return (state, error) => {
+          if (error) {
+            console.error('[AgentStreamStore] Hydration error:', error)
+            // Even on error, resolve the rehydration promise to prevent hanging
+            if (rehydrationResolver) {
+              rehydrationResolver()
+            }
+          } else if (state) {
+            // Ensure runtime Maps are initialized (they won't be persisted)
+            state.terminals = new Map()
+            state.terminalToSession = new Map()
+            state.sessionToInitialProcess = new Map()
+            state.titleGeneratedSessions = new Set()
+            state.notifiedTerminals = new Set()
+            state.queuedMessages = new Map()
+            state.latestContextUsage = new Map()
+            state.sessionCosts = new Map()
+            state.turnTimings = new Map()
+            state.hasRehydrated = true
+            console.log('[AgentStreamStore] Rehydrated with', Object.keys(state.sessions).length, 'sessions')
+            // Resolve the rehydration promise so waitForRehydration() callers can proceed
+            if (rehydrationResolver) {
+              rehydrationResolver()
+            }
+          } else {
+            // State is null/undefined - this shouldn't happen but handle it
+            console.warn('[AgentStreamStore] Rehydration returned null state')
+            if (rehydrationResolver) {
+              rehydrationResolver()
+            }
           }
         }
       },

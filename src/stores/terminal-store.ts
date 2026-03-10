@@ -53,6 +53,8 @@ interface TerminalStore {
 
   // Flag to track if we've restored sessions
   hasRestored: boolean
+  // Flag to track if async storage rehydration has completed
+  hasRehydrated: boolean
 
   // Display mode preferences (runtime only, not persisted)
   terminalDisplayModes: Map<string, TerminalDisplayMode>
@@ -89,6 +91,22 @@ interface TerminalStore {
   toggleTerminalDisplayMode: (sessionId: string) => void
 }
 
+// Promise resolver for waiting on rehydration
+let terminalRehydrationResolver: (() => void) | null = null
+const terminalRehydrationPromise = new Promise<void>((resolve) => {
+  terminalRehydrationResolver = resolve
+})
+/**
+ * Wait for the terminal store to complete async rehydration from storage.
+ * Returns immediately if already rehydrated.
+ */
+export function waitForTerminalRehydration(): Promise<void> {
+  if (useTerminalStore.getState().hasRehydrated) {
+    return Promise.resolve()
+  }
+  return terminalRehydrationPromise
+}
+
 export const useTerminalStore = create<TerminalStore>()(
   persist(
     (set, get) => ({
@@ -98,6 +116,7 @@ export const useTerminalStore = create<TerminalStore>()(
       activeSessionId: null,
       activeAgentSessionId: null,
       hasRestored: false,
+      hasRehydrated: false,
       terminalDisplayModes: new Map(),
 
       // Saved config actions
@@ -147,26 +166,31 @@ export const useTerminalStore = create<TerminalStore>()(
       // Runtime session actions
       addSession: (session) =>
         set((state) => {
+          // Deduplicate — replace existing session with same ID instead of creating duplicates
+          const filtered = state.sessions.filter((s) => s.id !== session.id)
           const newSession: TerminalSession = {
             ...session,
             isActive: true,
             status: 'running',
           }
           return {
-            sessions: [...state.sessions, newSession],
+            sessions: [...filtered, newSession],
             activeSessionId: session.id,
           }
         }),
 
       addSessionsBatch: (sessions) =>
         set((state) => {
+          const newIds = new Set(sessions.map((s) => s.id))
+          // Remove any existing sessions with the same IDs to prevent duplicates
+          const existing = state.sessions.filter((s) => !newIds.has(s.id))
           const newSessions = sessions.map((session) => ({
             ...session,
             isActive: true,
             status: 'running' as const,
           }))
           return {
-            sessions: [...state.sessions, ...newSessions],
+            sessions: [...existing, ...newSessions],
             activeSessionId: newSessions[newSessions.length - 1]?.id ?? state.activeSessionId,
           }
         }),
@@ -338,6 +362,20 @@ export const useTerminalStore = create<TerminalStore>()(
         savedConfigs: state.savedConfigs,
         archivedConfigs: state.archivedConfigs,
       }),
+      onRehydrateStorage: () => {
+        console.log('[TerminalStore] Starting hydration...')
+        return (state, error) => {
+          if (error) {
+            console.error('[TerminalStore] Hydration error:', error)
+          } else if (state) {
+            state.hasRehydrated = true
+            console.log('[TerminalStore] Rehydrated with', state.savedConfigs.length, 'saved configs')
+          }
+          if (terminalRehydrationResolver) {
+            terminalRehydrationResolver()
+          }
+        }
+      },
     }
   )
 )

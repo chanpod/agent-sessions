@@ -189,16 +189,26 @@ export const tauriAPI = {
     openInEditor: async (projectPath: string): Promise<{ success: boolean; editor?: string; error?: string }> => {
       try {
         const { Command } = await import('@tauri-apps/plugin-shell')
-        // Try scoped editor commands (defined in tauri.conf.json shell scope)
-        for (const editor of ['code', 'cursor', 'subl']) {
+
+        // Try GUI editors first (non-blocking)
+        for (const editor of ['code', 'cursor', 'subl', 'gedit', 'kate']) {
           try {
             const result = await Command.create(editor, [projectPath]).execute()
-            if (result.code === 0 || result.code === null) {
+            if (result.code === 0) {
               return { success: true, editor }
             }
           } catch { continue }
         }
-        return { success: false, error: 'No editor found (tried code, cursor, subl)' }
+
+        // Try xdg-open as fallback (opens with default application)
+        try {
+          const result = await Command.create('xdg-open', [projectPath]).execute()
+          if (result.code === 0) {
+            return { success: true, editor: 'xdg-open (default app)' }
+          }
+        } catch { /* continue */ }
+
+        return { success: false, error: 'No suitable editor found. Install VS Code, Cursor, Sublime Text, or another supported editor.' }
       } catch (e) {
         return { success: false, error: String(e) }
       }
@@ -392,71 +402,79 @@ export const tauriAPI = {
     },
   },
 
-  // Stubs for features not in MVP
   git: {
-    getInfo: async (projectPath: string, _projectId: string) => {
+    getInfo: async (projectPath: string, _projectId?: string) => {
       try {
         const { Command } = await import('@tauri-apps/plugin-shell')
 
-        // Check if it's a git repo
         const revParse = await Command.create('git', ['-C', projectPath, 'rev-parse', '--is-inside-work-tree']).execute()
         if (revParse.code !== 0) {
           return { isGitRepo: false }
         }
 
-        // Get current branch
         const branchResult = await Command.create('git', ['-C', projectPath, 'rev-parse', '--abbrev-ref', 'HEAD']).execute()
         const branch = branchResult.stdout.trim()
 
-        // Check for changes
         const statusResult = await Command.create('git', ['-C', projectPath, 'status', '--porcelain']).execute()
         const hasChanges = statusResult.stdout.trim().length > 0
 
-        // Get ahead/behind counts
         let ahead = 0
         let behind = 0
         try {
           const abResult = await Command.create('git', ['-C', projectPath, 'rev-list', '--left-right', '--count', `HEAD...@{upstream}`]).execute()
           if (abResult.code === 0) {
             const parts = abResult.stdout.trim().split(/\s+/)
-            ahead = parseInt(parts[0]) || 0
-            behind = parseInt(parts[1]) || 0
+            ahead = parseInt(parts[0] ?? '0') || 0
+            behind = parseInt(parts[1] ?? '0') || 0
           }
         } catch { /* no upstream */ }
 
-        return { isGitRepo: true, branch, hasChanges, ahead, behind, success: true }
+        return { isGitRepo: true, branch, hasChanges, ahead, behind }
       } catch {
-        return { isGitRepo: false, success: false }
+        return { isGitRepo: false }
       }
     },
 
-    listBranches: async (projectPath: string, _projectId: string) => {
+    listBranches: async (projectPath: string, _projectId?: string) => {
       try {
         const { Command } = await import('@tauri-apps/plugin-shell')
-        const result = await Command.create('git', ['-C', projectPath, 'branch', '--format=%(refname:short)']).execute()
-        if (result.code !== 0) return { success: false, localBranches: [] }
-        const localBranches = result.stdout.trim().split('\n').filter(Boolean)
-        return { success: true, localBranches }
+        const localResult = await Command.create('git', ['-C', projectPath, 'branch', '--format=%(refname:short)']).execute()
+        const localBranches = localResult.code === 0 ? localResult.stdout.trim().split('\n').filter(Boolean) : []
+
+        const remoteResult = await Command.create('git', ['-C', projectPath, 'branch', '-r', '--format=%(refname:short)']).execute()
+        const remoteBranches = remoteResult.code === 0 ? remoteResult.stdout.trim().split('\n').filter(Boolean) : []
+
+        const currentResult = await Command.create('git', ['-C', projectPath, 'rev-parse', '--abbrev-ref', 'HEAD']).execute()
+        const currentBranch = currentResult.code === 0 ? currentResult.stdout.trim() : undefined
+
+        return { success: true, localBranches, remoteBranches, currentBranch }
       } catch {
         return { success: false, localBranches: [] }
       }
     },
 
-    getChangedFiles: async (projectPath: string, _projectId: string) => {
+    getChangedFiles: async (projectPath: string, _projectId?: string) => {
       try {
         const { Command } = await import('@tauri-apps/plugin-shell')
         const result = await Command.create('git', ['-C', projectPath, 'status', '--porcelain=v1']).execute()
         if (result.code !== 0) return { success: false, files: [] }
 
         const files = result.stdout.trim().split('\n').filter(Boolean).map(line => {
-          const status = line.substring(0, 2).trim()
+          const indexStatus = line[0]
+          const workTreeStatus = line[1]
           const filePath = line.substring(3)
-          let type: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' = 'modified'
-          if (status === '??') type = 'untracked'
-          else if (status.includes('A')) type = 'added'
-          else if (status.includes('D')) type = 'deleted'
-          else if (status.includes('R')) type = 'renamed'
-          return { path: filePath, status, type }
+
+          // Determine if staged: index column (first char) has a non-space, non-? value
+          const staged = indexStatus !== ' ' && indexStatus !== '?'
+
+          let status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'copied' = 'modified'
+          if (indexStatus === '?' && workTreeStatus === '?') status = 'untracked'
+          else if (indexStatus === 'A' || workTreeStatus === 'A') status = 'added'
+          else if (indexStatus === 'D' || workTreeStatus === 'D') status = 'deleted'
+          else if (indexStatus === 'R' || workTreeStatus === 'R') status = 'renamed'
+          else if (indexStatus === 'C' || workTreeStatus === 'C') status = 'copied'
+
+          return { path: filePath, status, staged }
         })
 
         return { success: true, files }
@@ -465,7 +483,7 @@ export const tauriAPI = {
       }
     },
 
-    checkout: async (projectPath: string, branch: string, _projectId: string) => {
+    checkout: async (projectPath: string, branch: string, _projectId?: string) => {
       try {
         const { Command } = await import('@tauri-apps/plugin-shell')
         const result = await Command.create('git', ['-C', projectPath, 'checkout', branch]).execute()
@@ -475,13 +493,141 @@ export const tauriAPI = {
       }
     },
 
-    // Event handlers / watchers
-    onGitChange: (_callback: () => void) => () => {},
+    fetch: async (projectPath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'fetch', '--all', '--prune']).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    push: async (projectPath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'push']).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    pull: async (projectPath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'pull']).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    stageFile: async (projectPath: string, filePath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'add', '--', filePath]).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    unstageFile: async (projectPath: string, filePath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'restore', '--staged', '--', filePath]).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    discardFile: async (projectPath: string, filePath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        // Check if file is untracked
+        const statusResult = await Command.create('git', ['-C', projectPath, 'status', '--porcelain', '--', filePath]).execute()
+        const isUntracked = statusResult.stdout.trim().startsWith('??')
+
+        if (isUntracked) {
+          const result = await Command.create('git', ['-C', projectPath, 'clean', '-f', '--', filePath]).execute()
+          return { success: result.code === 0, error: result.stderr }
+        } else {
+          const result = await Command.create('git', ['-C', projectPath, 'checkout', '--', filePath]).execute()
+          return { success: result.code === 0, error: result.stderr }
+        }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    commit: async (projectPath: string, message: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('git', ['-C', projectPath, 'commit', '-m', message]).execute()
+        return { success: result.code === 0, error: result.stderr }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    getFileContent: async (projectPath: string, filePath: string, _projectId?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        // Get the HEAD version of the file
+        const result = await Command.create('git', ['-C', projectPath, 'show', `HEAD:${filePath}`]).execute()
+        if (result.code !== 0) {
+          // File might be new (not in HEAD)
+          return { success: true, content: '', isNew: true }
+        }
+        return { success: true, content: result.stdout }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    // Watchers — no native file watching yet, but return success so the store flow works
     onChanged: (_callback: (path: string) => void) => () => {},
-    watch: (_projectPath: string) => {},
-    unwatch: (_projectPath: string) => {},
+    watch: async (_projectPath: string) => ({ success: true }),
+    unwatch: async (_projectPath: string) => ({ success: true }),
   },
-  fs: createStubNamespace('fs'),
+  fs: {
+    readFile: async (filePath: string, _projectId?: string) => {
+      try {
+        const { readTextFile } = await import('@tauri-apps/plugin-fs')
+        const content = await readTextFile(filePath)
+        return { success: true, content }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+    writeFile: async (filePath: string, content: string, _projectId?: string) => {
+      try {
+        const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+        await writeTextFile(filePath, content)
+        return { success: true }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+    listDir: async (dirPath: string, _projectId?: string) => {
+      try {
+        const { readDir } = await import('@tauri-apps/plugin-fs')
+        const entries = await readDir(dirPath)
+        const items = entries.map((entry: { name: string; isDirectory: boolean; isFile: boolean }) => ({
+          name: entry.name,
+          path: dirPath.endsWith('/') ? dirPath + entry.name : dirPath + '/' + entry.name,
+          isDirectory: entry.isDirectory,
+          isFile: entry.isFile,
+        }))
+        return { success: true, items }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+    searchContent: async () => ({ success: false, error: 'Not implemented' }),
+  },
   ssh: createStubNamespace('ssh'),
   project: createStubNamespace('project'),
   cli: {

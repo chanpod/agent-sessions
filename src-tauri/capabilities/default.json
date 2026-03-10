@@ -11,6 +11,18 @@
     "dialog:default",
     "dialog:allow-open",
     "fs:default",
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "$HOME/**" }, { "path": "/**" }]
+    },
     "shell:default",
     "shell:allow-open",
     "store:default",
@@ -29,7 +41,12 @@
         { "name": "git", "cmd": "git", "args": true },
         { "name": "code", "cmd": "code", "args": true },
         { "name": "cursor", "cmd": "cursor", "args": true },
-        { "name": "subl", "cmd": "subl", "args": true }
+        { "name": "subl", "cmd": "subl", "args": true },
+        { "name": "nano", "cmd": "nano", "args": true },
+        { "name": "vim", "cmd": "vim", "args": true },
+        { "name": "gedit", "cmd": "gedit", "args": true },
+        { "name": "kate", "cmd": "kate", "args": true },
+        { "name": "xdg-open", "cmd": "xdg-open", "args": true }
       ]
     },
     {
@@ -38,7 +55,12 @@
         { "name": "git", "cmd": "git", "args": true },
         { "name": "code", "cmd": "code", "args": true },
         { "name": "cursor", "cmd": "cursor", "args": true },
-        { "name": "subl", "cmd": "subl", "args": true }
+        { "name": "subl", "cmd": "subl", "args": true },
+        { "name": "nano", "cmd": "nano", "args": true },
+        { "name": "vim", "cmd": "vim", "args": true },
+        { "name": "gedit", "cmd": "gedit", "args": true },
+        { "name": "kate", "cmd": "kate", "args": true },
+        { "name": "xdg-open", "cmd": "xdg-open", "args": true }
       ]
     }
   ]

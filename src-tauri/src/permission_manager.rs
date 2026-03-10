@@ -22,6 +22,14 @@ static SAFE_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "EnterPlanMode",
         "ExitPlanMode",
         "Skill",
+    ])
+});
+
+/// Tools that should always be denied so the app handles them via custom UI.
+/// AskUserQuestion is denied so the CLI exits cleanly and the frontend can
+/// show an interactive QuestionCard. The user's answer is sent via --resume.
+static DENY_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
         "AskUserQuestion",
     ])
 });
@@ -124,6 +132,17 @@ impl PermissionManager {
     // Auto-Allow Evaluation
     // =========================================================================
 
+    /// Check if a tool should always be denied (handled by custom app UI).
+    pub fn should_deny(tool_name: &str) -> Option<PermissionResponse> {
+        if DENY_TOOLS.contains(tool_name) {
+            return Some(PermissionResponse {
+                decision: PermissionDecision::Deny,
+                reason: Some("Handled by ToolChain UI".into()),
+            });
+        }
+        None
+    }
+
     /// Check if a tool call should be auto-allowed based on safe tools and rules.
     /// Returns `Some(Allow)` if auto-allowed, `None` if user approval needed.
     pub fn evaluate_auto_allow(
@@ -132,6 +151,11 @@ impl PermissionManager {
         tool_input: &serde_json::Value,
         project_path: Option<&str>,
     ) -> Option<PermissionResponse> {
+        // Gate 0: tools that must always be denied (app handles them via custom UI)
+        if let Some(deny) = Self::should_deny(tool_name) {
+            return Some(deny);
+        }
+
         // Gate 1: hardcoded safe tools
         if SAFE_TOOLS.contains(tool_name) {
             return Some(PermissionResponse {

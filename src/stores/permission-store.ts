@@ -31,9 +31,13 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
   hookInstalledCache: {},
 
   addRequest: (request) =>
-    set((state) => ({
-      pendingRequests: [...state.pendingRequests, request],
-    })),
+    set((state) => {
+      // Deduplicate — skip if a request with the same ID is already pending
+      if (state.pendingRequests.some((r) => r.id === request.id)) {
+        return state
+      }
+      return { pendingRequests: [...state.pendingRequests, request] }
+    }),
 
   removeRequest: (id) =>
     set((state) => ({

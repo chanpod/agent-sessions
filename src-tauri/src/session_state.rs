@@ -284,7 +284,34 @@ impl SessionManager {
                 result,
                 is_error,
             } => {
-                let mut state = self.get_or_create_terminal(terminal_id);
+                let state = self.get_or_create_terminal(terminal_id);
+
+                // AskUserQuestion is denied by our permission hook so the CLI
+                // exits cleanly and the QuestionCard stays interactive. Skip
+                // storing the error tool_result so the card remains usable —
+                // the user answers via --resume.
+                if *is_error && state.is_waiting_for_question {
+                    let is_ask = state
+                        .messages
+                        .iter()
+                        .rev()
+                        .flat_map(|m| m.blocks.iter())
+                        .chain(
+                            state
+                                .current_message
+                                .iter()
+                                .flat_map(|m| m.blocks.iter()),
+                        )
+                        .any(|b| {
+                            b.tool_id.as_deref() == Some(tool_id.as_str())
+                                && b.tool_name.as_deref() == Some("AskUserQuestion")
+                        });
+                    if is_ask {
+                        return false;
+                    }
+                }
+
+                let mut state = state;
                 let mut found = false;
 
                 // Search completed messages (most recent first)
@@ -297,14 +324,6 @@ impl SessionManager {
                         block.tool_result = Some(result.clone());
                         block.tool_result_is_error = Some(*is_error);
                         found = true;
-
-                        // Clear waiting-for-question if AskUserQuestion was denied
-                        if *is_error
-                            && state.is_waiting_for_question
-                            && block.tool_name.as_deref() == Some("AskUserQuestion")
-                        {
-                            state.is_waiting_for_question = false;
-                        }
                         break;
                     }
                 }
@@ -320,13 +339,6 @@ impl SessionManager {
                             block.tool_result = Some(result.clone());
                             block.tool_result_is_error = Some(*is_error);
                             found = true;
-
-                            if *is_error
-                                && state.is_waiting_for_question
-                                && block.tool_name.as_deref() == Some("AskUserQuestion")
-                            {
-                                state.is_waiting_for_question = false;
-                            }
                         }
                     }
                 }
@@ -388,7 +400,7 @@ impl SessionManager {
             }
 
             AgentEvent::SessionResult {
-                subtype: _,
+                subtype,
                 total_cost_usd,
                 duration_ms: _,
                 usage,
@@ -407,6 +419,29 @@ impl SessionManager {
                         }
                     }
                 }
+
+                // session_result with "success" or "error" is the definitive
+                // "agent is done" signal. Update terminal state to match the
+                // frontend's handling: clear isActive, finalize any in-flight
+                // message, and resolve waiting flags.
+                if subtype == "success" || subtype == "error" {
+                    let mut state = self.get_or_create_terminal(terminal_id);
+
+                    if let Some(mut msg) = state.current_message.take() {
+                        for block in &mut msg.blocks {
+                            block.is_complete = true;
+                        }
+                        msg.status = MessageStatus::Completed;
+                        msg.completed_at = Some(now_millis());
+                        state.messages.push(msg);
+                    }
+
+                    state.is_active = false;
+                    state.is_waiting_for_response = false;
+
+                    self.terminals.insert(terminal_id.to_string(), state);
+                }
+
                 true
             }
 
@@ -1063,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ask_user_question_flow() {
+    fn test_ask_user_question_denial_skipped() {
         let mgr = SessionManager::new();
 
         mgr.process_event(
@@ -1087,7 +1122,7 @@ mod tests {
         let state = mgr.get_terminal_state("term-1").unwrap();
         assert!(state.is_waiting_for_question);
 
-        // Denied by permission hook
+        // Message completes with tool_use stop reason
         mgr.process_event(
             "term-1",
             &AgentEvent::MessageEnd {
@@ -1097,7 +1132,9 @@ mod tests {
                 usage: Some(make_token_usage()),
             },
         );
-        mgr.process_event(
+
+        // Denied by permission hook — error tool_result should be skipped
+        let changed = mgr.process_event(
             "term-1",
             &AgentEvent::ToolResult {
                 tool_id: "tool-q".into(),
@@ -1106,8 +1143,52 @@ mod tests {
             },
         );
 
+        assert!(!changed); // no state change
         let state = mgr.get_terminal_state("term-1").unwrap();
-        assert!(!state.is_waiting_for_question);
+        assert!(state.is_waiting_for_question); // stays true for QuestionCard
+        // tool_result not stored on the block
+        let block = &state.messages[0].blocks[0];
+        assert!(block.tool_result.is_none());
+        assert!(block.tool_result_is_error.is_none());
+    }
+
+    #[test]
+    fn test_ask_user_question_clears_on_end_turn() {
+        let mgr = SessionManager::new();
+
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::MessageStart {
+                message_id: "msg-1".into(),
+                model: "claude-3".into(),
+                usage: None,
+            },
+        );
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::ToolStart {
+                message_id: "msg-1".into(),
+                tool_id: "tool-q".into(),
+                name: "AskUserQuestion".into(),
+                block_index: 0,
+            },
+        );
+
+        assert!(mgr.get_terminal_state("term-1").unwrap().is_waiting_for_question);
+
+        // Agent gives up and ends the turn
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::MessageEnd {
+                message_id: "msg-1".into(),
+                model: "claude-3".into(),
+                stop_reason: Some("end_turn".into()),
+                usage: Some(make_token_usage()),
+            },
+        );
+
+        // is_waiting_for_question cleared on end_turn
+        assert!(!mgr.get_terminal_state("term-1").unwrap().is_waiting_for_question);
     }
 
     #[test]
@@ -1144,6 +1225,77 @@ mod tests {
         let usage = mgr.get_context_usage("sess-1").unwrap();
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn test_session_result_finalizes_state() {
+        let mgr = SessionManager::new();
+
+        mgr.set_terminal_session("term-1", "sess-1");
+        mgr.mark_waiting_for_response("term-1");
+
+        // Start a message (simulating an in-flight response)
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::MessageStart {
+                message_id: "msg-1".into(),
+                model: "claude-3".into(),
+                usage: None,
+            },
+        );
+
+        let state = mgr.get_terminal_state("term-1").unwrap();
+        assert!(state.is_active);
+        assert!(state.current_message.is_some());
+
+        // Session result arrives — should finalize everything
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::SessionResult {
+                subtype: "success".into(),
+                total_cost_usd: Some(0.01),
+                duration_ms: Some(500),
+                usage: Some(make_token_usage()),
+            },
+        );
+
+        let state = mgr.get_terminal_state("term-1").unwrap();
+        assert!(!state.is_active);
+        assert!(!state.is_waiting_for_response);
+        assert!(state.current_message.is_none());
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].status, MessageStatus::Completed);
+    }
+
+    #[test]
+    fn test_session_result_non_success_ignored() {
+        let mgr = SessionManager::new();
+
+        mgr.set_terminal_session("term-1", "sess-1");
+
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::MessageStart {
+                message_id: "msg-1".into(),
+                model: "claude-3".into(),
+                usage: None,
+            },
+        );
+
+        // A non-success/error subtype should not touch terminal state
+        mgr.process_event(
+            "term-1",
+            &AgentEvent::SessionResult {
+                subtype: "info".into(),
+                total_cost_usd: None,
+                duration_ms: None,
+                usage: None,
+            },
+        );
+
+        let state = mgr.get_terminal_state("term-1").unwrap();
+        assert!(state.is_active); // unchanged
+        assert!(state.current_message.is_some()); // unchanged
     }
 
     #[test]
