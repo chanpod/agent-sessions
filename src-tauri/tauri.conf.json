@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/refs/heads/v2/crates/tauri-cli/schema.json",
   "productName": "ToolChain",
   "identifier": "com.toolchain.app",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "build": {
     "beforeBuildCommand": "pnpm build:frontend",
     "beforeDevCommand": "pnpm dev:frontend",
