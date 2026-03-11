@@ -93,6 +93,11 @@ interface AgentStreamStore {
   // turnStartedAt is set when the user sends a message, turnEndedAt when agent finishes (end_turn)
   turnTimings: Map<string, { startedAt: number; endedAt?: number }>
 
+  // Runtime: pending permission request IDs for AskUserQuestion (sessionId -> requestId)
+  // When the permission server holds an AskUserQuestion hook request, we store the
+  // permission request ID here so handleAnswerQuestion can deny it before --resume.
+  questionPermissionRequests: Map<string, string>
+
   // Actions
   processEvent(terminalId: string, event: AgentStreamEvent): void
   getTerminalState(terminalId: string): TerminalAgentState | undefined
@@ -132,6 +137,11 @@ interface AgentStreamStore {
 
   // Turn timing
   getTurnTiming(initialProcessId: string): { startedAt: number; endedAt?: number } | undefined
+
+  // AskUserQuestion permission tracking
+  setQuestionPermissionRequest(sessionId: string, requestId: string): void
+  getQuestionPermissionRequest(sessionId: string): string | undefined
+  clearQuestionPermissionRequest(sessionId: string): void
 
   // Flush buffered delta events for a terminal (call when user switches to a session)
   flushBackgroundDeltas(terminalId: string): void
@@ -604,10 +614,10 @@ function applyAgentEvent(
         })
       }
 
-      // AskUserQuestion is denied by our permission hook so the CLI exits cleanly
-      // and the QuestionCard can remain interactive. Skip the error tool_result
-      // so the card stays usable — the user answers via --resume.
-      if (data.isError && matchingToolBlock?.toolName === 'AskUserQuestion' && terminalState.isWaitingForQuestion) {
+      // AskUserQuestion is always denied by our permission system (after the user
+      // answers, we deny the held permission so the CLI exits). Skip the error
+      // tool_result so the QuestionCard doesn't flip to error status.
+      if (data.isError && matchingToolBlock?.toolName === 'AskUserQuestion') {
         newState = terminalState
         break
       }
@@ -898,6 +908,7 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
       latestContextUsage: new Map(),
       sessionCosts: new Map(),
       turnTimings: new Map(),
+      questionPermissionRequests: new Map(),
 
       processEvent: (terminalId: string, event: AgentStreamEvent) => {
         set((state) => {
@@ -1105,6 +1116,26 @@ export const useAgentStreamStore = create<AgentStreamStore>()(
 
       getTurnTiming: (initialProcessId: string) => {
         return get().turnTimings.get(initialProcessId)
+      },
+
+      setQuestionPermissionRequest: (sessionId: string, requestId: string) => {
+        set((state) => {
+          const questionPermissionRequests = new Map(state.questionPermissionRequests)
+          questionPermissionRequests.set(sessionId, requestId)
+          return { questionPermissionRequests }
+        })
+      },
+
+      getQuestionPermissionRequest: (sessionId: string) => {
+        return get().questionPermissionRequests.get(sessionId)
+      },
+
+      clearQuestionPermissionRequest: (sessionId: string) => {
+        set((state) => {
+          const questionPermissionRequests = new Map(state.questionPermissionRequests)
+          questionPermissionRequests.delete(sessionId)
+          return { questionPermissionRequests }
+        })
       },
 
       flushBackgroundDeltas: (terminalId: string) => {

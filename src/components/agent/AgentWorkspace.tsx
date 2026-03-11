@@ -499,6 +499,17 @@ export function AgentWorkspace({
         store.clearWaitingForQuestion(pid)
       }
 
+      // Deny the pending permission request for AskUserQuestion.
+      // The permission server has been holding the HTTP connection open, blocking the CLI.
+      // Denying it unblocks the CLI so it exits cleanly, allowing us to --resume.
+      if (sessionId) {
+        const permissionRequestId = store.getQuestionPermissionRequest(sessionId)
+        if (permissionRequestId) {
+          await window.electron.permission?.respond(permissionRequestId, 'deny')
+          store.clearQuestionPermissionRequest(sessionId)
+        }
+      }
+
       // Add user message to the store (persists across session switching)
       store.addConversationUserMessage(initialProcessId, {
         id: `user_${Date.now()}`,
@@ -515,7 +526,11 @@ export function AgentWorkspace({
 
       try {
         if (sessionId) {
-          // Spawn a new --resume process with the user's answer, same as handleSend
+          // Wait briefly for the CLI to process the denial and exit before --resume.
+          // The denied permission makes the CLI return an error tool result and exit.
+          await new Promise(resolve => setTimeout(resolve, 500))
+
+          // Spawn a new --resume process with the user's answer
           const result = await window.electron.agent.spawn({
             agentType,
             cwd,

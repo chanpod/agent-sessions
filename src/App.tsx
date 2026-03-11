@@ -357,6 +357,16 @@ function App() {
     if (!window.electron?.permission) return
     const { addRequest, removeRequest } = usePermissionStore.getState()
     const unsubRequest = window.electron.permission.onRequest((request) => {
+      // AskUserQuestion is handled by the QuestionCard UI, not the permission modal.
+      // Store the permission request ID so handleAnswerQuestion can deny it later,
+      // which unblocks the CLI (it's been holding the HTTP connection open).
+      if (request.toolName === 'AskUserQuestion' && request.sessionId) {
+        useAgentStreamStore.getState().setQuestionPermissionRequest(
+          request.sessionId,
+          request.id
+        )
+        return
+      }
       addRequest(request)
 
       // If the request is for a session the user isn't currently viewing, show a toast

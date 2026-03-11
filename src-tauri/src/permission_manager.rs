@@ -26,12 +26,11 @@ static SAFE_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 });
 
 /// Tools that should always be denied so the app handles them via custom UI.
-/// AskUserQuestion is denied so the CLI exits cleanly and the frontend can
-/// show an interactive QuestionCard. The user's answer is sent via --resume.
+/// NOTE: AskUserQuestion is NOT denied here — it falls through to the pending-
+/// request path so the HTTP connection stays open and the CLI blocks until the
+/// user answers via the QuestionCard. The frontend auto-denies once answered.
 static DENY_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    HashSet::from([
-        "AskUserQuestion",
-    ])
+    HashSet::from([])
 });
 
 const SHELL_OPERATORS: &[&str] = &["&&", "||", "|", ";"];

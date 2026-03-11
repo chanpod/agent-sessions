@@ -496,8 +496,9 @@ export interface TerminalAgentState {
   /** Whether we're waiting for the agent to start responding (message sent, no response yet) */
   isWaitingForResponse: boolean
   /** Whether the agent used AskUserQuestion and we're waiting for the user to answer.
-   *  The PreToolUse hook denies this tool so the CLI doesn't auto-resolve it;
-   *  the app renders a QuestionCard and delivers the answer via --resume. */
+   *  The PreToolUse hook holds the permission request (HTTP connection stays open),
+   *  blocking the CLI. The app renders a QuestionCard; when the user answers,
+   *  handleAnswerQuestion denies the held permission (CLI exits) and --resume delivers the answer. */
   isWaitingForQuestion: boolean
   /** Whether the backing PTY process has exited. Used as a safety-net: even if isActive
    *  is incorrectly cleared during tool execution, we know the agent isn't done until

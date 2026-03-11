@@ -805,7 +805,138 @@ export const tauriAPI = {
     },
   },
   service: createStubNamespace('service'),
-  docker: createStubNamespace('docker'),
+  docker: {
+    isAvailable: async (_projectPath?: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['--version']).execute()
+        return { success: true, available: result.code === 0 }
+      } catch {
+        return { success: true, available: false }
+      }
+    },
+
+    listStacks: async (_projectPath: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['compose', 'ls', '-a', '--format', 'json']).execute()
+        if (result.code !== 0) {
+          return { success: false, stacks: [], error: result.stderr }
+        }
+        const stdout = result.stdout.trim()
+        if (!stdout) return { success: true, stacks: [] }
+        const parsed = JSON.parse(stdout)
+        const stacks = (Array.isArray(parsed) ? parsed : [parsed]).map((item: any) => ({
+          name: item.Name || 'unknown',
+          status: item.Status || 'unknown',
+          configFiles: item.ConfigFiles || '',
+        }))
+        return { success: true, stacks }
+      } catch (e) {
+        return { success: false, stacks: [], error: String(e) }
+      }
+    },
+
+    getStackContainers: async (stackName: string, _projectPath: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['compose', '-p', stackName, 'ps', '-a', '--format', 'json']).execute()
+        if (result.code !== 0) {
+          if (result.stderr?.includes('no containers') || result.stdout?.trim() === '') {
+            return { success: true, containers: [] }
+          }
+          return { success: false, containers: [], error: result.stderr }
+        }
+        const stdout = result.stdout.trim()
+        if (!stdout) return { success: true, containers: [] }
+
+        // docker compose ps returns one JSON object per line (NDJSON)
+        const containers: Array<{ name: string; service: string; state: string; status: string; ports: string; image: string }> = []
+        for (const line of stdout.split('\n').filter((l: string) => l.trim())) {
+          try {
+            const item = JSON.parse(line)
+            containers.push({
+              name: item.Name || 'unknown',
+              service: item.Service || '',
+              state: item.State || 'unknown',
+              status: item.Status || '',
+              ports: item.Ports || '',
+              image: item.Image || '',
+            })
+          } catch { /* skip malformed lines */ }
+        }
+        return { success: true, containers }
+      } catch (e) {
+        return { success: false, containers: [], error: String(e) }
+      }
+    },
+
+    upStack: async (stackName: string, _configFiles: string, _projectPath: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['compose', '-p', stackName, 'up', '-d']).execute()
+        if (result.code !== 0) {
+          return { success: false, error: result.stderr }
+        }
+        return { success: true, output: result.stdout }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    stopStack: async (stackName: string, _configFiles: string, _projectPath: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['compose', '-p', stackName, 'stop']).execute()
+        if (result.code !== 0) {
+          return { success: false, error: result.stderr }
+        }
+        return { success: true, output: result.stdout }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    downStack: async (stackName: string, _configFiles: string, _projectPath: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['compose', '-p', stackName, 'down']).execute()
+        if (result.code !== 0) {
+          return { success: false, error: result.stderr }
+        }
+        return { success: true, output: result.stdout }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    restartStack: async (stackName: string, _configFiles: string, _projectPath: string) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['compose', '-p', stackName, 'restart']).execute()
+        if (result.code !== 0) {
+          return { success: false, error: result.stderr }
+        }
+        return { success: true, output: result.stdout }
+      } catch (e) {
+        return { success: false, error: String(e) }
+      }
+    },
+
+    getLogs: async (serviceId: string, tail?: number) => {
+      try {
+        const { Command } = await import('@tauri-apps/plugin-shell')
+        const result = await Command.create('docker', ['logs', '--tail', String(tail || 100), serviceId]).execute()
+        if (result.code !== 0) {
+          return { success: false, logs: '', error: result.stderr }
+        }
+        // docker logs outputs to stderr for some containers
+        return { success: true, logs: result.stdout || result.stderr }
+      } catch (e) {
+        return { success: false, logs: '', error: String(e) }
+      }
+    },
+  },
   permission: {
     respond: async (
       id: string,
