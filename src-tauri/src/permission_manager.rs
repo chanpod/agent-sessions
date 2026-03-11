@@ -82,6 +82,7 @@ pub struct PermissionRequestForUI {
     pub session_id: String,
     pub tool_name: String,
     pub tool_input: serde_json::Value,
+    pub project_path: Option<String>,
     pub received_at: u64,
     pub sub_command_matches: Option<Vec<SubCommandMatch>>,
 }
@@ -226,6 +227,7 @@ impl PermissionManager {
             session_id: request.session_id.clone(),
             tool_name: request.tool_name.clone(),
             tool_input: request.tool_input.clone(),
+            project_path: request.project_path.clone(),
             received_at: now_millis(),
             sub_command_matches,
         }

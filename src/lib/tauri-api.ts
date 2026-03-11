@@ -190,8 +190,13 @@ export const tauriAPI = {
       try {
         const { Command } = await import('@tauri-apps/plugin-shell')
 
-        // Try GUI editors first (non-blocking)
-        for (const editor of ['code', 'cursor', 'subl', 'gedit', 'kate']) {
+        // Use the user's login shell to resolve PATH properly.
+        // Desktop apps don't inherit shell PATH, so editors like `code`
+        // installed via snap/flatpak/custom locations won't be found directly.
+        const editors = ['code', 'cursor', 'subl', 'gedit', 'kate']
+
+        // Try direct command first (works if editor is in system PATH)
+        for (const editor of editors) {
           try {
             const result = await Command.create(editor, [projectPath]).execute()
             if (result.code === 0) {
@@ -200,7 +205,30 @@ export const tauriAPI = {
           } catch { continue }
         }
 
-        // Try xdg-open as fallback (opens with default application)
+        // Try through bash login shell for full user PATH resolution
+        for (const editor of editors) {
+          try {
+            const result = await Command.create('bash', [
+              '-lc',
+              `command -v ${editor} > /dev/null 2>&1 && exec ${editor} "$@"`,
+              '--',
+              projectPath
+            ]).execute()
+            if (result.code === 0) {
+              return { success: true, editor }
+            }
+          } catch { continue }
+        }
+
+        // macOS: try `open` command
+        try {
+          const result = await Command.create('open', [projectPath]).execute()
+          if (result.code === 0) {
+            return { success: true, editor: 'open (macOS default)' }
+          }
+        } catch { /* continue */ }
+
+        // Linux: xdg-open as last resort (opens file manager for directories)
         try {
           const result = await Command.create('xdg-open', [projectPath]).execute()
           if (result.code === 0) {

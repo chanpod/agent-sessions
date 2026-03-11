@@ -5,6 +5,7 @@ interface PermissionRequestForUI {
   sessionId: string
   toolName: string
   toolInput: Record<string, unknown>
+  projectPath?: string
   receivedAt: number
   subCommandMatches?: Array<{ tokens: string[]; operator: string | null; matched: boolean }>
 }

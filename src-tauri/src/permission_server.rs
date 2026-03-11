@@ -149,10 +149,14 @@ async fn claude_permission_handler(
 ) -> impl IntoResponse {
     // Validate auth token
     if !validate_auth(&headers, &state.auth_token) {
-        log::warn!("[permission_server] Unauthorized request");
+        log::warn!(
+            "[permission_server] Unauthorized request — auth token mismatch. \
+             Expected token starting with '{}...', check ~/.claude/settings.json hook config.",
+            &state.auth_token[..state.auth_token.len().min(8)]
+        );
         return (
-            StatusCode::OK,
-            Json(make_claude_response("allow", Some("Auth failed — allowing to avoid blocking agent"))),
+            StatusCode::UNAUTHORIZED,
+            Json(make_claude_response("deny", Some("Auth failed — token mismatch. Restart ToolChain or reinstall hooks."))),
         );
     }
 

@@ -197,7 +197,7 @@ function BashTokenSelector({
 }
 
 export function PermissionModal() {
-  const { pendingRequests, removeRequest, getNextRequestForSession } = usePermissionStore()
+  const { pendingRequests, removeRequest, getNextRequestForSession, getNextRequest } = usePermissionStore()
   const activeAgentSessionId = useTerminalStore((s) => s.activeAgentSessionId)
 
   // Per-sub-command rules for compound commands, keyed by sub-command index
@@ -205,17 +205,38 @@ export function PermissionModal() {
   // Single rule for simple (non-compound) commands
   const [singleRule, setSingleRule] = useState<string[] | null>(null)
 
-  const activeCliSessionId = useAgentStreamStore(
-    (s) => (activeAgentSessionId ? s.terminalToSession.get(activeAgentSessionId) : undefined)
-  ) ?? null
+  // Try to resolve the CLI session ID for the active agent terminal.
+  // For multi-turn conversations, also check all process IDs in the conversation.
+  const activeCliSessionId = useAgentStreamStore((s) => {
+    if (!activeAgentSessionId) return undefined
 
+    // Direct lookup: the active terminal has a session mapping
+    const directId = s.terminalToSession.get(activeAgentSessionId)
+    if (directId) return directId
+
+    // Conversation lookup: check all process IDs associated with this conversation
+    const conv = s.conversations.get(activeAgentSessionId)
+    if (conv) {
+      for (const pid of conv.processIds) {
+        const sid = s.terminalToSession.get(pid)
+        if (sid) return sid
+      }
+    }
+
+    return undefined
+  }) ?? null
+
+  // 1. Try matching requests for the active CLI session
+  // 2. Fall back to the first pending request if no session match
+  //    (prevents invisible timeouts when session mapping is missing)
   const request = activeCliSessionId
     ? getNextRequestForSession(activeCliSessionId)
-    : null
+    : (pendingRequests.length > 0 ? getNextRequest() : null)
 
-  const sessionQueueCount = activeCliSessionId
-    ? pendingRequests.filter((r) => r.sessionId === activeCliSessionId).length
-    : 0
+  const matchedSessionId = request?.sessionId ?? activeCliSessionId
+  const sessionQueueCount = matchedSessionId
+    ? pendingRequests.filter((r) => r.sessionId === matchedSessionId).length
+    : pendingRequests.length
 
   const isBash = request?.toolName === 'Bash'
   const subCommandMatches = request?.subCommandMatches
@@ -225,16 +246,34 @@ export function PermissionModal() {
     [subCommandMatches]
   )
 
+  // Resolve the project path for this request — needed for persisting "Always Allow" rules.
+  // Try the request's own projectPath first (from the CLI hook's cwd), then fall back
+  // to the active terminal session's cwd.
+  const projectPath = useMemo(() => {
+    if (request?.projectPath) return request.projectPath
+    if (!activeAgentSessionId) return undefined
+    const session = useTerminalStore.getState().sessions.find(s => s.id === activeAgentSessionId)
+    return session?.cwd
+  }, [request?.projectPath, activeAgentSessionId])
+
   const respond = useCallback(
     (decision: 'allow' | 'deny', alwaysAllow?: boolean, rules?: string[][]) => {
       if (!request) return
-      window.electron?.permission.respond(request.id, decision, undefined, alwaysAllow, rules)
+      window.electron?.permission.respond(
+        request.id,
+        decision,
+        undefined,
+        alwaysAllow,
+        rules,
+        projectPath,
+        request.toolName,
+      )
       removeRequest(request.id)
       useToastStore.getState().removeToast(`permission-${request.id}`)
       setSubCommandRules(new Map())
       setSingleRule(null)
     },
-    [request, removeRequest]
+    [request, removeRequest, projectPath]
   )
 
   // When the permission modal is visible, blur any focused input/textarea so
